@@ -1,0 +1,9 @@
+HloModule cleanup
+
+ENTRY main {
+  p = f32[] parameter(0)
+  shared = f32[] negate(p)
+  left = f32[] add(shared,shared)
+  dead = f32[] add(shared,left)
+  ROOT result = f32[] copy(p)
+}

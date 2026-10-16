@@ -1,0 +1,20 @@
+[package]
+name = "stablehlo"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license.workspace = true
+license-file.workspace = true
+description = "Typed Rust IR and verification for the StableHLO dialect"
+readme = "README.md"
+keywords = ["stablehlo", "mlir", "tensor", "ir"]
+categories = ["compilers", "data-structures"]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+rustc_apfloat = "0.2.3"
+
+[lints.rust]
+unsafe_code = "forbid"

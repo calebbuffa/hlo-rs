@@ -1,0 +1,10 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/stablehlo",
+    "crates/xlahlo",
+]
+
+[workspace.package]
+license = "Apache-2.0"
+license-file = "LICENSE-APACHE"

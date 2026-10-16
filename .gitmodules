@@ -1,0 +1,6 @@
+[submodule "extern/stablehlo"]
+	path = extern/stablehlo
+	url = https://github.com/openxla/stablehlo.git
+[submodule "extern/xla"]
+	path = extern/xla
+	url = https://github.com/openxla/xla.git

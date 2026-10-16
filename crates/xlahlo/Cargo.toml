@@ -1,0 +1,25 @@
+[package]
+name = "xlahlo"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license.workspace = true
+description = "Rust data model and checked graph operations for OpenXLA HLO"
+readme = "README.md"
+build = "build.rs"
+include = [
+    "src/**", "tests/**", "docs/**", "build.rs",
+    "tools/numeric_oracle.py", "tools/numeric_oracle.cc",
+    "tools/hlo_oracle.py", "tools/hlo_oracle/**",
+    "README.md",
+]
+
+[dependencies]
+protobuf = "=3.7.2"
+protobuf-json-mapping = "=3.7.2"
+
+[build-dependencies]
+protobuf-codegen = "=3.7.2"
+
+[lints.rust]
+unsafe_code = "forbid"
