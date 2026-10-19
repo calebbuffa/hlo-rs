@@ -227,8 +227,8 @@ impl DynamicIotaOp {
         result_shape: &[i64],
         element: ElementType,
         dimension: usize,
-    ) -> Option<Self> {
-        Some(Self::new(
+    ) -> Result<Self> {
+        Ok(Self::new(
             ctx,
             dimension_size,
             tensor(ctx, result_shape, element),

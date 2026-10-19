@@ -49,9 +49,13 @@ impl BroadcastInDimOp {
         input: Value,
         result_shape: &[i64],
         dimensions: Vec<usize>,
-    ) -> Option<Self> {
-        let (_, element) = shape_elem(ctx, input.get_type(ctx))?;
-        Some(Self::new(
+    ) -> Result<Self> {
+        let (_, element) = crate::ops::builder_option(
+            shape_elem(ctx, input.get_type(ctx)),
+            "stablehlo.broadcast_in_dim",
+            "operand must be a supported ranked tensor",
+        )?;
+        Ok(Self::new(
             ctx,
             input,
             TensorType::get(ctx, result_shape.to_vec(), element).into(),
@@ -106,12 +110,20 @@ impl ReshapeOp {
             ),
         }
     }
-    pub fn new_inferred(ctx: &mut Context, input: Value, shape: &[i64]) -> Option<Self> {
-        let (_, element) = shape_elem(ctx, input.get_type(ctx))?;
+    pub fn new_inferred(ctx: &mut Context, input: Value, shape: &[i64]) -> Result<Self> {
+        let (_, element) = crate::ops::builder_option(
+            shape_elem(ctx, input.get_type(ctx)),
+            "stablehlo.reshape",
+            "operand must be a supported ranked tensor",
+        )?;
         if shape.iter().any(|&d| d < -1) {
-            return None;
+            return crate::ops::builder_option(
+                None,
+                "stablehlo.reshape",
+                "builder inputs are invalid",
+            );
         }
-        Some(Self::new(
+        Ok(Self::new(
             ctx,
             input,
             TensorType::get(ctx, shape.to_vec(), element).into(),
@@ -154,9 +166,12 @@ impl Verify for ReshapeOp {
 #[pliron_op(name="stablehlo.transpose",format="$0 attr($stablehlo_transpose_permutation, $VecAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_transpose_permutation:VecAttr))]
 pub struct TransposeOp;
 impl TransposeOp {
-    pub fn new_inferred(ctx: &mut Context, input: Value, permutation: Vec<usize>) -> Option<Self> {
-        let ty = crate::inference::infer_transpose(ctx, input.get_type(ctx), &permutation).ok()?;
-        Some(Self::new(ctx, input, ty, permutation))
+    pub fn new_inferred(ctx: &mut Context, input: Value, permutation: Vec<usize>) -> Result<Self> {
+        let ty = crate::ops::builder_result(
+            crate::inference::infer_transpose(ctx, input.get_type(ctx), &permutation),
+            "stablehlo.transpose",
+        )?;
+        Ok(Self::new(ctx, input, ty, permutation))
     }
     pub fn new(
         ctx: &mut Context,
@@ -240,9 +255,12 @@ impl BroadcastOp {
         op.set_attr_stablehlo_broadcast_sizes(ctx, signed_list(ctx, sizes));
         op
     }
-    pub fn new_inferred(ctx: &mut Context, input: Value, sizes: Vec<i64>) -> Option<Self> {
-        let ty = crate::inference::infer_broadcast(ctx, input.get_type(ctx), &sizes).ok()?;
-        Some(Self::new(ctx, input, ty, sizes))
+    pub fn new_inferred(ctx: &mut Context, input: Value, sizes: Vec<i64>) -> Result<Self> {
+        let ty = crate::ops::builder_result(
+            crate::inference::infer_broadcast(ctx, input.get_type(ctx), &sizes),
+            "stablehlo.broadcast",
+        )?;
+        Ok(Self::new(ctx, input, ty, sizes))
     }
     pub fn sizes(&self, ctx: &Context) -> Option<Vec<i64>> {
         signed_integer_list(&*self.get_attr_stablehlo_broadcast_sizes(ctx)?)
@@ -305,8 +323,8 @@ impl ReverseOp {
             .map(|x| usize::try_from(x).ok())
             .collect()
     }
-    pub fn new_inferred(ctx: &mut Context, input: Value, dimensions: Vec<usize>) -> Option<Self> {
-        Some(Self::new(ctx, input, input.get_type(ctx), dimensions))
+    pub fn new_inferred(ctx: &mut Context, input: Value, dimensions: Vec<usize>) -> Result<Self> {
+        Ok(Self::new(ctx, input, input.get_type(ctx), dimensions))
     }
 }
 impl Verify for ReverseOp {
@@ -379,15 +397,17 @@ impl DynamicBroadcastInDimOp {
         input: Value,
         output_dimensions: Value,
         dimensions: Vec<usize>,
-    ) -> Option<Self> {
-        let result = crate::inference::infer_dynamic_broadcast_in_dim_type(
-            ctx,
-            input.get_type(ctx),
-            output_dimensions.get_type(ctx),
-            &dimensions,
-        )
-        .ok()?;
-        Some(Self::new(
+    ) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_dynamic_broadcast_in_dim_type(
+                ctx,
+                input.get_type(ctx),
+                output_dimensions.get_type(ctx),
+                &dimensions,
+            ),
+            "stablehlo.dynamic_broadcast_in_dim",
+        )?;
+        Ok(Self::new(
             ctx,
             input,
             output_dimensions,
@@ -511,14 +531,16 @@ impl DynamicReshapeOp {
             ),
         }
     }
-    pub fn new_inferred(ctx: &mut Context, input: Value, output_shape: Value) -> Option<Self> {
-        let result = crate::inference::infer_dynamic_reshape_type(
-            ctx,
-            input.get_type(ctx),
-            output_shape.get_type(ctx),
-        )
-        .ok()?;
-        Some(Self::new(ctx, input, output_shape, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value, output_shape: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_dynamic_reshape_type(
+                ctx,
+                input.get_type(ctx),
+                output_shape.get_type(ctx),
+            ),
+            "stablehlo.dynamic_reshape",
+        )?;
+        Ok(Self::new(ctx, input, output_shape, result))
     }
 }
 impl Verify for DynamicReshapeOp {
@@ -618,12 +640,20 @@ impl GetDimensionSizeOp {
         );
         op
     }
-    pub fn new_inferred(ctx: &mut Context, input: Value, dimension: usize) -> Option<Self> {
-        let (s, _) = shape_elem(ctx, input.get_type(ctx))?;
+    pub fn new_inferred(ctx: &mut Context, input: Value, dimension: usize) -> Result<Self> {
+        let (s, _) = crate::ops::builder_option(
+            shape_elem(ctx, input.get_type(ctx)),
+            "stablehlo.get_dimension_size",
+            "operand must be a supported ranked tensor",
+        )?;
         if dimension >= s.len() {
-            return None;
+            return crate::ops::builder_option(
+                None,
+                "stablehlo.get_dimension_size",
+                "builder inputs are invalid",
+            );
         }
-        Some(Self::new(
+        Ok(Self::new(
             ctx,
             input,
             TensorType::scalar(ctx, ElementType::I32),
@@ -700,15 +730,17 @@ impl SetDimensionSizeOp {
         input: Value,
         size: Value,
         dimension: usize,
-    ) -> Option<Self> {
-        let result = crate::inference::infer_set_dimension_size_type(
-            ctx,
-            input.get_type(ctx),
-            size.get_type(ctx),
-            dimension,
-        )
-        .ok()?;
-        Some(Self::new(ctx, input, size, result, dimension))
+    ) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_set_dimension_size_type(
+                ctx,
+                input.get_type(ctx),
+                size.get_type(ctx),
+                dimension,
+            ),
+            "stablehlo.set_dimension_size",
+        )?;
+        Ok(Self::new(ctx, input, size, result, dimension))
     }
     pub fn dimension(&self, ctx: &Context) -> Option<usize> {
         usize::try_from(

@@ -1,4 +1,4 @@
-use pliron::{basic_block::BasicBlock, context::Context, op::Op};
+use pliron::{context::Context, op::Op};
 use stablehlo::{
     Diagnostic,
     attributes::{
@@ -57,14 +57,12 @@ fn public_errors_downcast_preserve_context_and_recover_after_repair() {
     assert!(infer_dot_general_type(&ctx, lhs, rhs, &dimensions, element).is_ok());
 
     let module = ModuleOp::new(&mut ctx);
-    let module_region = module.region(&ctx);
-    let module_block = BasicBlock::new(&mut ctx, None, vec![]);
-    module_block.insert_at_back(module_region, &ctx);
+    let module_block = module.body_block(&ctx).expect("module has a body block");
     let signature = FunctionType::intern(&ctx, vec![], vec![]);
-    let caller = FuncOp::named(&mut ctx, "caller".into(), signature);
-    let body = caller.region(&ctx);
-    let block = BasicBlock::new(&mut ctx, None, vec![]);
-    block.insert_at_back(body, &ctx);
+    let caller = FuncOp::new(&mut ctx, "caller".into(), signature).expect("valid function");
+    let block = caller
+        .entry_block(&ctx)
+        .expect("function has an entry block");
     let call = CallOp::new(&mut ctx, "missing".into(), vec![], vec![]);
     let call_location = Location::Named {
         name: "recoverable-call".to_owned(),
@@ -95,10 +93,10 @@ fn public_errors_downcast_preserve_context_and_recover_after_repair() {
         } if operation == "stablehlo.call" && location.contains("recoverable-call")
     ));
 
-    let callee = FuncOp::named(&mut ctx, "callee".into(), signature);
-    let callee_body = callee.region(&ctx);
-    let callee_block = BasicBlock::new(&mut ctx, None, vec![]);
-    callee_block.insert_at_back(callee_body, &ctx);
+    let callee = FuncOp::new(&mut ctx, "callee".into(), signature).expect("valid function");
+    let callee_block = callee
+        .entry_block(&ctx)
+        .expect("function has an entry block");
     ReturnOp::new_many(&mut ctx, vec![])
         .get_operation()
         .insert_at_back(callee_block, &ctx);
@@ -239,15 +237,13 @@ fn oversized_mesh_product_returns_a_typed_error() {
 fn recursive_function_calls_are_reported_as_a_cycle() {
     let mut ctx = Context::new();
     let module = ModuleOp::new(&mut ctx);
-    let module_region = module.region(&ctx);
-    let module_block = BasicBlock::new(&mut ctx, None, vec![]);
-    module_block.insert_at_back(module_region, &ctx);
+    let module_block = module.body_block(&ctx).expect("module has a body block");
 
     let signature = FunctionType::intern(&ctx, vec![], vec![]);
-    let function = FuncOp::named(&mut ctx, "recursive".into(), signature);
-    let body = function.region(&ctx);
-    let block = BasicBlock::new(&mut ctx, None, vec![]);
-    block.insert_at_back(body, &ctx);
+    let function = FuncOp::new(&mut ctx, "recursive".into(), signature).expect("valid function");
+    let block = function
+        .entry_block(&ctx)
+        .expect("function has an entry block");
     CallOp::new(&mut ctx, "recursive".into(), vec![], vec![])
         .get_operation()
         .insert_at_back(block, &ctx);

@@ -50,13 +50,21 @@ impl SliceOp {
         starts: Vec<u64>,
         limits: Vec<u64>,
         strides: Vec<u64>,
-    ) -> Option<Self> {
-        let (shape, element) = tensor_shape_elem(ctx, input.get_type(ctx))?;
+    ) -> Result<Self> {
+        let (shape, element) = crate::ops::builder_option(
+            tensor_shape_elem(ctx, input.get_type(ctx)),
+            "stablehlo.slice",
+            "operand must be a supported ranked tensor",
+        )?;
         if starts.len() != shape.len()
             || limits.len() != shape.len()
             || strides.len() != shape.len()
         {
-            return None;
+            return crate::ops::builder_option(
+                None,
+                "stablehlo.slice",
+                "builder inputs are invalid",
+            );
         }
         let mut output = Vec::with_capacity(shape.len());
         for axis in 0..shape.len() {
@@ -67,13 +75,17 @@ impl SliceOp {
                 || known_tensor_bound(ctx, input.get_type(ctx), axis)
                     .is_some_and(|bound| limit > bound)
             {
-                return None;
+                return crate::ops::builder_option(
+                    None,
+                    "stablehlo.slice",
+                    "builder inputs are invalid",
+                );
             }
             let distance = limit - start;
             output.push((distance / stride + u64::from(distance % stride != 0)) as i64);
         }
         let result = TensorType::get(ctx, output, element).into();
-        Some(Self::new(ctx, input, result, starts, limits, strides))
+        Ok(Self::new(ctx, input, result, starts, limits, strides))
     }
 }
 impl Verify for SliceOp {
@@ -200,10 +212,13 @@ impl Verify for ConcatenateOp {
 }
 
 impl ConcatenateOp {
-    pub fn new_inferred(ctx: &mut Context, inputs: Vec<Value>, dimension: usize) -> Option<Self> {
+    pub fn new_inferred(ctx: &mut Context, inputs: Vec<Value>, dimension: usize) -> Result<Self> {
         let tys = inputs.iter().map(|v| v.get_type(ctx)).collect::<Vec<_>>();
-        let out = crate::inference::infer_concatenate(ctx, &tys, dimension).ok()?;
-        Some(Self::new(ctx, inputs, out, dimension))
+        let out = crate::ops::builder_result(
+            crate::inference::infer_concatenate(ctx, &tys, dimension),
+            "stablehlo.concatenate",
+        )?;
+        Ok(Self::new(ctx, inputs, out, dimension))
     }
 }
 
@@ -237,10 +252,12 @@ impl DynamicSliceOp {
         input: Value,
         starts: Vec<Value>,
         sizes: Vec<i64>,
-    ) -> Option<Self> {
-        let result =
-            crate::inference::infer_dynamic_slice(ctx, input.get_type(ctx), &sizes).ok()?;
-        Some(Self::new(ctx, input, starts, result, sizes))
+    ) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_dynamic_slice(ctx, input.get_type(ctx), &sizes),
+            "stablehlo.dynamic_slice",
+        )?;
+        Ok(Self::new(ctx, input, starts, result, sizes))
     }
     pub fn sizes(&self, ctx: &Context) -> Option<Vec<i64>> {
         self.get_attr_stablehlo_dynamic_slice_sizes(ctx)
@@ -317,14 +334,16 @@ impl DynamicUpdateSliceOp {
         input: Value,
         update: Value,
         starts: Vec<Value>,
-    ) -> Option<Self> {
-        let result = crate::inference::infer_dynamic_update_slice(
-            ctx,
-            input.get_type(ctx),
-            update.get_type(ctx),
-        )
-        .ok()?;
-        Some(Self::new(ctx, input, update, starts, result))
+    ) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_dynamic_update_slice(
+                ctx,
+                input.get_type(ctx),
+                update.get_type(ctx),
+            ),
+            "stablehlo.dynamic_update_slice",
+        )?;
+        Ok(Self::new(ctx, input, update, starts, result))
     }
 }
 impl Verify for DynamicUpdateSliceOp {
@@ -400,16 +419,18 @@ impl RealDynamicSliceOp {
         start: Value,
         limit: Value,
         stride: Value,
-    ) -> Option<Self> {
-        let out = crate::inference::infer_real_dynamic_slice_type(
-            ctx,
-            input.get_type(ctx),
-            start.get_type(ctx),
-            limit.get_type(ctx),
-            stride.get_type(ctx),
-        )
-        .ok()?;
-        Some(Self::new(ctx, input, start, limit, stride, out))
+    ) -> Result<Self> {
+        let out = crate::ops::builder_result(
+            crate::inference::infer_real_dynamic_slice_type(
+                ctx,
+                input.get_type(ctx),
+                start.get_type(ctx),
+                limit.get_type(ctx),
+                stride.get_type(ctx),
+            ),
+            "stablehlo.real_dynamic_slice",
+        )?;
+        Ok(Self::new(ctx, input, start, limit, stride, out))
     }
 }
 impl Verify for RealDynamicSliceOp {
@@ -484,17 +505,19 @@ impl PadOp {
         low: Vec<i64>,
         high: Vec<i64>,
         interior: Vec<i64>,
-    ) -> Option<Self> {
-        let out = crate::inference::infer_pad(
-            ctx,
-            input.get_type(ctx),
-            padding.get_type(ctx),
-            &low,
-            &high,
-            &interior,
-        )
-        .ok()?;
-        Some(Self::new(ctx, input, padding, out, low, high, interior))
+    ) -> Result<Self> {
+        let out = crate::ops::builder_result(
+            crate::inference::infer_pad(
+                ctx,
+                input.get_type(ctx),
+                padding.get_type(ctx),
+                &low,
+                &high,
+                &interior,
+            ),
+            "stablehlo.pad",
+        )?;
+        Ok(Self::new(ctx, input, padding, out, low, high, interior))
     }
 }
 impl Verify for PadOp {
@@ -582,14 +605,16 @@ impl DynamicPadOp {
         low: Value,
         high: Value,
         interior: Value,
-    ) -> Option<Self> {
-        let out = crate::inference::infer_dynamic_pad_type(
-            ctx,
-            input.get_type(ctx),
-            padding.get_type(ctx),
-        )
-        .ok()?;
-        Some(Self::new(ctx, input, padding, low, high, interior, out))
+    ) -> Result<Self> {
+        let out = crate::ops::builder_result(
+            crate::inference::infer_dynamic_pad_type(
+                ctx,
+                input.get_type(ctx),
+                padding.get_type(ctx),
+            ),
+            "stablehlo.dynamic_pad",
+        )?;
+        Ok(Self::new(ctx, input, padding, low, high, interior, out))
     }
 }
 impl Verify for DynamicPadOp {

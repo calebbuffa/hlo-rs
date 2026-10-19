@@ -70,16 +70,17 @@ mod tests {
         let b = ConstantOp::new(&mut ctx, ty, vec![2], true);
         let av = a.get_operation().deref(&ctx).get_result(0);
         let bv = b.get_operation().deref(&ctx).get_result(0);
-        let add_result = AddOp::new_inferred(&mut ctx, av, bv);
-        assert!(add_result.is_some());
-        if let Some(add) = add_result {
-            assert_eq!(
-                tensor_parts(
-                    &ctx,
-                    add.get_operation().deref(&ctx).get_result(0).get_type(&ctx)
-                ),
-                Some((vec![4], ElementType::F32))
-            );
-        }
+        let add = AddOp::new_inferred(&mut ctx, av, bv);
+        assert!(add.is_ok(), "matching tensors should infer add");
+        let Some(add) = add.ok() else {
+            return;
+        };
+        assert_eq!(
+            tensor_parts(
+                &ctx,
+                add.get_operation().deref(&ctx).get_result(0).get_type(&ctx)
+            ),
+            Some((vec![4], ElementType::F32))
+        );
     }
 }

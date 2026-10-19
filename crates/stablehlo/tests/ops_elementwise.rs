@@ -196,7 +196,7 @@ fn elementwise_rejects_incompatible_element_domains() {
     let mut ctx = Context::new();
     let f = value(&mut ctx, &[2], ElementType::F32, 0);
     let i = value(&mut ctx, &[2], ElementType::I32, 0);
-    assert!(AddOp::new_inferred(&mut ctx, f, i).is_none());
+    assert!(AddOp::new_inferred(&mut ctx, f, i).is_err());
     let result_type = tensor(&ctx, &[2], ElementType::F32);
     let invalid = AddOp::new(&mut ctx, f, i, result_type);
     assert!(invalid.verify(&ctx).is_err());
@@ -428,7 +428,7 @@ fn select_and_clamp_reject_invalid_shapes_and_elements() {
             .verify(&ctx)
             .is_err()
     );
-    assert!(SelectOp::new_inferred(&mut ctx, wrong_pred, f, f).is_none());
+    assert!(SelectOp::new_inferred(&mut ctx, wrong_pred, f, f).is_err());
     assert!(
         ClampOp::new(&mut ctx, other, f, f, result)
             .verify(&ctx)
@@ -483,7 +483,7 @@ fn elementwise_inference_intersects_bounds_and_verification_checks_witnesses() {
         .get_operation()
         .deref(&ctx)
         .get_result(0);
-    assert!(AddOp::new_inferred(&mut ctx, lhs, static_value).is_none());
+    assert!(AddOp::new_inferred(&mut ctx, lhs, static_value).is_err());
 
     let too_narrow_result = bounded(&ctx, 4);
     assert!(
@@ -590,20 +590,20 @@ fn per_axis_quantization_follows_each_operation_schema_domain() {
         .deref(&ctx)
         .get_result(0);
     let predicate = value(&mut ctx, &[], ElementType::I1, 1);
-    assert!(AddOp::new_inferred(&mut ctx, q, q).is_some());
-    assert!(MaximumOp::new_inferred(&mut ctx, q, q).is_none());
-    assert!(SelectOp::new_inferred(&mut ctx, predicate, q, q).is_none());
-    assert!(ClampOp::new_inferred(&mut ctx, q, q, q).is_none());
-    assert!(CompareOp::new_inferred(&mut ctx, q, q, CompareDirection::Eq, None).is_none());
+    assert!(AddOp::new_inferred(&mut ctx, q, q).is_ok());
+    assert!(MaximumOp::new_inferred(&mut ctx, q, q).is_err());
+    assert!(SelectOp::new_inferred(&mut ctx, predicate, q, q).is_err());
+    assert!(ClampOp::new_inferred(&mut ctx, q, q, q).is_err());
+    assert!(CompareOp::new_inferred(&mut ctx, q, q, CompareDirection::Eq, None).is_err());
 }
 
 #[test]
 fn integer_domains_distinguish_predicates_from_hlo_integer_ops() {
     let mut ctx = Context::new();
     let predicate = value(&mut ctx, &[2], ElementType::I1, 0);
-    assert!(NotOp::new_inferred(&mut ctx, predicate).is_some());
-    assert!(CountLeadingZerosOp::new_inferred(&mut ctx, predicate).is_none());
-    assert!(ShiftLeftOp::new_inferred(&mut ctx, predicate, predicate).is_none());
+    assert!(NotOp::new_inferred(&mut ctx, predicate).is_ok());
+    assert!(CountLeadingZerosOp::new_inferred(&mut ctx, predicate).is_err());
+    assert!(ShiftLeftOp::new_inferred(&mut ctx, predicate, predicate).is_err());
     let unsupported_type = tensor(&ctx, &[2], ElementType::Ui1);
     assert!(
         ConstantOp::new(&mut ctx, unsupported_type, vec![0], true)
@@ -611,7 +611,7 @@ fn integer_domains_distinguish_predicates_from_hlo_integer_ops() {
             .is_err()
     );
     let integer = value(&mut ctx, &[2], ElementType::I2, 0);
-    assert!(AddOp::new_inferred(&mut ctx, integer, integer).is_some());
+    assert!(AddOp::new_inferred(&mut ctx, integer, integer).is_ok());
 }
 
 #[test]

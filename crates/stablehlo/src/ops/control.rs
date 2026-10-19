@@ -2,11 +2,13 @@ use crate::verification::invalid;
 use crate::{attributes::*, types::*};
 use pliron::{
     attribute::AttrObj,
+    basic_block::BasicBlock,
     builtin::attributes::{BoolAttr, DictAttr, IntegerAttr, StringAttr, VecAttr},
     builtin::types::{IntegerType, Signedness},
     common_traits::Verify,
     context::{Context, Ptr},
     derive::pliron_op,
+    linked_list::ContainsLinkedList,
     op::Op,
     operation::Operation,
     result::Result,
@@ -42,13 +44,24 @@ impl Verify for ReturnOp {
 #[pliron_op(name="stablehlo.module",format="`module`",interfaces=[pliron::builtin::op_interfaces::OneRegionInterface])]
 pub struct ModuleOp;
 impl ModuleOp {
+    /// Creates a module with exactly one body region and one empty body block.
     pub fn new(ctx: &mut Context) -> Self {
-        Self {
+        let module = Self {
             op: Operation::new(ctx, Self::get_concrete_op_info(), vec![], vec![], vec![], 1),
-        }
+        };
+        let body = BasicBlock::new(ctx, None, vec![]);
+        body.insert_at_back(module.region(ctx), ctx);
+        module
     }
-    pub fn region(&self, ctx: &Context) -> Ptr<Region> {
+
+    /// Returns the module's body region.
+    fn region(&self, ctx: &Context) -> Ptr<Region> {
         self.get_operation().deref(ctx).get_region(0)
+    }
+
+    /// Returns the module's single body block when the raw IR is well formed.
+    pub fn body_block(&self, ctx: &Context) -> Option<Ptr<BasicBlock>> {
+        self.region(ctx).deref(ctx).iter(ctx).next()
     }
 }
 impl Verify for ModuleOp {
@@ -56,6 +69,26 @@ impl Verify for ModuleOp {
         let ir = self.get_operation().deref(ctx);
         if ir.get_num_operands() != 0 || ir.get_num_results() != 0 {
             return invalid(self, ctx, "module cannot have operands or results");
+        }
+        if ir.regions().count() != 1 {
+            return invalid(self, ctx, "module requires exactly one body region");
+        }
+        let blocks: Vec<_> = ir.get_region(0).deref(ctx).iter(ctx).collect();
+        if blocks.len() != 1 {
+            return invalid(self, ctx, "module requires exactly one body block");
+        }
+        let mut names = std::collections::HashSet::new();
+        for ptr in blocks[0].deref(ctx).iter(ctx) {
+            let operation = Operation::get_op_dyn(ptr, ctx);
+            let Some(function) = operation.downcast_ref::<FuncOp>() else {
+                return invalid(&*operation, ctx, "module body may contain only functions");
+            };
+            let Some(name) = function.name(ctx) else {
+                return invalid(function, ctx, "function requires a symbol name");
+            };
+            if name.is_empty() || !names.insert(name) {
+                return invalid(function, ctx, "function symbol is empty or duplicated");
+            }
         }
         Ok(())
     }
@@ -164,23 +197,133 @@ impl Verify for WhileOp {
 #[pliron_op(name="stablehlo.func",format="`func`",interfaces=[pliron::builtin::op_interfaces::OneRegionInterface],attributes=(stablehlo_function_name: StringAttr, stablehlo_function_signature: PlironTypeAttr))]
 pub struct FuncOp;
 impl FuncOp {
-    pub fn new(ctx: &mut Context) -> Self {
-        Self {
-            op: Operation::new(ctx, Self::get_concrete_op_info(), vec![], vec![], vec![], 1),
+    /// Creates a named function with a validated StableHLO signature and typed entry block.
+    pub fn new(ctx: &mut Context, name: String, signature: TypeHandle) -> Result<Self> {
+        let input_types = {
+            let signature_object = signature.deref(ctx);
+            let Some(function_type) = signature_object.downcast_ref::<FunctionType>() else {
+                return crate::ops::builder_option(
+                    None,
+                    "stablehlo.func",
+                    "signature must be a StableHLO FunctionType",
+                );
+            };
+            crate::ops::builder_result(function_type.verify(ctx), "stablehlo.func")?;
+            function_type.inputs.clone()
+        };
+        if name.is_empty() {
+            return crate::ops::builder_option(
+                None,
+                "stablehlo.func",
+                "function name must not be empty",
+            );
         }
-    }
-    pub fn named(ctx: &mut Context, name: String, signature: TypeHandle) -> Self {
-        let op = Self::new(ctx);
+        let op = Self {
+            op: Operation::new(ctx, Self::get_concrete_op_info(), vec![], vec![], vec![], 1),
+        };
         op.set_attr_stablehlo_function_name(ctx, StringAttr::new(name));
         op.set_attr_stablehlo_function_signature(ctx, PlironTypeAttr::new(signature));
-        op
+        let entry = BasicBlock::new(ctx, None, input_types);
+        entry.insert_at_back(op.region(ctx), ctx);
+        Ok(op)
     }
+
+    /// Returns the function symbol name, if present in the raw operation.
+    pub fn name(&self, ctx: &Context) -> Option<String> {
+        self.get_attr_stablehlo_function_name(ctx)
+            .map(|name| name.as_str().to_owned())
+    }
+
+    /// Returns the interned function signature handle, if present.
+    pub fn signature(&self, ctx: &Context) -> Option<TypeHandle> {
+        self.get_attr_stablehlo_function_signature(ctx)
+            .map(|signature| signature.get_type(ctx))
+    }
+
+    /// Returns the function body region.
     pub fn region(&self, ctx: &Context) -> Ptr<Region> {
         self.get_operation().deref(ctx).get_region(0)
     }
+
+    /// Returns the entry block, if the raw function still contains one.
+    pub fn entry_block(&self, ctx: &Context) -> Option<Ptr<BasicBlock>> {
+        self.region(ctx).deref(ctx).iter(ctx).next()
+    }
+
+    /// Returns the entry-block argument at `index`, if it exists.
+    pub fn argument(&self, ctx: &Context, index: usize) -> Option<Value> {
+        self.entry_block(ctx)?.deref(ctx).arguments().nth(index)
+    }
+
+    /// Returns the entry-block argument handles in signature order.
+    pub fn arguments(&self, ctx: &Context) -> Vec<Value> {
+        self.entry_block(ctx)
+            .map(|block| block.deref(ctx).arguments().collect())
+            .unwrap_or_default()
+    }
 }
 impl Verify for FuncOp {
-    fn verify(&self, _: &Context) -> Result<()> {
+    fn verify(&self, ctx: &Context) -> Result<()> {
+        let ir = self.get_operation().deref(ctx);
+        if ir.get_num_operands() != 0 || ir.get_num_results() != 0 {
+            return invalid(self, ctx, "function cannot have operands or results");
+        }
+        if ir.regions().count() != 1 {
+            return invalid(self, ctx, "function requires exactly one body region");
+        }
+        if self.name(ctx).is_none_or(|name| name.is_empty()) {
+            return invalid(self, ctx, "function requires a nonempty symbol name");
+        }
+        let Some(signature) = self.signature(ctx) else {
+            return invalid(self, ctx, "function requires a signature");
+        };
+        let signature_object = signature.deref(ctx);
+        let Some(function_type) = signature_object.downcast_ref::<FunctionType>() else {
+            return invalid(
+                self,
+                ctx,
+                "function signature must be a StableHLO FunctionType",
+            );
+        };
+        crate::ops::builder_result(function_type.verify(ctx), "stablehlo.func")?;
+        let blocks: Vec<_> = ir.get_region(0).deref(ctx).iter(ctx).collect();
+        let Some(entry) = blocks.first() else {
+            return invalid(self, ctx, "function requires an entry block");
+        };
+        if !entry
+            .deref(ctx)
+            .arguments()
+            .map(|argument| argument.get_type(ctx))
+            .eq(function_type.inputs.iter().copied())
+        {
+            return invalid(self, ctx, "function entry arguments do not match signature");
+        }
+        for block in blocks {
+            let Some(last) = block.deref(ctx).iter(ctx).last() else {
+                return invalid(self, ctx, "function body contains an unterminated block");
+            };
+            let return_op = Operation::get_op_dyn(last, ctx);
+            let Some(return_op) = return_op.downcast_ref::<ReturnOp>() else {
+                return invalid(
+                    &*Operation::get_op_dyn(last, ctx),
+                    ctx,
+                    "function block must end in stablehlo.return",
+                );
+            };
+            if !return_op
+                .get_operation()
+                .deref(ctx)
+                .operands()
+                .map(|operand| operand.get_type(ctx))
+                .eq(function_type.outputs.iter().copied())
+            {
+                return invalid(
+                    return_op,
+                    ctx,
+                    "function return types do not match signature",
+                );
+            }
+        }
         Ok(())
     }
 }

@@ -52,7 +52,7 @@ fn broadcast_and_transpose_infer_shapes_and_reject_invalid_axes() {
         vec![3, 2]
     );
     assert!(transposed.verify(&ctx).is_ok());
-    assert!(TransposeOp::new_inferred(&mut ctx, source, vec![0, 0]).is_none());
+    assert!(TransposeOp::new_inferred(&mut ctx, source, vec![0, 0]).is_err());
 }
 
 #[test]
@@ -86,7 +86,7 @@ fn slice_and_dynamic_slice_enforce_bounds_and_sizes() {
         vec![4, 6]
     );
     assert!(slice.verify(&ctx).is_ok());
-    assert!(SliceOp::new_inferred(&mut ctx, source, vec![0, 0], vec![9, 6], vec![1, 1]).is_none());
+    assert!(SliceOp::new_inferred(&mut ctx, source, vec![0, 0], vec![9, 6], vec![1, 1]).is_err());
     let idx = shaped_value(&mut ctx, &[], ElementType::I32);
     let dyn_slice =
         DynamicSliceOp::new_inferred(&mut ctx, source, vec![idx, idx], vec![4, 3]).unwrap();
@@ -165,7 +165,7 @@ fn dimension_size_ops_validate_dimension_and_i32_size() {
     let source = shaped_value(&mut ctx, &[4, 7], ElementType::F32);
     let get = GetDimensionSizeOp::new_inferred(&mut ctx, source, 1).unwrap();
     assert!(get.verify(&ctx).is_ok());
-    assert!(GetDimensionSizeOp::new_inferred(&mut ctx, source, 2).is_none());
+    assert!(GetDimensionSizeOp::new_inferred(&mut ctx, source, 2).is_err());
     let size = shaped_value(&mut ctx, &[], ElementType::I32);
     let set = SetDimensionSizeOp::new_inferred(&mut ctx, source, size, 1).unwrap();
     assert_eq!(
@@ -292,7 +292,7 @@ fn scatter_checks_native_dimension_numbers_and_result_arity() {
         ..dims
     };
     assert!(
-        ScatterOp::new_inferred(&mut ctx, vec![input], indices, vec![updates], invalid).is_none()
+        ScatterOp::new_inferred(&mut ctx, vec![input], indices, vec![updates], invalid).is_err()
     );
 }
 

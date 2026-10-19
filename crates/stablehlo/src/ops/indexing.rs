@@ -47,15 +47,19 @@ impl GatherOp {
         indices: Value,
         dimensions: GatherDimensionNumbersAttr,
         slice_sizes: Vec<i64>,
-    ) -> Option<Self> {
-        let shape = infer_gather_shape(
-            ctx,
-            operand.get_type(ctx),
-            indices.get_type(ctx),
-            &dimensions,
-            &slice_sizes,
+    ) -> Result<Self> {
+        let shape = crate::ops::builder_option(
+            infer_gather_shape(
+                ctx,
+                operand.get_type(ctx),
+                indices.get_type(ctx),
+                &dimensions,
+                &slice_sizes,
+            ),
+            "stablehlo.gather",
+            "gather dimensions or slice sizes are invalid",
         )?;
-        Some(Self::new(
+        Ok(Self::new(
             ctx,
             operand,
             indices,
@@ -147,16 +151,18 @@ impl DynamicGatherOp {
         indices: Value,
         slice_sizes: Value,
         dimensions: GatherDimensionNumbersAttr,
-    ) -> Option<Self> {
-        let out = crate::inference::infer_dynamic_gather_type(
-            ctx,
-            operand.get_type(ctx),
-            indices.get_type(ctx),
-            slice_sizes.get_type(ctx),
-            &dimensions,
-        )
-        .ok()?;
-        Some(Self::new(
+    ) -> Result<Self> {
+        let out = crate::ops::builder_result(
+            crate::inference::infer_dynamic_gather_type(
+                ctx,
+                operand.get_type(ctx),
+                indices.get_type(ctx),
+                slice_sizes.get_type(ctx),
+                &dimensions,
+            ),
+            "stablehlo.dynamic_gather",
+        )?;
+        Ok(Self::new(
             ctx,
             operand,
             indices,
@@ -267,7 +273,7 @@ impl ScatterOp {
         indices: Value,
         updates: Vec<Value>,
         dimensions: ScatterDimensionNumbersAttr,
-    ) -> Option<Self> {
+    ) -> Result<Self> {
         let input_types = inputs
             .iter()
             .map(|value| value.get_type(ctx))
@@ -283,9 +289,13 @@ impl ScatterOp {
             &update_types,
             &dimensions,
         ) {
-            return None;
+            return crate::ops::builder_option(
+                None,
+                "stablehlo.scatter",
+                "builder inputs are invalid",
+            );
         }
-        Some(Self::new(ctx, inputs, indices, updates, dimensions))
+        Ok(Self::new(ctx, inputs, indices, updates, dimensions))
     }
     pub fn dimensions(&self, ctx: &Context) -> Option<ScatterDimensionNumbersAttr> {
         self.get_attr_stablehlo_scatter_dimension_numbers(ctx)
@@ -405,7 +415,7 @@ impl TorchIndexSelectOp {
         input: Value,
         indices: Value,
         dimension: usize,
-    ) -> Option<Self> {
+    ) -> Result<Self> {
         Self::new_inferred_with_batch_dims(ctx, input, indices, dimension, 0)
     }
     pub fn new_inferred_with_batch_dims(
@@ -414,20 +424,32 @@ impl TorchIndexSelectOp {
         indices: Value,
         dimension: usize,
         batch_dims: usize,
-    ) -> Option<Self> {
-        let (input_shape, element) = shape_elem(ctx, input.get_type(ctx))?;
-        let (index_shape, _) = shape_elem(ctx, indices.get_type(ctx))?;
+    ) -> Result<Self> {
+        let (input_shape, element) = crate::ops::builder_option(
+            shape_elem(ctx, input.get_type(ctx)),
+            "stablehlo.torch_index_select",
+            "input must be a supported ranked tensor",
+        )?;
+        let (index_shape, _) = crate::ops::builder_option(
+            shape_elem(ctx, indices.get_type(ctx)),
+            "stablehlo.torch_index_select",
+            "indices must be a supported ranked tensor",
+        )?;
         if batch_dims > dimension
             || dimension >= input_shape.len()
             || batch_dims > index_shape.len()
             || input_shape[..batch_dims] != index_shape[..batch_dims]
         {
-            return None;
+            return crate::ops::builder_option(
+                None,
+                "stablehlo.torch_index_select",
+                "dimension and batch dimensions must fit the input and index ranks",
+            );
         }
         let mut output = input_shape[..dimension].to_vec();
         output.extend_from_slice(&index_shape[batch_dims..]);
         output.extend_from_slice(&input_shape[dimension + 1..]);
-        Some(Self::new_with_batch_dims(
+        Ok(Self::new_with_batch_dims(
             ctx,
             input,
             indices,

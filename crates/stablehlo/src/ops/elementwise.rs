@@ -33,9 +33,12 @@ impl ConvertOp {
         self.get_operation().deref(ctx).get_operand(0)
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value, to: ElementType) -> Option<Self> {
-        let result = crate::inference::infer_convert_type(ctx, input.get_type(ctx), to).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value, to: ElementType) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_convert_type(ctx, input.get_type(ctx), to),
+            "stablehlo.convert",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
 }
 impl Verify for ConvertOp {
@@ -57,15 +60,17 @@ impl SelectOp {
         self.get_operation().deref(ctx).get_operand(2)
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, pred: Value, yes: Value, no: Value) -> Option<Self> {
-        let result = crate::inference::infer_select_type(
-            ctx,
-            pred.get_type(ctx),
-            yes.get_type(ctx),
-            no.get_type(ctx),
-        )
-        .ok()?;
-        Some(Self::new(ctx, pred, yes, no, result))
+    pub fn new_inferred(ctx: &mut Context, pred: Value, yes: Value, no: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_select_type(
+                ctx,
+                pred.get_type(ctx),
+                yes.get_type(ctx),
+                no.get_type(ctx),
+            ),
+            "stablehlo.select",
+        )?;
+        Ok(Self::new(ctx, pred, yes, no, result))
     }
     #[inline]
     pub fn new(ctx: &mut Context, pred: Value, yes: Value, no: Value, result: TypeHandle) -> Self {
@@ -103,15 +108,17 @@ impl CompareOp {
         rhs: Value,
         direction: CompareDirection,
         comparison: Option<CompareType>,
-    ) -> Option<Self> {
-        let result = crate::inference::infer_compare_type(
-            ctx,
-            lhs.get_type(ctx),
-            rhs.get_type(ctx),
-            comparison,
-        )
-        .ok()?;
-        Some(if let Some(comparison) = comparison {
+    ) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_compare_type(
+                ctx,
+                lhs.get_type(ctx),
+                rhs.get_type(ctx),
+                comparison,
+            ),
+            "stablehlo.compare",
+        )?;
+        Ok(if let Some(comparison) = comparison {
             Self::new(ctx, lhs, rhs, result, direction, comparison)
         } else {
             Self::new_without_type(ctx, lhs, rhs, result, direction)
@@ -230,15 +237,17 @@ impl ClampOp {
         self.get_operation().deref(ctx).get_operand(2)
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, min: Value, value: Value, max: Value) -> Option<Self> {
-        let result = crate::inference::infer_clamp_type(
-            ctx,
-            min.get_type(ctx),
-            value.get_type(ctx),
-            max.get_type(ctx),
-        )
-        .ok()?;
-        Some(Self::new(ctx, min, value, max, result))
+    pub fn new_inferred(ctx: &mut Context, min: Value, value: Value, max: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_clamp_type(
+                ctx,
+                min.get_type(ctx),
+                value.get_type(ctx),
+                max.get_type(ctx),
+            ),
+            "stablehlo.clamp",
+        )?;
+        Ok(Self::new(ctx, min, value, max, result))
     }
     #[inline]
     pub fn new(
@@ -318,10 +327,12 @@ impl AbsOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "abs", &[input.get_type(ctx)]).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "abs", &[input.get_type(ctx)]),
+            "stablehlo.abs",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -350,10 +361,12 @@ impl CbrtOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "cbrt", &[input.get_type(ctx)]).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "cbrt", &[input.get_type(ctx)]),
+            "stablehlo.cbrt",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -382,10 +395,12 @@ impl CeilOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "ceil", &[input.get_type(ctx)]).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "ceil", &[input.get_type(ctx)]),
+            "stablehlo.ceil",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -414,11 +429,12 @@ impl CountLeadingZerosOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "count_leading_zeros", &[input.get_type(ctx)])
-                .ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "count_leading_zeros", &[input.get_type(ctx)]),
+            "stablehlo.count_leading_zeros",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -447,10 +463,12 @@ impl CosineOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "cosine", &[input.get_type(ctx)]).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "cosine", &[input.get_type(ctx)]),
+            "stablehlo.cosine",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -479,10 +497,12 @@ impl ExponentialOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "exponential", &[input.get_type(ctx)]).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "exponential", &[input.get_type(ctx)]),
+            "stablehlo.exponential",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -511,14 +531,16 @@ impl ExponentialMinusOneOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result = crate::inference::infer_elementwise(
-            ctx,
-            "exponential_minus_one",
-            &[input.get_type(ctx)],
-        )
-        .ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(
+                ctx,
+                "exponential_minus_one",
+                &[input.get_type(ctx)],
+            ),
+            "stablehlo.exponential_minus_one",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -547,10 +569,12 @@ impl FloorOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "floor", &[input.get_type(ctx)]).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "floor", &[input.get_type(ctx)]),
+            "stablehlo.floor",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -579,10 +603,12 @@ impl ImagOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "imag", &[input.get_type(ctx)]).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "imag", &[input.get_type(ctx)]),
+            "stablehlo.imag",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -611,10 +637,12 @@ impl IsFiniteOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "is_finite", &[input.get_type(ctx)]).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "is_finite", &[input.get_type(ctx)]),
+            "stablehlo.is_finite",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -643,10 +671,12 @@ impl LogOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "log", &[input.get_type(ctx)]).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "log", &[input.get_type(ctx)]),
+            "stablehlo.log",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -675,11 +705,12 @@ impl LogPlusOneOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "log_plus_one", &[input.get_type(ctx)])
-                .ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "log_plus_one", &[input.get_type(ctx)]),
+            "stablehlo.log_plus_one",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -708,10 +739,12 @@ impl LogisticOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "logistic", &[input.get_type(ctx)]).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "logistic", &[input.get_type(ctx)]),
+            "stablehlo.logistic",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -740,10 +773,12 @@ impl NotOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "not", &[input.get_type(ctx)]).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "not", &[input.get_type(ctx)]),
+            "stablehlo.not",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -772,10 +807,12 @@ impl NegateOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "negate", &[input.get_type(ctx)]).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "negate", &[input.get_type(ctx)]),
+            "stablehlo.negate",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -804,10 +841,12 @@ impl PopulationCountOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "popcnt", &[input.get_type(ctx)]).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "popcnt", &[input.get_type(ctx)]),
+            "stablehlo.popcnt",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -836,10 +875,12 @@ impl RealOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "real", &[input.get_type(ctx)]).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "real", &[input.get_type(ctx)]),
+            "stablehlo.real",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -868,11 +909,12 @@ impl RoundNearestAfzOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "round_nearest_afz", &[input.get_type(ctx)])
-                .ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "round_nearest_afz", &[input.get_type(ctx)]),
+            "stablehlo.round_nearest_afz",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -901,11 +943,12 @@ impl RoundNearestEvenOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "round_nearest_even", &[input.get_type(ctx)])
-                .ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "round_nearest_even", &[input.get_type(ctx)]),
+            "stablehlo.round_nearest_even",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -934,10 +977,12 @@ impl RsqrtOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "rsqrt", &[input.get_type(ctx)]).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "rsqrt", &[input.get_type(ctx)]),
+            "stablehlo.rsqrt",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -966,10 +1011,12 @@ impl SignOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "sign", &[input.get_type(ctx)]).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "sign", &[input.get_type(ctx)]),
+            "stablehlo.sign",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -998,10 +1045,12 @@ impl SineOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "sine", &[input.get_type(ctx)]).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "sine", &[input.get_type(ctx)]),
+            "stablehlo.sine",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -1030,10 +1079,12 @@ impl SqrtOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "sqrt", &[input.get_type(ctx)]).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "sqrt", &[input.get_type(ctx)]),
+            "stablehlo.sqrt",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -1062,10 +1113,12 @@ impl TanOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "tan", &[input.get_type(ctx)]).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "tan", &[input.get_type(ctx)]),
+            "stablehlo.tan",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -1094,10 +1147,12 @@ impl TanhOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "tanh", &[input.get_type(ctx)]).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "tanh", &[input.get_type(ctx)]),
+            "stablehlo.tanh",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -1121,14 +1176,16 @@ impl AddOp {
         Self { op }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Option<Self> {
-        let result = crate::inference::infer_elementwise(
-            ctx,
-            "add",
-            &[lhs.get_type(ctx), rhs.get_type(ctx)],
-        )
-        .ok()?;
-        Some(Self::new(ctx, lhs, rhs, result))
+    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(
+                ctx,
+                "add",
+                &[lhs.get_type(ctx), rhs.get_type(ctx)],
+            ),
+            "stablehlo.add",
+        )?;
+        Ok(Self::new(ctx, lhs, rhs, result))
     }
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -1160,14 +1217,16 @@ impl Atan2Op {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Option<Self> {
-        let result = crate::inference::infer_elementwise(
-            ctx,
-            "atan2",
-            &[lhs.get_type(ctx), rhs.get_type(ctx)],
-        )
-        .ok()?;
-        Some(Self::new(ctx, lhs, rhs, result))
+    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(
+                ctx,
+                "atan2",
+                &[lhs.get_type(ctx), rhs.get_type(ctx)],
+            ),
+            "stablehlo.atan2",
+        )?;
+        Ok(Self::new(ctx, lhs, rhs, result))
     }
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -1199,14 +1258,16 @@ impl ComplexOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Option<Self> {
-        let result = crate::inference::infer_elementwise(
-            ctx,
-            "complex",
-            &[lhs.get_type(ctx), rhs.get_type(ctx)],
-        )
-        .ok()?;
-        Some(Self::new(ctx, lhs, rhs, result))
+    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(
+                ctx,
+                "complex",
+                &[lhs.get_type(ctx), rhs.get_type(ctx)],
+            ),
+            "stablehlo.complex",
+        )?;
+        Ok(Self::new(ctx, lhs, rhs, result))
     }
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -1238,14 +1299,16 @@ impl DivideOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Option<Self> {
-        let result = crate::inference::infer_elementwise(
-            ctx,
-            "divide",
-            &[lhs.get_type(ctx), rhs.get_type(ctx)],
-        )
-        .ok()?;
-        Some(Self::new(ctx, lhs, rhs, result))
+    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(
+                ctx,
+                "divide",
+                &[lhs.get_type(ctx), rhs.get_type(ctx)],
+            ),
+            "stablehlo.divide",
+        )?;
+        Ok(Self::new(ctx, lhs, rhs, result))
     }
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -1277,14 +1340,16 @@ impl MaximumOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Option<Self> {
-        let result = crate::inference::infer_elementwise(
-            ctx,
-            "maximum",
-            &[lhs.get_type(ctx), rhs.get_type(ctx)],
-        )
-        .ok()?;
-        Some(Self::new(ctx, lhs, rhs, result))
+    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(
+                ctx,
+                "maximum",
+                &[lhs.get_type(ctx), rhs.get_type(ctx)],
+            ),
+            "stablehlo.maximum",
+        )?;
+        Ok(Self::new(ctx, lhs, rhs, result))
     }
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -1316,14 +1381,16 @@ impl MinimumOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Option<Self> {
-        let result = crate::inference::infer_elementwise(
-            ctx,
-            "minimum",
-            &[lhs.get_type(ctx), rhs.get_type(ctx)],
-        )
-        .ok()?;
-        Some(Self::new(ctx, lhs, rhs, result))
+    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(
+                ctx,
+                "minimum",
+                &[lhs.get_type(ctx), rhs.get_type(ctx)],
+            ),
+            "stablehlo.minimum",
+        )?;
+        Ok(Self::new(ctx, lhs, rhs, result))
     }
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -1350,14 +1417,16 @@ impl MultiplyOp {
         Self { op }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Option<Self> {
-        let result = crate::inference::infer_elementwise(
-            ctx,
-            "multiply",
-            &[lhs.get_type(ctx), rhs.get_type(ctx)],
-        )
-        .ok()?;
-        Some(Self::new(ctx, lhs, rhs, result))
+    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(
+                ctx,
+                "multiply",
+                &[lhs.get_type(ctx), rhs.get_type(ctx)],
+            ),
+            "stablehlo.multiply",
+        )?;
+        Ok(Self::new(ctx, lhs, rhs, result))
     }
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -1389,14 +1458,16 @@ impl PowerOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Option<Self> {
-        let result = crate::inference::infer_elementwise(
-            ctx,
-            "power",
-            &[lhs.get_type(ctx), rhs.get_type(ctx)],
-        )
-        .ok()?;
-        Some(Self::new(ctx, lhs, rhs, result))
+    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(
+                ctx,
+                "power",
+                &[lhs.get_type(ctx), rhs.get_type(ctx)],
+            ),
+            "stablehlo.power",
+        )?;
+        Ok(Self::new(ctx, lhs, rhs, result))
     }
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -1428,14 +1499,16 @@ impl RemainderOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Option<Self> {
-        let result = crate::inference::infer_elementwise(
-            ctx,
-            "remainder",
-            &[lhs.get_type(ctx), rhs.get_type(ctx)],
-        )
-        .ok()?;
-        Some(Self::new(ctx, lhs, rhs, result))
+    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(
+                ctx,
+                "remainder",
+                &[lhs.get_type(ctx), rhs.get_type(ctx)],
+            ),
+            "stablehlo.remainder",
+        )?;
+        Ok(Self::new(ctx, lhs, rhs, result))
     }
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -1467,14 +1540,16 @@ impl ShiftLeftOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Option<Self> {
-        let result = crate::inference::infer_elementwise(
-            ctx,
-            "shift_left",
-            &[lhs.get_type(ctx), rhs.get_type(ctx)],
-        )
-        .ok()?;
-        Some(Self::new(ctx, lhs, rhs, result))
+    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(
+                ctx,
+                "shift_left",
+                &[lhs.get_type(ctx), rhs.get_type(ctx)],
+            ),
+            "stablehlo.shift_left",
+        )?;
+        Ok(Self::new(ctx, lhs, rhs, result))
     }
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -1506,14 +1581,16 @@ impl ShiftRightArithmeticOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Option<Self> {
-        let result = crate::inference::infer_elementwise(
-            ctx,
-            "shift_right_arithmetic",
-            &[lhs.get_type(ctx), rhs.get_type(ctx)],
-        )
-        .ok()?;
-        Some(Self::new(ctx, lhs, rhs, result))
+    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(
+                ctx,
+                "shift_right_arithmetic",
+                &[lhs.get_type(ctx), rhs.get_type(ctx)],
+            ),
+            "stablehlo.shift_right_arithmetic",
+        )?;
+        Ok(Self::new(ctx, lhs, rhs, result))
     }
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -1545,14 +1622,16 @@ impl ShiftRightLogicalOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Option<Self> {
-        let result = crate::inference::infer_elementwise(
-            ctx,
-            "shift_right_logical",
-            &[lhs.get_type(ctx), rhs.get_type(ctx)],
-        )
-        .ok()?;
-        Some(Self::new(ctx, lhs, rhs, result))
+    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(
+                ctx,
+                "shift_right_logical",
+                &[lhs.get_type(ctx), rhs.get_type(ctx)],
+            ),
+            "stablehlo.shift_right_logical",
+        )?;
+        Ok(Self::new(ctx, lhs, rhs, result))
     }
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -1584,14 +1663,16 @@ impl SubtractOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Option<Self> {
-        let result = crate::inference::infer_elementwise(
-            ctx,
-            "subtract",
-            &[lhs.get_type(ctx), rhs.get_type(ctx)],
-        )
-        .ok()?;
-        Some(Self::new(ctx, lhs, rhs, result))
+    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(
+                ctx,
+                "subtract",
+                &[lhs.get_type(ctx), rhs.get_type(ctx)],
+            ),
+            "stablehlo.subtract",
+        )?;
+        Ok(Self::new(ctx, lhs, rhs, result))
     }
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -1623,14 +1704,16 @@ impl AndOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Option<Self> {
-        let result = crate::inference::infer_elementwise(
-            ctx,
-            "and",
-            &[lhs.get_type(ctx), rhs.get_type(ctx)],
-        )
-        .ok()?;
-        Some(Self::new(ctx, lhs, rhs, result))
+    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(
+                ctx,
+                "and",
+                &[lhs.get_type(ctx), rhs.get_type(ctx)],
+            ),
+            "stablehlo.and",
+        )?;
+        Ok(Self::new(ctx, lhs, rhs, result))
     }
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -1662,11 +1745,12 @@ impl OrOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_elementwise(ctx, "or", &[lhs.get_type(ctx), rhs.get_type(ctx)])
-                .ok()?;
-        Some(Self::new(ctx, lhs, rhs, result))
+    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "or", &[lhs.get_type(ctx), rhs.get_type(ctx)]),
+            "stablehlo.or",
+        )?;
+        Ok(Self::new(ctx, lhs, rhs, result))
     }
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -1698,14 +1782,16 @@ impl XorOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Option<Self> {
-        let result = crate::inference::infer_elementwise(
-            ctx,
-            "xor",
-            &[lhs.get_type(ctx), rhs.get_type(ctx)],
-        )
-        .ok()?;
-        Some(Self::new(ctx, lhs, rhs, result))
+    pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(
+                ctx,
+                "xor",
+                &[lhs.get_type(ctx), rhs.get_type(ctx)],
+            ),
+            "stablehlo.xor",
+        )?;
+        Ok(Self::new(ctx, lhs, rhs, result))
     }
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
@@ -1740,12 +1826,13 @@ impl BitcastConvertOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value, to: ElementType) -> Option<Self> {
+    pub fn new_inferred(ctx: &mut Context, input: Value, to: ElementType) -> Result<Self> {
         let template = TensorType::scalar(ctx, to);
-        let result =
-            crate::inference::infer_bitcast_convert_type(ctx, input.get_type(ctx), template)
-                .ok()?;
-        Some(Self::new(ctx, input, result))
+        let result = crate::ops::builder_result(
+            crate::inference::infer_bitcast_convert_type(ctx, input.get_type(ctx), template),
+            "stablehlo.bitcast_convert",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
 }
 impl Verify for BitcastConvertOp {
@@ -1836,14 +1923,16 @@ impl UniformQuantizeOp {
         ctx: &mut Context,
         input: Value,
         result_template: TypeHandle,
-    ) -> Option<Self> {
-        let result = crate::inference::infer_uniform_quantize_type(
-            ctx,
-            input.get_type(ctx),
-            result_template,
-        )
-        .ok()?;
-        Some(Self::new(ctx, input, result))
+    ) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_uniform_quantize_type(
+                ctx,
+                input.get_type(ctx),
+                result_template,
+            ),
+            "stablehlo.uniform_quantize",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
 }
 impl Verify for UniformQuantizeOp {
@@ -1872,10 +1961,12 @@ impl UniformDequantizeOp {
         }
     }
     #[inline]
-    pub fn new_inferred(ctx: &mut Context, input: Value) -> Option<Self> {
-        let result =
-            crate::inference::infer_uniform_dequantize_type(ctx, input.get_type(ctx)).ok()?;
-        Some(Self::new(ctx, input, result))
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_uniform_dequantize_type(ctx, input.get_type(ctx)),
+            "stablehlo.uniform_dequantize",
+        )?;
+        Ok(Self::new(ctx, input, result))
     }
 }
 impl Verify for UniformDequantizeOp {

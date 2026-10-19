@@ -181,21 +181,18 @@ fn custom_call_checks_api_version_and_alias_paths() {
 fn module_fast_resolves_function_symbols_and_call_signatures() {
     let mut ctx = Context::new();
     let module = ModuleOp::new(&mut ctx);
-    let module_region = module.region(&ctx);
-    let body = add_block(&mut ctx, module_region, vec![]);
+    let body = module.body_block(&ctx).expect("module has a body block");
     let ty = tensor(&ctx, &[2], ElementType::F32);
     let sig = FunctionType::intern(&ctx, vec![ty], vec![ty]);
-    let callee = FuncOp::named(&mut ctx, "callee".into(), sig);
-    let callee_region = callee.region(&ctx);
-    let callee_block = add_block(&mut ctx, callee_region, vec![ty]);
-    let arg = callee_block.deref(&ctx).get_argument(0);
+    let callee = FuncOp::new(&mut ctx, "callee".into(), sig).expect("valid callee");
+    let callee_block = callee.entry_block(&ctx).expect("callee entry block");
+    let arg = callee.argument(&ctx, 0).expect("callee argument");
     ReturnOp::new(&mut ctx, arg)
         .get_operation()
         .insert_at_back(callee_block, &ctx);
     callee.get_operation().insert_at_back(body, &ctx);
-    let caller = FuncOp::named(&mut ctx, "caller".into(), sig);
-    let caller_region = caller.region(&ctx);
-    let caller_block = add_block(&mut ctx, caller_region, vec![ty]);
+    let caller = FuncOp::new(&mut ctx, "caller".into(), sig).expect("valid caller");
+    let caller_block = caller.entry_block(&ctx).expect("caller entry block");
     let constant = ConstantOp::new(&mut ctx, ty, vec![0], true);
     let value = constant.get_operation().deref(&ctx).get_result(0);
     constant.get_operation().insert_at_back(caller_block, &ctx);
@@ -207,9 +204,8 @@ fn module_fast_resolves_function_symbols_and_call_signatures() {
         .insert_at_back(caller_block, &ctx);
     caller.get_operation().insert_at_back(body, &ctx);
     assert!(verify_module_fast(&ctx, module.get_operation()).is_ok());
-    let unresolved = FuncOp::new(&mut ctx);
-    let unresolved_region = unresolved.region(&ctx);
-    let b = add_block(&mut ctx, unresolved_region, vec![]);
+    let unresolved = FuncOp::new(&mut ctx, "unresolved".into(), sig).expect("valid function");
+    let b = unresolved.entry_block(&ctx).expect("function entry block");
     let call = CallOp::new(&mut ctx, "missing".into(), vec![], vec![]);
     call.get_operation().insert_at_back(b, &ctx);
     unresolved.get_operation().insert_at_back(body, &ctx);

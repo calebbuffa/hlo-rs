@@ -1,37 +1,82 @@
 # stablehlo
 
-`stablehlo` is a StableHLO dialect for [pliron](https://crates.io/crates/pliron).
+`stablehlo` StableHLO dialect for [pliron](https://crates.io/crates/pliron).
 
-## Example
+## Example: `((x + y) * 2.0).exp()`
 
-Build and verify an elementwise addition:
+This builds a rank-1 `tensor<4xf32>` function, checks each operation, and verifies the complete module:
 
 ```rust
+use pliron::{
+    common_traits::Verify,
+    context::Context,
+    op::Op,
+    r#type::Typed,
+};
 use stablehlo::{
-    ops::{AddOp, ConstantOp},
-    pliron::{common_traits::Verify, context::Context, op::Op, r#type::Typed},
-    types::{tensor, ElementType},
+    ops::{AddOp, ConstantOp, ExponentialOp, FuncOp, ModuleOp, MultiplyOp, ReturnOp},
+    types::{function_type, tensor, ElementType},
+    verification::verify_module_fast,
 };
 
-let mut context = Context::default();
-let ty = tensor(&context, &[4], ElementType::F32);
-let lhs = ConstantOp::new(&mut context, ty, vec![0x3f80_0000], true);
-let rhs = ConstantOp::new(&mut context, ty, vec![0x4000_0000], true);
-let lhs = lhs.get_operation().deref(&context).get_result(0);
-let rhs = rhs.get_operation().deref(&context).get_result(0);
-let sum = AddOp::new_inferred(&mut context, lhs, rhs).expect("compatible operands");
-sum.verify(&context).expect("valid addition");
+let mut context = Context::new();
+let module = ModuleOp::new(&mut context);
+let tensor_type = tensor(&context, &[4], ElementType::F32);
+let signature = function_type(&context, vec![tensor_type, tensor_type], vec![tensor_type]);
+let function = FuncOp::new(&mut context, "pipeline".into(), signature)
+    .expect("valid StableHLO function signature");
+let block = function.entry_block(&context).expect("function has an entry block");
+let arguments = function.arguments(&context);
+let x = arguments[0];
+let y = arguments[1];
+
+let add = AddOp::new_inferred(&mut context, x, y).expect("matching tensor shapes");
+let sum = add.get_operation().deref(&context).get_result(0);
+add.verify(&context).expect("valid addition");
+add.get_operation().insert_at_back(block, &context);
+
+let two = ConstantOp::new(
+    &mut context,
+    tensor_type,
+    vec![2.0f32.to_bits() as u64],
+    true,
+);
+let two_value = two.get_operation().deref(&context).get_result(0);
+two.verify(&context).expect("valid splat constant");
+two.get_operation().insert_at_back(block, &context);
+
+let multiply = MultiplyOp::new_inferred(&mut context, sum, two_value)
+    .expect("matching tensor shapes");
+let product = multiply.get_operation().deref(&context).get_result(0);
+multiply.verify(&context).expect("valid multiplication");
+multiply.get_operation().insert_at_back(block, &context);
+
+let exponential = ExponentialOp::new_inferred(&mut context, product)
+    .expect("valid exponential input");
+let result = exponential.get_operation().deref(&context).get_result(0);
+exponential.verify(&context).expect("valid exponential");
+exponential.get_operation().insert_at_back(block, &context);
+
+let ret = ReturnOp::new(&mut context, result);
+ret.verify(&context).expect("valid return");
+ret.get_operation().insert_at_back(block, &context);
+function
+    .get_operation()
+    .insert_at_back(module.body_block(&context).expect("module has a body block"), &context);
+verify_module_fast(&context, module.get_operation()).expect("valid StableHLO module");
 ```
 
-The crate re-exports pliron at `stablehlo::pliron` so downstream code can use the matching IR APIs without a second direct dependency declaration.
+## Public modules
 
-## Coverage
+- `attributes`: typed StableHLO and builtin metadata, affine expressions, mesh and dimension-number attributes.
+- `inference`: checked output-type inference grouped by compute, control, elementwise, and shape operations.
+- `integer`: arbitrary-width integer values and conversions.
+- `ops`: all 118 StableHLO operation wrappers, including constants, control flow, collectives, indexing, reductions, tensor, shape, and compute operations.
+- `sparse`: sparse encodings and sparse element values.
+- `types`: StableHLO element and shaped types, function, tuple, token, buffer and quantized types.
+- `verification`: local operation checks and `verify_module_fast` for graph, symbol, region, SSA-dominance, and signature validation.
 
-All 118 StableHLO operations are implemented under `ops`, grouped by constants, control flow, elementwise, indexing, reductions, collectives, tensor, shape, and compute operations. The `inference` module provides checked result-type inference. `verification` contains the fast module verifier and operation-family verification.
-
-The `types` module includes named and arbitrary-width integer and floating-point formats, complex elements, ranked and unranked tensors, vectors, tuple/function/token types, buffers, and quantization types. The `attributes` and `sparse` modules provide typed StableHLO metadata, affine expressions, dense and sparse element values, layouts, and sparse tensor encodings. Integer payloads retain exact bit patterns.
-
-Types are interned in a pliron context. Use `TensorType::get` for native element handles or `tensor` for a convenience constructor. Operation builders accept explicit result types or provide checked inference constructors. Builders do not replace verification: verify operations or call `verification::verify_module_fast` before using a complete module.
+The public fallible boundary uses `pliron::result::Result` and `pliron::result::Error`. StableHLO failures carry a downcastable `stablehlo::Diagnostic` payload with recovery category and structured context. Inference-based operation builders return this result rather than discarding errors.
 
 ## License
 

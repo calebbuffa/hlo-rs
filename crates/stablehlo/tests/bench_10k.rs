@@ -1,14 +1,18 @@
-use pliron::{basic_block::BasicBlock, context::Context, op::Op, operation::Operation};
+use pliron::{context::Context, op::Op, operation::Operation};
 use stablehlo::{ops::*, types::*, verification::verify_module_fast};
 use std::time::Instant;
 
 #[test]
 fn bench_10k() {
     let mut ctx = Context::default();
-    let module = FuncOp::new(&mut ctx);
-    let region = module.region(&ctx);
-    let block = BasicBlock::new(&mut ctx, None, vec![]);
-    block.insert_at_back(region, &ctx);
+    let module = ModuleOp::new(&mut ctx);
+    let tensor_ty = tensor(&ctx, &[4], ElementType::F32);
+    let signature = function_type(&ctx, vec![], vec![tensor_ty]);
+    let function = FuncOp::new(&mut ctx, "bench".into(), signature).unwrap();
+    let block = function.entry_block(&ctx).unwrap();
+    function
+        .get_operation()
+        .insert_at_back(module.body_block(&ctx).unwrap(), &ctx);
     let scalar_ty = tensor(&ctx, &[], ElementType::F32);
 
     let scalar = ConstantOp::new(&mut ctx, scalar_ty, vec![0], true);
@@ -18,7 +22,6 @@ fn bench_10k() {
     let mut current = broadcast.get_operation().deref(&ctx).get_result(0);
     broadcast.get_operation().insert_at_back(block, &ctx);
 
-    let tensor_ty = tensor(&ctx, &[4], ElementType::F32);
     let mut arithmetic = Vec::with_capacity(10_000);
     let started = Instant::now();
     let build_start = started;

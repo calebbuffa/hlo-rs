@@ -172,6 +172,14 @@ pub enum Diagnostic {
     TensorRankMismatch,
     #[error("cycle detected in {graph}")]
     CycleDetected { graph: &'static str },
+    #[error("failed to build {operation} at {location}: {source}")]
+    BuilderFailure {
+        operation: &'static str,
+        location: String,
+        category: RecoveryCategory,
+        #[source]
+        source: Box<dyn StdError + Send + Sync>,
+    },
     #[error("{context}: {source}")]
     Source {
         category: RecoveryCategory,
@@ -191,7 +199,7 @@ impl Diagnostic {
         match self {
             Self::UnsupportedType => RecoveryCategory::Unsupported,
             Self::Overflow | Self::MeshTooLarge => RecoveryCategory::Unsupported,
-            Self::Source { category, .. } => *category,
+            Self::Source { category, .. } | Self::BuilderFailure { category, .. } => *category,
             Self::InternalInvariant { .. } => RecoveryCategory::InternalInvariant,
             _ => RecoveryCategory::InvalidInput,
         }
@@ -205,5 +213,25 @@ impl From<Diagnostic> for pliron::result::Error {
             RecoveryCategory::Unsupported => pliron::input_error_noloc!(diagnostic),
             RecoveryCategory::InternalInvariant => pliron::verify_error_noloc!(diagnostic),
         }
+    }
+}
+
+impl Diagnostic {
+    pub(crate) fn builder_failure(
+        operation: &'static str,
+        error: pliron::result::Error,
+    ) -> pliron::result::Error {
+        let category = error
+            .err
+            .downcast_ref::<Self>()
+            .map_or(RecoveryCategory::InvalidInput, Self::recovery_category);
+        let location = format!("{:?}", error.loc);
+        Self::BuilderFailure {
+            operation,
+            location,
+            category,
+            source: Box::new(error),
+        }
+        .into()
     }
 }
