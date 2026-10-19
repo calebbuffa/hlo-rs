@@ -1,76 +1,38 @@
 # stablehlo
 
-Typed Rust IR, verification, shape inference, text assembly and MLIR bytecode
-for [StableHLO](https://github.com/openxla/stablehlo).
-No optimizer, backend lowering, execution runtime or C++/MLIR dependency.
+`stablehlo` is a StableHLO dialect for [pliron](https://crates.io/crates/pliron).
 
-**Experimental: not yet a conformant StableHLO release.** The target is
-StableHLO **1.22.0**. See [conformance status](docs/CONFORMANCE.md) for evidence,
-known differences and release blockers.
+## Example
 
-## Use
-
-Requires Rust 1.95 or newer. From another package in this repository:
-
-```toml
-[dependencies]
-stablehlo = { path = "../stablehlo" }
-```
-
-Parse and verify a module using the same IR used by programmatic construction:
+Build and verify an elementwise addition:
 
 ```rust
-use stablehlo::text::{parse_module, print_module};
+use stablehlo::{
+    ops::{AddOp, ConstantOp},
+    pliron::{common_traits::Verify, context::Context, op::Op, r#type::Typed},
+    types::{tensor, ElementType},
+};
 
-let module = parse_module(r#"
-    module {
-        func.func @add(%lhs: tensor<2xf32>, %rhs: tensor<2xf32>) -> tensor<2xf32> {
-            %sum = stablehlo.add %lhs, %rhs : tensor<2xf32>
-            return %sum : tensor<2xf32>
-        }
-    }
-"#)?;
-let assembly = print_module(&module)?;
-# Ok::<(), stablehlo::text::TextError>(())
+let mut context = Context::default();
+let ty = tensor(&context, &[4], ElementType::F32);
+let lhs = ConstantOp::new(&mut context, ty, vec![0x3f80_0000], true);
+let rhs = ConstantOp::new(&mut context, ty, vec![0x4000_0000], true);
+let lhs = lhs.get_operation().deref(&context).get_result(0);
+let rhs = rhs.get_operation().deref(&context).get_result(0);
+let sum = AddOp::new_inferred(&mut context, lhs, rhs).expect("compatible operands");
+sum.verify(&context).expect("valid addition");
 ```
 
-Parsing verifies the module; printing normalizes it to generic MLIR assembly.
-Unsupported syntax or encodings return errors rather than dropping metadata.
+The crate re-exports pliron at `stablehlo::pliron` so downstream code can use the matching IR APIs without a second direct dependency declaration.
 
-## Capabilities and limits
+## Coverage
 
-| Area         | Available                                                                                                 |
-| ------------ | --------------------------------------------------------------------------------------------------------- |
-| IR           | Typed multi-result SSA, functions, calls, regions, tuples, tokens and source locations                    |
-| Verification | Schemas for all 118 operation identities and many operation-specific shape/type constraints               |
-| Inference    | Shared shape, bound and element inference used by the verifier                                            |
-| Assembly     | Generic and custom StableHLO parsing; generic printing; aliases, quantization, affine and sparse metadata |
-| Bytecode     | Rust reading/writing at MLIR format versions 0-6, including supported native dialect payloads             |
+All 118 StableHLO operations are implemented under `ops`, grouped by constants, control flow, elementwise, indexing, reductions, collectives, tensor, shape, and compute operations. The `inference` module provides checked result-type inference. `verification` contains the fast module verifier and operation-family verification.
 
-Operation-name coverage is **not** complete constraint coverage. General MLIR
-interchange remains partial. VHLO conversion and portable-artifact
-serialization/deserialization are not implemented; discovering an artifact's
-version does not validate its body. Some user-controlled traversals still need
-conversion to explicit stacks.
+The `types` module includes named and arbitrary-width integer and floating-point formats, complex elements, ranked and unranked tensors, vectors, tuple/function/token types, buffers, and quantization types. The `attributes` and `sparse` modules provide typed StableHLO metadata, affine expressions, dense and sparse element values, layouts, and sparse tensor encodings. Integer payloads retain exact bit patterns.
 
-The library uses the pure-Rust `rustc_apfloat` dependency. Native validators
-and Python execution adapters are optional test tools, never library dependencies.
-
-## Development
-
-From the `hlo-rs` workspace root:
-
-```powershell
-cargo test -p stablehlo --locked
-cargo clippy -p stablehlo --all-targets --locked -- -D warnings
-cargo doc -p stablehlo --no-deps
-```
-
-Ordinary tests need no upstream checkout or native tools.
-[Conformance audits](docs/CONFORMANCE.md#reproducing-the-audits) use exact pinned
-sources under `extern`; [native validator setup](tests/upstream/native/README.md)
-documents the optional build.
+Types are interned in a pliron context. Use `TensorType::get` for native element handles or `tensor` for a convenience constructor. Operation builders accept explicit result types or provide checked inference constructors. Builders do not replace verification: verify operations or call `verification::verify_module_fast` before using a complete module.
 
 ## License
 
-Apache-2.0 or MIT.
+See the workspace license file.

@@ -1,43 +1,42 @@
-use std::fmt;
+//! Recoverable dialect errors. Framework traits retain pliron's error boundary.
 
-pub type Result<T> = std::result::Result<T, Error>;
-
-/// A recoverable error, with a stable category and contextual explanation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Error {
-    pub category: &'static str,
-    pub message: String,
-    pub offset: Option<usize>,
+/// Typed details carried by [`pliron::result::Error::err`].
+///
+/// Public fallible APIs use [`pliron::result::Result`]. Inspect this payload with
+/// `error.err.downcast_ref::<Diagnostic>()` rather than matching diagnostic text.
+/// The framework envelope retains its category, source location and backtrace.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum Diagnostic {
+    /// The opcode spelling is not part of the supported catalog.
+    #[error("unknown HLO opcode {name:?}; use an opcode from Opcode::ALL")]
+    UnknownOpcode { name: String },
+    /// An axis is negative or outside the shape's rank.
+    #[error("axis {axis} is outside the valid range 0..{rank}")]
+    InvalidAxis { axis: i64, rank: usize },
+    /// A symbolic computation reference cannot be resolved in its module.
+    #[error("computation {name:?} does not exist; declare it in the module")]
+    UnknownComputation { name: String },
+    /// A shape, layout, literal, or primitive type violates its contract.
+    #[error("invalid HLO shape or value: {message}")]
+    InvalidShape { message: String },
+    /// An instruction attribute is absent, ill-typed, or inconsistent.
+    #[error("invalid HLO attribute {attribute}: {message}")]
+    InvalidAttribute {
+        attribute: &'static str,
+        message: String,
+    },
+    /// Operand types or geometry do not admit the requested instruction.
+    #[error("HLO inference failed: {message}")]
+    Inference { message: String },
+    /// An operation or graph violates an HLO verification rule.
+    #[error("invalid HLO IR: {message}")]
+    Verification { message: String },
+    /// Context identifying the instruction at which verification failed.
+    #[error("while verifying {operation}: {source}")]
+    Operation {
+        operation: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
 }
-
-impl Error {
-    pub fn new(category: &'static str, message: impl Into<String>) -> Self {
-        Self {
-            category,
-            message: message.into(),
-            offset: None,
-        }
-    }
-
-    pub(crate) fn at(mut self, offset: usize) -> Self {
-        self.offset = Some(offset);
-        self
-    }
-
-    pub(crate) fn context(mut self, context: impl fmt::Display) -> Self {
-        self.message = format!("{context}: {}", self.message);
-        self
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.category, self.message)?;
-        if let Some(offset) = self.offset {
-            write!(f, " at byte {offset}")?;
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for Error {}

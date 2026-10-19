@@ -1,51 +1,146 @@
+//! Linear block verification. HLO regions are isolated and single-block:
+//! indexing definitions once replaces pliron's pairwise dominance searches.
 use crate::{
-    Error, InstructionId, Literal, Module, Opcode, PrimitiveType, Result, Shape,
-    inference::{
-        infer_binary, infer_dynamic_slice, infer_dynamic_update_slice, infer_reverse, infer_slice,
-        infer_transpose, infer_unary,
-    },
-    proto::hlo::HloInstructionProto,
+    Diagnostic,
+    attributes::Callees,
+    inference::Signature,
+    opcode::Opcode::{self, *},
+    ops::{ComputationOp, HloOpInterface, ReturnOp, control::ParameterOp},
+    types::{TupleType, is_hlo_type},
+};
+use pliron::{
+    attribute::Attribute,
+    basic_block::BasicBlock,
+    builtin::{ops::ModuleOp, type_interfaces::FunctionTypeInterface, types::FunctionType},
+    common_traits::Verify,
+    context::{Context, Ptr},
+    linked_list::ContainsLinkedList,
+    location::Located,
+    op::Op,
+    operation::Operation,
+    region::Region,
+    result::Result,
+    r#type::{TypeHandle, Typed},
+    value::DefiningEntity,
+};
+use std::{
+    cell::Ref,
+    collections::{HashMap, HashSet},
 };
 
-pub(crate) mod asynchronous;
 mod buffers;
-mod callable;
-mod channels;
-pub(crate) mod collective;
-mod dot;
-pub use collective::CollectiveContext;
-mod deadlocks;
+pub(crate) mod control;
+pub(crate) mod elementwise;
 mod layout;
 mod metadata;
+pub(crate) mod movement;
+pub(crate) mod numerical;
 mod sharding;
-pub use sharding::ShardingContext;
 
-/// Only options with implemented behavior are exposed. More upstream verifier
-/// policies remain required before full parity.
+pub(crate) fn require(condition: bool, message: &str) -> Result<()> {
+    if !condition {
+        return pliron::verify_err_noloc!(Diagnostic::Verification {
+            message: message.to_owned(),
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn error(message: impl Into<String>) -> pliron::result::Error {
+    pliron::verify_error_noloc!(Diagnostic::Verification {
+        message: message.into(),
+    })
+}
+
+pub(crate) fn instruction_error(
+    ctx: &Context,
+    op: Ptr<Operation>,
+    mut error: pliron::result::Error,
+) -> pliron::result::Error {
+    if error.loc.is_unknown() {
+        error.loc = op.deref(ctx).loc();
+    }
+    let operation = Operation::get_op_dyn(op, ctx).get_opid().to_string();
+    error.err = Box::new(Diagnostic::Operation {
+        operation,
+        source: error.err,
+    });
+    error
+}
+
 #[derive(Clone, Copy, Debug)]
+/// Execution topology used to validate collective group membership.
+pub struct CollectiveContext {
+    /// Number of replicated program instances.
+    pub replica_count: i64,
+    /// Number of partitions per program instance.
+    pub partition_count: i64,
+}
+impl Default for CollectiveContext {
+    fn default() -> Self {
+        Self {
+            replica_count: 1,
+            partition_count: 1,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+/// Contextual policy for validating device assignments.
+pub struct ShardingContext {
+    /// Interpret device numbers as SPMD partition IDs.
+    pub use_spmd_partitioning: bool,
+    /// Validate concrete device IDs against the module topology.
+    pub verify_device_numbers: bool,
+}
+impl Default for ShardingContext {
+    fn default() -> Self {
+        Self {
+            use_spmd_partitioning: false,
+            verify_device_numbers: true,
+        }
+    }
+}
+
+/// Caller-supplied policy for a particular native instruction.
+pub type InstructionPredicate = fn(&Context, Ptr<Operation>) -> bool;
+/// Caller-supplied target allocation size calculation.
+pub type ShapeSize = fn(&Context, TypeHandle) -> Result<i64>;
+
+#[derive(Clone, Copy, Debug)]
+/// Semantic verification policies; defaults retain layout-insensitive HLO rules.
 pub struct VerifyOptions {
+    /// Require operation-specific layout and dynamic-shape consistency.
     pub layout_sensitive: bool,
-    /// Relax floating precision only where the pinned verifier permits it.
+    /// Permit floating-point precision differences where the opcode allows them.
     pub allow_mixed_precision: bool,
-    pub supported_unbounded_dynamic_op: Option<fn(&Module, InstructionId) -> bool>,
-    pub instruction_can_change_layout: Option<fn(&Module, InstructionId) -> bool>,
+    /// Authorize operations that produce unbounded dynamic shapes.
+    pub supported_unbounded_dynamic_op: Option<InstructionPredicate>,
+    /// Decide which instructions may change operand layouts.
+    pub instruction_can_change_layout: Option<InstructionPredicate>,
+    /// Check scheduling metadata against instruction names.
     pub verify_instruction_name_unchanged: bool,
+    /// Reject array layouts in host memory space 5.
     pub verify_no_host_memory_space: bool,
+    /// Require reshape operations to preserve physical element order.
     pub verify_reshape_is_bitcast: bool,
-    /// Permit different target allocation sizes for static bitcasts whose
-    /// outer-tile data sizes agree, excluding trailing padding.
+    /// Enable operation-specific bitcast size relaxation.
     pub allow_bitcast_to_have_different_size: bool,
-    pub shape_size: Option<fn(&Shape) -> Result<i64>>,
+    /// Override target allocation sizes for strict alias/bitcast checks.
+    pub shape_size: Option<ShapeSize>,
+    /// Require nested to-apply computations to use the caller's thread.
     pub verify_call_nested_computation_thread_name: bool,
+    /// Require broadcast dimensions to be strictly increasing.
     pub verify_broadcast_dimensions_order: bool,
+    /// Check communication ordering for collective/channel deadlocks.
     pub check_for_collective_deadlocks: bool,
-    /// Check explicit collective group membership, participant counts, and
-    /// uniformity where required, as in the pinned verifier.
+    /// Validate replica-group membership in addition to collective geometry.
     pub check_replica_groups: bool,
+    /// Replica/partition topology when not overridden by module configuration.
     pub collective_context: CollectiveContext,
+    /// Device-number and SPMD policy for contextual sharding checks.
     pub sharding_context: ShardingContext,
-    /// Use the supplied compatibility contexts instead of nondefault owned
-    /// module configuration. By default, owned counts/SPMD mode take precedence.
+    /// Use caller topology rather than the module's non-default configuration.
     pub ignore_module_config: bool,
 }
 
@@ -73,18 +168,178 @@ impl Default for VerifyOptions {
 }
 
 impl VerifyOptions {
-    fn size_of(self, shape: &Shape) -> Result<i64> {
+    pub(crate) fn size_of(self, ctx: &Context, shape: TypeHandle) -> Result<i64> {
         match self.shape_size {
-            Some(size) => size(shape),
-            None if has_unbounded(shape.as_proto()) => Ok(crate::UNBOUNDED_SIZE),
-            None => shape.byte_size(-1),
+            Some(size) => size(ctx, shape),
+            None if crate::shape::Shape::has_unbounded(ctx, shape) => Ok(i64::MIN),
+            None => crate::shape::Shape::byte_size(ctx, shape, -1),
+        }
+    }
+
+    pub(crate) fn same_shapes(self, ctx: &Context, left: TypeHandle, right: TypeHandle) -> bool {
+        if self.layout_sensitive {
+            crate::shape::Shape::equal_including_layout(ctx, left, right)
+        } else {
+            same(ctx, left, right)
         }
     }
 }
 
-impl Module {
-    pub fn verify(&self, mut options: VerifyOptions) -> Result<()> {
-        let config = self.config();
+pub(crate) fn optional_attr<'a, T: Attribute>(
+    ctx: &'a Context,
+    op: Ptr<Operation>,
+    name: &'static str,
+) -> Result<Option<Ref<'a, T>>> {
+    let data = op.deref(ctx);
+    if data.attributes.0.is_empty() {
+        return Ok(None);
+    }
+    let key = pliron::identifier::Identifier::new(name);
+    if !data.attributes.0.contains_key(&key) {
+        return Ok(None);
+    }
+    Ref::filter_map(data, |data| data.attributes.get::<T>(&key))
+        .map(Some)
+        .map_err(|_| {
+            pliron::verify_error_noloc!(Diagnostic::InvalidAttribute {
+                attribute: name,
+                message: format!("expected attribute type {}", std::any::type_name::<T>()),
+            })
+        })
+}
+
+pub(crate) fn same(ctx: &Context, lhs: TypeHandle, rhs: TypeHandle) -> bool {
+    lhs == rhs || crate::shape::Shape::compatible(ctx, lhs, rhs)
+}
+
+pub(crate) fn instruction_types(
+    ctx: &Context,
+    op: Ptr<Operation>,
+    opcode: Opcode,
+) -> Result<(Vec<TypeHandle>, TypeHandle)> {
+    let data = op.deref(ctx);
+    if data.get_num_results() != 1 || data.num_regions() != 0 || data.get_num_successors() != 0 {
+        return Err(error(format!(
+            "{} requires one result, no regions and no successors; got {} results, {} regions and {} successors",
+            opcode.name(),
+            data.get_num_results(),
+            data.num_regions(),
+            data.get_num_successors(),
+        )));
+    }
+    if let Some(arity) = opcode.arity()
+        && data.get_num_operands() != arity
+    {
+        return Err(error(format!(
+            "{} operand arity mismatch: expected {arity}, got {}",
+            opcode.name(),
+            data.get_num_operands(),
+        )));
+    }
+    let result = data.get_type(0);
+    require(is_hlo_type(ctx, result), "result must be an HLO type")?;
+    let operands: Vec<_> = data.operand_types(ctx).collect();
+    require(
+        operands.iter().all(|&ty| is_hlo_type(ctx, ty)),
+        "operands must be HLO types",
+    )?;
+    Ok((operands, result))
+}
+
+fn single_block(ctx: &Context, region: Ptr<Region>) -> Result<Ptr<BasicBlock>> {
+    let data = region.deref(ctx);
+    let mut blocks = data.iter(ctx);
+    let block = blocks.next().ok_or_else(|| error("region is empty"))?;
+    require(blocks.next().is_none(), "HLO regions must have one block")?;
+    Ok(block)
+}
+
+fn signature(ctx: &Context, computation: &ComputationOp) -> Result<Signature> {
+    let signature = computation
+        .get_attr_hlo_computation_signature(ctx)
+        .ok_or_else(|| error("missing computation signature"))?
+        .get_type(ctx);
+    let ty = signature.deref(ctx);
+    let function = ty
+        .downcast_ref::<FunctionType>()
+        .ok_or_else(|| error("signature must be builtin.function"))?;
+    let (args, results) = (function.arg_types(), function.res_types());
+    require(
+        results.len() == 1 && args.iter().chain(&results).all(|&ty| is_hlo_type(ctx, ty)),
+        "HLO signature needs HLO argument types and one result",
+    )?;
+    Ok((args, results[0]))
+}
+
+fn returned(ctx: &Context, block: Ptr<BasicBlock>) -> Result<TypeHandle> {
+    let term = block
+        .deref(ctx)
+        .get_terminator(ctx)
+        .ok_or_else(|| error("missing return"))?;
+    require(
+        Operation::is_op::<ReturnOp>(term, ctx),
+        "HLO block must end with hlo.return",
+    )?;
+    Operation::get_op::<ReturnOp>(term, ctx)
+        .ok_or_else(|| error("computation terminator must be hlo.return"))?
+        .verify(ctx)?;
+    Ok(term.deref(ctx).get_operand(0).get_type(ctx))
+}
+
+pub(crate) fn computation(ctx: &Context, computation: &ComputationOp) -> Result<()> {
+    let (_, result) = signature(ctx, computation)?;
+    computation_structure(ctx, computation, result)
+}
+
+fn computation_structure(
+    ctx: &Context,
+    computation: &ComputationOp,
+    result: TypeHandle,
+) -> Result<()> {
+    let op = computation.get_operation().deref(ctx);
+    require(
+        op.get_num_operands() == 0
+            && op.get_num_results() == 0
+            && op.num_regions() == 1
+            && op.get_num_successors() == 0,
+        "invalid computation structure",
+    )?;
+    require(
+        computation.get_attr_hlo_computation_name(ctx).is_some(),
+        "computation requires symbol name",
+    )?;
+    let block = single_block(ctx, computation.body(ctx))?;
+    require(
+        block.deref(ctx).get_num_arguments() == 0,
+        "computations use parameter ops, not block arguments",
+    )?;
+    require(
+        same(ctx, returned(ctx, block)?, result),
+        "computation return type mismatch",
+    )
+}
+
+/// Verify an entire builtin module (or one self-contained computation).
+/// Expected O(operations + operands + geometry payload), excluding type interning.
+pub fn verify(ctx: &Context, root: Ptr<Operation>) -> Result<()> {
+    verify_with_options(ctx, root, VerifyOptions::default())
+}
+
+/// Verify a builtin module or self-contained computation under explicit policies.
+///
+/// Module configuration may override topology unless `ignore_module_config` is
+/// enabled. Missing callees, invalid attributes and unsupported IR return errors.
+pub fn verify_with_options(
+    ctx: &Context,
+    root: Ptr<Operation>,
+    mut options: VerifyOptions,
+) -> Result<()> {
+    require(
+        Operation::is_op::<ModuleOp>(root, ctx) || Operation::is_op::<ComputationOp>(root, ctx),
+        "verification root must be builtin.module or hlo.computation",
+    )?;
+    if Operation::is_op::<ModuleOp>(root, ctx) {
+        let config = crate::ir::config(ctx, root)?;
         if !options.ignore_module_config
             && (config.replica_count != 1
                 || config.num_partitions != 1
@@ -96,1425 +351,389 @@ impl Module {
             };
             options.sharding_context.use_spmd_partitioning = config.use_spmd_partitioning;
         }
-        self.verify_schedule()?;
-        asynchronous::verify_pairs(self)?;
-        asynchronous::verify(self, options)?;
-        channels::verify(self)?;
-        collective::verify_module(self)?;
-        callable::verify_ownership(self)?;
-        for computation_id in self.computations() {
-            let computation = self.computation(computation_id)?;
-            let program = self.program_shape(computation_id)?;
-            if let Some(declared) = computation.program_shape.as_ref() {
-                verify_signature(declared, &program)?;
-            }
-            for id in self.instructions(computation_id)? {
-                let instruction = self.instruction(id)?;
-                let opcode: Opcode = instruction.opcode.parse()?;
-                let operands: Vec<_> = self
-                    .operands(id)?
-                    .iter()
-                    .map(|&id| self.shape(id))
-                    .collect::<Result<_>>()?;
-                if opcode.arity().is_some_and(|n| operands.len() != n) {
-                    return Err(Error::new(
-                        "arity",
-                        format!("{}: wrong operand count for {opcode}", instruction.name),
-                    ));
-                }
-                let declared = self.shape(id)?;
-                let layout_shape = if declared.element_type() == PrimitiveType::BUFFER {
-                    declared.array_view()?
-                } else {
-                    declared.clone()
-                };
-                if options.layout_sensitive
-                    && layout_shape
-                        .layout()
-                        .is_some_and(|l| l.minor_to_major.len() != layout_shape.dimensions().len())
-                {
-                    return Err(Error::new("layout","layout-sensitive verification requires minor-to-major rank to match shape rank").context(&instruction.name));
-                }
-                if has_unbounded(declared.as_proto())
-                    && !options
-                        .supported_unbounded_dynamic_op
-                        .is_some_and(|supported| supported(self, id))
-                {
-                    return Err(Error::new(
-                        "unbounded",
-                        "unbounded dynamism is disabled for this instruction",
-                    ));
-                }
-                if !instruction.called_computation_ids.is_empty()
-                    && !matches!(
-                        opcode,
-                        Opcode::Call
-                            | Opcode::While
-                            | Opcode::Conditional
-                            | Opcode::Map
-                            | Opcode::Reduce
-                            | Opcode::ReduceWindow
-                            | Opcode::Sort
-                            | Opcode::Scatter
-                            | Opcode::SelectAndScatter
-                            | Opcode::Scan
-                            | Opcode::Fusion
-                            | Opcode::CustomCall
-                            | Opcode::AllReduce
-                            | Opcode::AllReduceStart
-                            | Opcode::ReduceScatter
-                            | Opcode::CollectiveReduce
-                            | Opcode::AsyncStart
-                            | Opcode::AsyncUpdate
-                            | Opcode::AsyncDone
-                    )
-                {
-                    return Err(Error::new(
-                        "unsupported",
-                        format!("callee contracts for {opcode}"),
-                    ));
-                }
-                let has_to_apply = matches!(
-                    opcode,
-                    Opcode::AllReduce
-                        | Opcode::AllReduceStart
-                        | Opcode::Call
-                        | Opcode::Map
-                        | Opcode::Reduce
-                        | Opcode::ReduceScatter
-                        | Opcode::CollectiveReduce
-                        | Opcode::ReduceWindow
-                        | Opcode::Scatter
-                        | Opcode::Sort
-                        | Opcode::Scan
-                ) || (opcode == Opcode::CustomCall
-                    && instruction.called_computation_ids.len() == 1);
-                let mut callees = Vec::new();
-                for &wire_id in &instruction.called_computation_ids {
-                    let callee_id = self.computation_handle(wire_id);
-                    if (matches!(opcode, Opcode::While | Opcode::Conditional | Opcode::Fusion)
-                        || (options.verify_call_nested_computation_thread_name && has_to_apply))
-                        && crate::ir::execution_thread(
-                            &self.computation(callee_id)?.execution_thread,
-                        ) != crate::ir::execution_thread(&computation.execution_thread)
-                    {
-                        return Err(Error::new(
-                            "execution-thread",
-                            "callee execution thread differs from caller",
-                        ));
-                    }
-                    callees.push(self.program_shape(callee_id)?);
-                }
-                verify_instruction(
-                    instruction,
-                    opcode,
-                    &declared,
-                    &operands,
-                    &callees,
-                    InstructionContext {
-                        options,
-                        in_fusion: computation.is_fusion_computation,
-                        channel: self.channel_id(id)?,
-                    },
-                )
-                .map_err(|e| e.context(&instruction.name))?;
-                if opcode == Opcode::Bitcast {
-                    layout::verify_bitcast(self, id, options)
-                        .map_err(|e| e.context(&instruction.name))?;
-                }
-                callable::verify_aliases(
-                    self,
-                    computation_id,
-                    instruction,
-                    &declared,
-                    &operands,
-                    options,
-                )
-                .map_err(|e| e.context(&instruction.name))?;
-                metadata::verify_instruction(instruction, &declared, options)
-                    .map_err(|e| e.context(&instruction.name))?;
-                layout::verify_instruction(self, id, options)
-                    .map_err(|e| e.context(&instruction.name))?;
+    }
+    let mut computations = HashMap::new();
+    let mut signatures = HashMap::new();
+    let mut pending = vec![(root, None)];
+    let mut all = Vec::new();
+    while let Some((op, mut owner)) = pending.pop() {
+        if let Some(computation) = Operation::get_op::<ComputationOp>(op, ctx) {
+            require(
+                owner.is_none(),
+                "computation cannot be nested in another computation",
+            )?;
+            owner = Some(op);
+            let name = computation
+                .get_attr_hlo_computation_name(ctx)
+                .ok_or_else(|| error("missing computation name"))?;
+            require(
+                computations.insert(name.as_ref().clone(), op).is_none(),
+                "duplicate computation name",
+            )?;
+            signatures.insert(op, signature(ctx, &computation)?);
+        }
+        all.push((op, owner));
+        let data = op.deref(ctx);
+        if Operation::is_op::<ModuleOp>(op, ctx) {
+            require(
+                op == root,
+                "nested modules are outside HLO pipeline contract",
+            )?;
+        } else {
+            require(owner.is_some(), "module may contain only computations")?;
+        }
+        for region in data.regions() {
+            for block in region.deref(ctx).iter(ctx) {
+                pending.extend(block.deref(ctx).iter(ctx).map(|child| (child, owner)));
             }
         }
-        if let Some(declared) = self.wire.host_program_shape.as_ref() {
-            verify_entry_signature(
-                declared,
-                &self.program_shape(self.entry()?)?,
-                options.layout_sensitive,
+    }
+    let entry = if Operation::is_op::<ModuleOp>(root, ctx) {
+        let entry = crate::ir::entry(ctx, root)?;
+        *computations.get(&entry).ok_or_else(|| {
+            pliron::verify_error_noloc!(Diagnostic::UnknownComputation {
+                name: entry.to_string(),
+            })
+        })?
+    } else {
+        root
+    };
+    let mut checked_types = HashSet::new();
+    let mut instruction_names = HashSet::new();
+    let mut has_buffers = false;
+    let mut has_sharding = false;
+    let mut has_collectives = false;
+    let mut has_communication = false;
+    let mut fusions = Vec::new();
+    let payload_count =
+        optional_attr::<crate::ir::MetadataPayloads>(ctx, root, "hlo_metadata_payloads")?
+            .map_or(0, |payloads| payloads.0.len());
+    let mut calls: HashMap<_, Vec<_>> = signatures.keys().map(|&op| (op, Vec::new())).collect();
+    let hlo_dialect = pliron::identifier::Identifier::new("hlo").into();
+    for &(op, owner) in &all {
+        let dynamic = Operation::get_op_dyn(op, ctx);
+        require(
+            Operation::is_op::<ModuleOp>(op, ctx) || dynamic.get_opid().dialect == hlo_dialect,
+            "non-HLO operation in computation",
+        )?;
+        let data = op.deref(ctx);
+        if !has_sharding && !data.attributes.0.is_empty() {
+            has_sharding = data
+                .attributes
+                .0
+                .contains_key(&pliron::identifier::Identifier::new("hlo_sharding"))
+                || data
+                    .attributes
+                    .0
+                    .contains_key(&pliron::identifier::Identifier::new("hlo_named_sharding"));
+        }
+        for attribute in data.attributes.0.values() {
+            attribute.verify(ctx)?;
+            attribute.verify_interfaces(ctx)?;
+        }
+        if let Some(name) = optional_attr::<crate::ir::InstructionName>(ctx, op, "hlo_name")? {
+            require(
+                !name.0.is_empty() && instruction_names.insert(name.0.clone()),
+                "invalid or duplicate instruction name",
             )?;
         }
-        metadata::verify_aliases_and_donors(self, options)?;
-        sharding::verify(self, options)?;
-        buffers::verify(self, options)?;
-        if options.check_for_collective_deadlocks && self.as_proto().schedule.is_some() {
-            deadlocks::verify(self)?;
+        for ty in data.result_types() {
+            verify_type(ctx, ty, &mut checked_types, &mut has_buffers)?;
         }
-        Ok(())
-    }
-
-    /// Check instruction ordering and coverage for every live nonfusion
-    /// computation in each execution thread represented by the schedule.
-    pub fn verify_schedule(&self) -> Result<()> {
-        self.validate_structure()?;
-        if let Some(schedule) = self.wire.schedule.as_ref() {
-            let threads = schedule
-                .sequences
-                .keys()
-                .map(|&id| {
-                    self.computation(self.computation_handle(id))
-                        .map(|c| crate::ir::execution_thread(&c.execution_thread))
-                })
-                .collect::<Result<std::collections::BTreeSet<_>>>()?;
-            let called = self
-                .wire
-                .computations
-                .iter()
-                .flat_map(|c| &c.instructions)
-                .flat_map(|i| i.called_computation_ids.iter().copied())
-                .collect::<std::collections::BTreeSet<_>>();
-            for computation in &self.wire.computations {
-                // Upstream defines dead by zero callers, not entry reachability.
-                let live = computation.id == self.wire.entry_computation_id
-                    || called.contains(&computation.id);
-                if live
-                    && !computation.is_fusion_computation
-                    && threads.contains(crate::ir::execution_thread(&computation.execution_thread))
-                    && !schedule.sequences.contains_key(&computation.id)
-                {
-                    return Err(Error::new(
-                        "schedule",
-                        format!("missing live computation {}", computation.name),
-                    ));
-                }
+        let hlo = pliron::op::op_cast::<dyn HloOpInterface>(dynamic.as_ref());
+        if let Some(hlo) = hlo {
+            if hlo.opcode() == Fusion {
+                fusions.push((op, owner));
+            }
+            has_collectives |= matches!(
+                hlo.opcode(),
+                AllGather
+                    | AllGatherStart
+                    | AllGatherDone
+                    | AllReduce
+                    | AllReduceStart
+                    | AllReduceDone
+                    | AllToAll
+                    | RaggedAllToAll
+                    | CollectiveBroadcast
+                    | CollectivePermute
+                    | CollectivePermuteStart
+                    | CollectivePermuteDone
+                    | CollectiveReduce
+                    | ReduceScatter
+            );
+            has_communication |= matches!(
+                hlo.opcode(),
+                CopyStart
+                    | CopyDone
+                    | AsyncStart
+                    | AsyncUpdate
+                    | AsyncDone
+                    | Send
+                    | SendDone
+                    | Recv
+                    | RecvDone
+                    | Infeed
+                    | Outfeed
+            );
+            hlo.verify_with_options(ctx, options)
+                .map_err(|error| instruction_error(ctx, op, error))?;
+            layout::verify_instruction(ctx, op, hlo.opcode(), options)
+                .map_err(|error| instruction_error(ctx, op, error))?;
+        } else {
+            require(
+                Operation::is_op::<ModuleOp>(op, ctx)
+                    || Operation::is_op::<ComputationOp>(op, ctx)
+                    || Operation::is_op::<ReturnOp>(op, ctx),
+                "unrecognized HLO instruction",
+            )?;
+            if let Some(computation) = Operation::get_op::<ComputationOp>(op, ctx) {
+                computation_structure(ctx, &computation, signatures[&op].1)?;
+            } else {
+                dynamic.verify(ctx)?;
             }
         }
-        Ok(())
-    }
-}
-
-fn has_unbounded(wire: &crate::proto::xla_data::ShapeProto) -> bool {
-    let mut pending = vec![wire];
-    while let Some(shape) = pending.pop() {
-        if shape.logical_dimensions().contains(&crate::UNBOUNDED_SIZE) {
-            return true;
+        // Interface verification is deliberately not generic recursive verify_op.
+        dynamic.verify_interfaces(ctx)?;
+        metadata::verify_instruction(ctx, op, options, payload_count)?;
+        for region in data.regions() {
+            for block in region.deref(ctx).iter(ctx) {
+                for argument in block.deref(ctx).arguments() {
+                    verify_type(
+                        ctx,
+                        argument.get_type(ctx),
+                        &mut checked_types,
+                        &mut has_buffers,
+                    )?;
+                }
+                verify_block(ctx, block)?;
+            }
         }
-        pending.extend(shape.logical_children());
+        if let Some(parameter) = Operation::get_op::<ParameterOp>(op, ctx) {
+            let parent = data
+                .get_parent_op(ctx)
+                .and_then(|p| Operation::get_op::<ComputationOp>(p, ctx))
+                .ok_or_else(|| error("parameter must belong to computation"))?;
+            let (args, _) = &signatures[&parent.get_operation()];
+            let index = parameter
+                .index(ctx)
+                .ok_or_else(|| error("missing parameter index"))?
+                .0 as usize;
+            require(
+                args.get(index)
+                    .is_some_and(|&ty| same(ctx, ty, data.get_type(0))),
+                "parameter index/type differs from signature",
+            )?;
+        }
+        let callees = optional_attr::<Callees>(ctx, op, "hlo_callees")?;
+        let mut resolved = Vec::new();
+        if let Some(callees) = &callees {
+            let opcode = hlo
+                .map(|hlo| hlo.opcode())
+                .ok_or_else(|| error("callee attribute requires an HLO instruction"))?;
+            let caller = owner.ok_or_else(|| error("callee requires a computation owner"))?;
+            let has_to_apply = matches!(
+                opcode,
+                crate::opcode::Opcode::AllReduce
+                    | crate::opcode::Opcode::AllReduceStart
+                    | crate::opcode::Opcode::Call
+                    | crate::opcode::Opcode::Map
+                    | crate::opcode::Opcode::Reduce
+                    | crate::opcode::Opcode::ReduceScatter
+                    | crate::opcode::Opcode::CollectiveReduce
+                    | crate::opcode::Opcode::ReduceWindow
+                    | crate::opcode::Opcode::Scatter
+                    | crate::opcode::Opcode::Sort
+                    | crate::opcode::Opcode::Scan
+            ) || (opcode == crate::opcode::Opcode::CustomCall
+                && callees.0.len() == 1);
+            let same_thread = matches!(
+                opcode,
+                crate::opcode::Opcode::While
+                    | crate::opcode::Opcode::Conditional
+                    | crate::opcode::Opcode::Fusion
+            ) || (options.verify_call_nested_computation_thread_name
+                && has_to_apply);
+            for name in &callees.0 {
+                let callee = computations.get(name).ok_or_else(|| {
+                    pliron::verify_error_noloc!(Diagnostic::UnknownComputation {
+                        name: name.to_string(),
+                    })
+                })?;
+                if same_thread {
+                    require(
+                        metadata::execution_thread(ctx, caller)?
+                            == metadata::execution_thread(ctx, *callee)?,
+                        "callee execution thread differs from caller",
+                    )?;
+                }
+                resolved.push(&signatures[callee]);
+                calls
+                    .get_mut(&caller)
+                    .ok_or_else(|| error("caller is missing from the computation index"))?
+                    .push(*callee);
+            }
+        }
+        if let Some(hlo) = hlo {
+            verify_callees(ctx, op, hlo.opcode(), options, &resolved)
+                .map_err(|error| instruction_error(ctx, op, error))?;
+        }
     }
-    false
-}
-
-fn verify_signature(
-    declared: &crate::proto::xla_data::ProgramShapeProto,
-    actual: &crate::proto::xla_data::ProgramShapeProto,
-) -> Result<()> {
-    if declared.parameters.len() != actual.parameters.len() {
-        return Err(Error::new("signature", "parameter cardinality mismatch"));
+    let mut indegree: HashMap<_, usize> = calls.keys().map(|&op| (op, 0)).collect();
+    for targets in calls.values() {
+        for target in targets {
+            *indegree
+                .get_mut(target)
+                .ok_or_else(|| error("callee is missing from the computation index"))? += 1;
+        }
     }
-    for (a, b) in declared
-        .parameters
+    for (fusion, owner) in fusions {
+        let owner = owner.ok_or_else(|| error("fusion requires a computation owner"))?;
+        let relaxed = owner != entry && indegree[&owner] == 0;
+        control::verify_fusion_aliases(ctx, fusion, options, relaxed)?;
+    }
+    let mut ready: Vec<_> = indegree
         .iter()
-        .zip(&actual.parameters)
-        .chain(declared.result.iter().zip(actual.result.iter()))
-    {
-        if !Shape::from_proto(a.clone())?.compatible(&Shape::from_proto(b.clone())?) {
-            return Err(Error::new("signature", "program signature shape mismatch"));
+        .filter_map(|(&op, &degree)| (degree == 0).then_some(op))
+        .collect();
+    let mut count = 0;
+    while let Some(op) = ready.pop() {
+        count += 1;
+        for target in &calls[&op] {
+            let degree = indegree
+                .get_mut(target)
+                .ok_or_else(|| error("callee is missing from the computation index"))?;
+            *degree = degree
+                .checked_sub(1)
+                .ok_or_else(|| error("inconsistent computation call graph indegree"))?;
+            if *degree == 0 {
+                ready.push(*target);
+            }
         }
     }
-    if declared.result.is_none() {
-        return Err(Error::new("signature", "missing program result"));
+    require(
+        count == calls.len(),
+        "recursive computation calls are forbidden",
+    )?;
+    for (&op, (args, result)) in &signatures {
+        for &ty in args.iter().chain(std::iter::once(result)) {
+            verify_type(ctx, ty, &mut checked_types, &mut has_buffers)?;
+        }
+        let block = single_block(ctx, op.deref(ctx).get_region(0))?;
+        let count = block
+            .deref(ctx)
+            .iter(ctx)
+            .filter(|&op| Operation::is_op::<ParameterOp>(op, ctx))
+            .count();
+        require(
+            count == args.len(),
+            "computation must declare every parameter exactly once",
+        )?;
+    }
+    if Operation::is_op::<ModuleOp>(root, ctx) {
+        metadata::verify_aliases_and_donors(ctx, root, &computations, &signatures, options)?;
+        metadata::verify_schedule(ctx, root, &computations, &calls)?;
+    }
+    require(
+        options.collective_context.partition_count > 0,
+        "partition count must be positive",
+    )?;
+    if has_sharding {
+        sharding::verify(ctx, &all, &computations, options)?;
+    }
+    if has_buffers {
+        buffers::verify(ctx, root, &all, &computations, options)?;
+    }
+    if has_communication || has_collectives {
+        control::asynchronous::verify_graph(ctx, &all, &computations, &signatures, options)?;
+    }
+    if has_collectives {
+        control::collective::verify_module(
+            ctx,
+            &all.iter().map(|(op, _)| *op).collect::<Vec<_>>(),
+        )?;
     }
     Ok(())
 }
 
-fn verify_entry_signature(
-    declared: &crate::proto::xla_data::ProgramShapeProto,
-    actual: &crate::proto::xla_data::ProgramShapeProto,
-    layout_sensitive: bool,
-) -> Result<()> {
-    if !layout_sensitive {
-        return verify_signature(declared, actual);
-    }
-    if declared.parameters.len() != actual.parameters.len() {
-        return Err(Error::new("signature", "parameter cardinality mismatch"));
-    }
-    let declared_result = declared
-        .result
-        .as_ref()
-        .ok_or_else(|| Error::new("signature", "missing program result"))?;
-    let actual_result = actual
-        .result
-        .as_ref()
-        .ok_or_else(|| Error::new("signature", "missing program result"))?;
-    for (declared, actual) in declared
-        .parameters
-        .iter()
-        .zip(&actual.parameters)
-        .chain(std::iter::once((declared_result, actual_result)))
-    {
-        let declared = Shape::from_proto(declared.clone())?;
-        let actual = Shape::from_proto(actual.clone())?;
-        if !same_shapes(
-            &declared,
-            &actual,
-            LayoutComparison::IgnoreEntryLayoutDifferences,
-        ) {
-            return Err(Error::new(
-                "signature",
-                "entry computation layout differs from parameter or result",
-            ));
-        }
-    }
-    Ok(())
-}
-
-struct InstructionContext {
+fn verify_callees(
+    ctx: &Context,
+    op: Ptr<Operation>,
+    opcode: crate::opcode::Opcode,
     options: VerifyOptions,
-    in_fusion: bool,
-    channel: Option<i64>,
+    resolved: &[&Signature],
+) -> Result<()> {
+    match opcode {
+        Reduce | ReduceWindow | SelectAndScatter | Map | Scan | Sort => {
+            numerical::verify_callees(ctx, op, opcode, options, resolved)
+        }
+        Scatter => movement::verify_callees(ctx, op, opcode, options, resolved),
+        Call | While | Conditional | Fusion | CustomCall | AllReduce | AllReduceStart
+        | ReduceScatter | CollectiveReduce | AsyncStart | AsyncUpdate | AsyncDone => {
+            control::verify_callees(ctx, op, opcode, options, resolved)
+        }
+        _ => require(
+            resolved.is_empty(),
+            "opcode does not accept called computations",
+        ),
+    }
 }
 
-fn verify_instruction(
-    instruction: &HloInstructionProto,
-    opcode: Opcode,
-    declared: &Shape,
-    operands: &[Shape],
-    callees: &[crate::proto::xla_data::ProgramShapeProto],
-    context: InstructionContext,
+fn verify_type(
+    ctx: &Context,
+    ty: TypeHandle,
+    checked: &mut HashSet<TypeHandle>,
+    has_buffers: &mut bool,
 ) -> Result<()> {
-    use Opcode::*;
-    let InstructionContext {
-        options,
-        in_fusion,
-        channel,
-    } = context;
-    if opcode == AllReduce && channel.is_some_and(|id| id <= 0) {
-        return Err(Error::new(
-            "channel",
-            "all-reduce channel ID must be positive when present",
-        ));
+    if !checked.insert(ty) {
+        return Ok(());
     }
-    if matches!(opcode, AllReduce | AllReduceStart)
-        && instruction.channel_id > 0
-        && instruction.all_reduce_id > 0
-    {
-        return Err(Error::new(
-            "channel",
-            "both channel_id and legacy all_reduce_id are present",
-        ));
-    }
-    // These handlers do not call upstream CheckShape.
-    let checks_mixed_operands = !matches!(opcode, Bitcast | RngBitGenerator | Scan);
-    if !options.allow_mixed_precision
-        && checks_mixed_operands
-        && !matches!(
-            opcode,
-            Call | Conditional
-                | Constant
-                | Convolution
-                | Dot
-                | RaggedDot
-                | ScaledDot
-                | AllReduce
-                | AllReduceStart
-                | AllReduceDone
-                | AllGather
-                | AllGatherStart
-                | AllGatherDone
-                | AsyncDone
-                | AsyncUpdate
-                | AsyncStart
-                | CollectivePermute
-                | CollectivePermuteStart
-                | CollectivePermuteDone
-                | CopyDone
-                | CopyStart
-                | CustomCall
-                | Domain
-                | Fusion
-                | GetTupleElement
-                | OptimizationBarrier
-                | Infeed
-                | Outfeed
-                | Parameter
-                | Recv
-                | RecvDone
-                | ReducePrecision
-                | ReduceWindow
-                | Send
-                | SendDone
-                | Sort
-                | Tuple
-                | While
-        )
-    {
-        let mut precision = None;
-        let mut pending = operands
-            .iter()
-            .map(|operand| operand.as_proto())
-            .collect::<Vec<_>>();
-        while let Some(shape) = pending.pop() {
-            let element = shape
-                .element_type
-                .enum_value()
-                .map_err(|_| Error::new("type-domain", "unknown primitive type"))?;
-            if element.is_floating() {
-                if precision.is_some_and(|previous| previous != element) {
-                    return Err(Error::new(
-                        "mixed-precision",
-                        "mixed floating point operand precision is disabled by upstream default",
-                    ));
-                }
-                precision = Some(element);
-            }
-            pending.extend(shape.logical_children());
+    let data = ty.deref(ctx);
+    data.verify(ctx)?;
+    data.verify_interfaces(ctx)?;
+    if let Some(tuple) = data.downcast_ref::<TupleType>() {
+        for &child in &tuple.elements {
+            verify_type(ctx, child, checked, has_buffers)?;
         }
-    }
-    if opcode == Opcode::Compare
-        && (!matches!(
-            instruction.comparison_direction.as_str(),
-            "EQ" | "NE" | "GE" | "GT" | "LE" | "LT"
-        ) || !matches!(
-            instruction.comparison_order.as_str(),
-            "" | "TOTAL" | "WEAK" | "PARTIAL"
-        ) || (instruction.comparison_order.is_empty()
-            && !matches!(
-                instruction.comparison_type.as_str(),
-                "" | "FLOAT" | "TOTALORDER" | "SIGNED" | "UNSIGNED"
-            )))
-    {
-        return Err(Error::new(
-            "comparison",
-            "unknown comparison direction, order or legacy type",
-        ));
-    }
-    if opcode == Opcode::Compare
-        && (operands[0].element_type().is_integral()
-            || operands[0].element_type() == PrimitiveType::PRED)
-    {
-        let total = if instruction.comparison_order.is_empty() {
-            instruction.comparison_type != "FLOAT"
-        } else {
-            instruction.comparison_order == "TOTAL"
-        };
-        if !total {
-            return Err(Error::new(
-                "comparison",
-                "integral and predicate comparisons require TOTAL ordering",
-            ));
-        }
-    }
-    let unary = matches!(
-        opcode,
-        Abs | Acos
-            | Acosh
-            | Asin
-            | Asinh
-            | Atanh
-            | Cbrt
-            | Ceil
-            | Clz
-            | Cos
-            | Cosh
-            | Erf
-            | Exp
-            | Exp2
-            | Expm1
-            | Floor
-            | Imag
-            | IsFinite
-            | Log
-            | Log1p
-            | Log2
-            | Logistic
-            | Negate
-            | Not
-            | PopulationCount
-            | Real
-            | RoundNearestAfz
-            | RoundNearestEven
-            | Rsqrt
-            | Sign
-            | Sin
-            | Sinh
-            | Sqrt
-            | Tan
-            | Tanh
-    );
-    let binary = matches!(
-        opcode,
-        Add | And
-            | Atan2
-            | Complex
-            | Compare
-            | Divide
-            | Maximum
-            | Minimum
-            | Mulhi
-            | Multiply
-            | Or
-            | Power
-            | Remainder
-            | ShiftLeft
-            | ShiftRightArithmetic
-            | ShiftRightLogical
-            | Subtract
-            | Xor
-    );
-    if unary || binary {
-        for operand in operands {
-            if !operand
-                .with_element_type(declared.element_type())?
-                .compatible(declared)
-            {
-                return Err(Error::new(
-                    "broadcast",
-                    "implicit elementwise broadcasting is not permitted in raw HLO",
-                ));
-            }
-        }
-    }
-    let expected = if unary {
-        infer_unary(opcode, &operands[0])?
-    } else if binary {
-        infer_binary(opcode, &operands[0], &operands[1])?
-    } else {
-        match opcode {
-            CustomCall => {
-                callable::verify_custom_call(instruction, declared, operands)?;
-                declared.clone()
-            }
-            Fusion => {
-                if callees.len() != 1
-                    || !matches!(
-                        instruction.fusion_kind.as_str(),
-                        "kLoop" | "kInput" | "kOutput" | "kCustom"
-                    )
-                {
-                    return Err(Error::new(
-                        "fusion",
-                        "fusion requires one computation and a recognized fusion kind",
-                    ));
-                }
-                callable::verify_parameters(operands, &callees[0], options, true)?;
-                Shape::from_proto(
-                    callees[0]
-                        .result
-                        .as_ref()
-                        .ok_or_else(|| Error::new("fusion", "missing fusion result"))?
-                        .clone(),
-                )?
-            }
-            Parameter => {
-                if instruction.parameter_number < 0 {
-                    return Err(Error::new("parameter", "negative parameter number"));
-                }
-                return Ok(());
-            }
-            Constant => Literal::from_proto(
-                instruction
-                    .literal
-                    .as_ref()
-                    .ok_or_else(|| Error::new("literal", "constant has no literal"))?
-                    .clone(),
-            )?
-            .shape()
-            .clone(),
-            Tuple => Shape::tuple(operands.to_vec())?,
-            GetTupleElement => operands[0].subshape(&[usize::try_from(instruction.tuple_index)
-                .map_err(|_| Error::new("tuple-index", "negative tuple index"))?])?,
-            AfterAll => {
-                if operands
-                    .iter()
-                    .any(|s| s.element_type() != PrimitiveType::TOKEN)
-                {
-                    return Err(Error::new("token", "after-all requires tokens"));
-                }
-                Shape::token()
-            }
-            OptimizationBarrier => operands[0].clone(),
-            Copy | Domain => operands[0].clone(),
-            AllGather
-            | AllGatherStart
-            | AllReduce
-            | AllReduceStart
-            | ReduceScatter
-            | AllToAll
-            | RaggedAllToAll
-            | CollectiveReduce
-            | CollectiveBroadcast
-            | CollectivePermute
-            | CollectivePermuteStart => {
-                if matches!(
-                    opcode,
-                    AllReduce | AllReduceStart | ReduceScatter | CollectiveReduce
-                ) && callees.len() != 1
-                {
-                    return Err(Error::new(
-                        "callee",
-                        "collective reduction requires one reducer",
-                    ));
-                }
-                collective::infer(
-                    instruction,
-                    opcode,
-                    declared,
-                    operands,
-                    options.collective_context,
-                    channel.is_some(),
-                    options.check_replica_groups,
-                )?
-            }
-            AllGatherDone => crate::inference::infer_all_gather_done(&operands[0])?,
-            AllReduceDone => crate::inference::infer_all_reduce_done(&operands[0])?,
-            CollectivePermuteDone => crate::inference::infer_collective_permute_done(&operands[0])?,
-            Send => Shape::tuple(vec![
-                operands[0].clone(),
-                Shape::scalar(PrimitiveType::U32)?.with_default_layout()?,
-                Shape::token(),
-            ])?,
-            SendDone => Shape::token(),
-            Recv => Shape::tuple(vec![
-                declared.subshape(&[0])?,
-                Shape::scalar(PrimitiveType::U32)?.with_default_layout()?,
-                Shape::token(),
-            ])?,
-            RecvDone => Shape::tuple(vec![operands[0].subshape(&[0])?, Shape::token()])?,
-            CopyStart => Shape::tuple(vec![
-                operands[0].clone(),
-                operands[0].clone(),
-                Shape::scalar(PrimitiveType::U32)?.with_default_layout()?,
-            ])?,
-            CopyDone => {
-                let destination = operands[0].subshape(&[0])?;
-                let source = operands[0].subshape(&[1])?;
-                let equal = if options.layout_sensitive {
-                    same_shapes(
-                        &destination,
-                        &source,
-                        LayoutComparison::IgnoreMemoryAndSplits,
-                    )
-                } else {
-                    destination.compatible(&source)
-                };
-                if !equal {
-                    return Err(Error::new(
-                        "copy",
-                        "copy context source and destination differ",
-                    ));
-                }
-                destination
-            }
-            Bitcast => declared.clone(),
-            DynamicReshape => {
-                let (operand, sizes) = operands
-                    .split_first()
-                    .ok_or_else(|| Error::new("arity", "dynamic reshape missing input"))?;
-                if operand.element_type() != declared.element_type()
-                    || sizes.len() != declared.rank()?
-                    || sizes
-                        .iter()
-                        .any(|shape| shape.element_type() != PrimitiveType::S32)
-                {
-                    return Err(Error::new(
-                        "shape",
-                        "dynamic reshape requires one S32 size operand per result dimension",
-                    ));
-                }
-                crate::inference::infer_dynamic_reshape(
-                    operand,
-                    sizes,
-                    (0..declared.rank()?)
-                        .map(|axis| declared.dimension(axis))
-                        .collect::<Result<Vec<_>>>()?,
-                )?
-            }
-            Convert => crate::inference::infer_convert(&operands[0], declared.element_type())?,
-            StochasticConvert => crate::inference::infer_stochastic_convert(
-                &operands[0],
-                &operands[1],
-                declared.element_type(),
-            )?,
-            ReducePrecision => crate::inference::infer_reduce_precision(
-                &operands[0],
-                instruction.exponent_bits,
-                instruction.mantissa_bits,
-            )?,
-            Concatenate => {
-                if instruction.dimensions.len() != 1 {
-                    return Err(Error::new(
-                        "dimension",
-                        "concatenate requires one dimension",
-                    ));
-                }
-                crate::inference::infer_concatenate(operands, instruction.dimensions[0])?
-            }
-            Pad => crate::inference::infer_pad(
-                &operands[0],
-                &operands[1],
-                instruction
-                    .padding_config
-                    .as_ref()
-                    .ok_or_else(|| Error::new("padding", "missing padding configuration"))?,
-            )?,
-            Clamp => crate::inference::infer_clamp(&operands[0], &operands[1], &operands[2])?,
-            Select => crate::inference::infer_select(&operands[0], &operands[1], &operands[2])?,
-            BitcastConvert => {
-                crate::inference::infer_bitcast_convert(&operands[0], declared.element_type())?
-            }
-            GetDimensionSize => {
-                if instruction.dimensions.len() != 1 {
-                    return Err(Error::new(
-                        "dimension",
-                        "get-dimension-size requires exactly one dimension",
-                    ));
-                }
-                crate::inference::infer_get_dimension_size(&operands[0], instruction.dimensions[0])?
-            }
-            SetDimensionSize => {
-                if instruction.dimensions.len() != 1 {
-                    return Err(Error::new(
-                        "dimension",
-                        "set-dimension-size requires exactly one dimension",
-                    ));
-                }
-                crate::inference::infer_set_dimension_size(
-                    &operands[0],
-                    &operands[1],
-                    instruction.dimensions[0],
-                )?
-            }
-            Iota => {
-                let array = declared.array_view()?;
-                let rank = array.rank()?;
-                if rank == 0
-                    || instruction.dimensions.len() != 1
-                    || !(array.element_type().is_integral()
-                        || array.element_type().is_floating()
-                        || array.element_type().is_complex())
-                {
-                    return Err(Error::new(
-                        "iota",
-                        "iota requires a numerical array and one dimension",
-                    ));
-                }
-                crate::inference::axes(rank, &instruction.dimensions, false)?;
-                declared.clone()
-            }
-            Scan => {
-                if instruction.dimensions.len() != 1 || callees.len() != 1 {
-                    return Err(Error::new(
-                        "scan",
-                        "scan requires one dimension and one body computation",
-                    ));
-                }
-                if options.layout_sensitive
-                    && instruction.is_associative.enum_value()
-                        != Ok(crate::proto::hlo::TriState::TRI_STATE_TRUE)
-                {
-                    return Err(Error::new(
-                        "scan",
-                        "non-associative scan must be expanded before layout-sensitive verification",
-                    ));
-                }
-                crate::inference::verify_scan(
-                    operands,
-                    declared,
-                    &callees[0],
-                    instruction.num_carries,
-                    instruction.dimensions[0],
-                    options.layout_sensitive,
-                    options.allow_mixed_precision,
-                )?;
-                declared.clone()
-            }
-            Shuffle => crate::inference::infer_shuffle(
-                &operands[0],
-                &instruction.dimensions,
-                instruction
-                    .shuffle_mode
-                    .as_ref()
-                    .ok_or_else(|| Error::new("shuffle", "missing shuffle mode"))?,
-            )?,
-            SelectAndScatter => {
-                if callees.len() != 2 {
-                    return Err(Error::new(
-                        "callee",
-                        "select-and-scatter requires select and scatter computations",
-                    ));
-                }
-                crate::inference::infer_select_and_scatter(
-                    &operands[0],
-                    &operands[1],
-                    &operands[2],
-                    instruction
-                        .window
-                        .as_ref()
-                        .ok_or_else(|| Error::new("window", "missing select-and-scatter window"))?,
-                    &callees[0],
-                    &callees[1],
-                )?
-            }
-            ReplicaId | PartitionId => Shape::scalar(PrimitiveType::U32)?.with_default_layout()?,
-            AddDependency => {
-                if operands[1].element_type() != PrimitiveType::TOKEN {
-                    return Err(Error::new(
-                        "token",
-                        "add-dependency requires a token second operand",
-                    ));
-                }
-                operands[0].clone()
-            }
-            Infeed => {
-                if operands[0].element_type() != PrimitiveType::TOKEN {
-                    return Err(Error::new("token", "infeed requires a token operand"));
-                }
-                let data = declared
-                    .as_proto()
-                    .tuple_shapes
-                    .first()
-                    .filter(|_| declared.is_tuple())
-                    .ok_or_else(|| {
-                        Error::new("shape", "infeed requires a nonempty tuple result")
-                    })?;
-                Shape::tuple(vec![Shape::from_proto(data.clone())?, Shape::token()])?
-            }
-            Outfeed => {
-                if operands[1].element_type() != PrimitiveType::TOKEN {
-                    return Err(Error::new(
-                        "token",
-                        "outfeed requires a token second operand",
-                    ));
-                }
-                let host_shape = Shape::from_proto(
-                    instruction
-                        .outfeed_shape
-                        .as_ref()
-                        .ok_or_else(|| Error::new("shape", "missing outfeed host shape"))?
-                        .clone(),
-                )?;
-                if !host_shape.compatible(&operands[0])
-                    || (options.layout_sensitive
-                        && !same_shapes(&host_shape, &operands[0], LayoutComparison::Exact))
-                {
-                    return Err(Error::new(
-                        "shape",
-                        "outfeed host shape differs from data operand",
-                    ));
-                }
-                Shape::token()
-            }
-            Rng => {
-                if operands.len() != 2 || operands[0].rank()? != 0 || operands[1].rank()? != 0 {
-                    return Err(Error::new("arity", "rng requires two scalar operands"));
-                }
-                let element = operands[0].element_type();
-                if operands[1].element_type() != element
-                    || (declared.element_type() != element
-                        && !(options.allow_mixed_precision
-                            && declared.element_type().same_ignoring_fp_precision(element)))
-                {
-                    return Err(Error::new(
-                        "type-domain",
-                        "rng operand and result element types differ",
-                    ));
-                }
-                use crate::proto::xla_data::RandomDistribution;
-                match instruction.distribution.enum_value() {
-                    Ok(RandomDistribution::RNG_UNIFORM)
-                        if element.is_floating()
-                            || element.is_integral()
-                            || element == PrimitiveType::PRED => {}
-                    Ok(RandomDistribution::RNG_NORMAL) if element.is_floating() => {}
-                    _ => {
-                        return Err(Error::new(
-                            "rng",
-                            "invalid random distribution or element type",
-                        ));
-                    }
-                }
-                declared.clone()
-            }
-            RngBitGenerator => {
-                if declared.is_tuple()
-                    && (declared.as_proto().tuple_shapes.len() != 2
-                        || !Shape::from_proto(declared.as_proto().tuple_shapes[0].clone())?
-                            .compatible(&operands[0]))
-                {
-                    return Err(Error::new(
-                        "rng",
-                        "rng-bit-generator requires two tuple components and matching state shapes",
-                    ));
-                }
-                declared.clone()
-            }
-            RngGetAndUpdateState => {
-                Shape::array(PrimitiveType::U64, vec![2])?.with_default_layout()?
-            }
-            Gather => crate::inference::infer_gather(
-                &operands[0],
-                &operands[1],
-                instruction
-                    .gather_dimension_numbers
-                    .as_ref()
-                    .ok_or_else(|| Error::new("dimensions", "missing gather dimensions"))?,
-                &instruction.gather_slice_sizes,
-            )?,
-            Scatter => {
-                if callees.len() != 1 {
-                    return Err(Error::new(
-                        "callee",
-                        "scatter requires one update computation",
-                    ));
-                }
-                crate::inference::infer_scatter(
-                    operands,
-                    instruction
-                        .scatter_dimension_numbers
-                        .as_ref()
-                        .ok_or_else(|| Error::new("dimensions", "missing scatter dimensions"))?,
-                    &callees[0],
-                )?
-            }
-            Cholesky => crate::inference::infer_cholesky(&operands[0])?,
-            TriangularSolve => crate::inference::infer_triangular_solve(
-                &operands[0],
-                &operands[1],
-                instruction
-                    .triangular_solve_options
-                    .as_ref()
-                    .ok_or_else(|| Error::new("transpose", "missing triangular solve options"))?,
-            )?,
-            TopK => crate::inference::infer_top_k(&operands[0], instruction.k)?,
-            BatchNormTraining | BatchNormInference | BatchNormGrad => {
-                crate::inference::infer_batch_norm(opcode, operands, instruction.feature_index)?
-            }
-            Sort => {
-                if callees.len() != 1 || instruction.dimensions.len() != 1 {
-                    return Err(Error::new(
-                        "sort",
-                        "sort requires one dimension and one comparator",
-                    ));
-                }
-                crate::inference::infer_sort(operands, instruction.dimensions[0], &callees[0])?
-            }
-            Fft => crate::inference::infer_fft(
-                &operands[0],
-                instruction
-                    .fft_type
-                    .enum_value()
-                    .map_err(|_| Error::new("fft", "unknown FFT kind"))?,
-                &instruction.fft_length,
-            )?,
-            Dot => {
-                dot::verify_auxiliary_operands(instruction, operands)?;
-                let sparsity = instruction
-                    .sparsity_config
-                    .as_ref()
-                    .cloned()
-                    .unwrap_or_default();
-                crate::inference::infer_dot_with_sparsity(
-                    &operands[0],
-                    &operands[1],
-                    instruction
-                        .dot_dimension_numbers
-                        .as_ref()
-                        .ok_or_else(|| Error::new("dot", "missing dot dimension numbers"))?,
-                    Some(declared.element_type()),
-                    &sparsity,
-                )?
-            }
-            RaggedDot => {
-                if operands.len() != 3 {
-                    return Err(Error::new("arity", "ragged-dot requires three operands"));
-                }
-                crate::inference::infer_ragged_dot(
-                    &operands[0],
-                    &operands[1],
-                    &operands[2],
-                    instruction
-                        .ragged_dot_dimension_numbers
-                        .as_ref()
-                        .ok_or_else(|| {
-                            Error::new("ragged-dot", "missing ragged dot dimension numbers")
-                        })?,
-                    Some(declared.element_type()),
-                )?
-            }
-            ScaledDot => {
-                if operands.len() != 4 {
-                    return Err(Error::new("arity", "scaled-dot requires four operands"));
-                }
-                crate::inference::infer_scaled_dot(
-                    &operands[0],
-                    &operands[1],
-                    &operands[2],
-                    &operands[3],
-                    instruction
-                        .dot_dimension_numbers
-                        .as_ref()
-                        .ok_or_else(|| Error::new("scaled-dot", "missing dot dimension numbers"))?,
-                    Some(declared.element_type()),
-                )?
-            }
-            Convolution => {
-                dot::verify_auxiliary_operands(instruction, operands)?;
-                let sparsity = instruction
-                    .sparsity_config
-                    .as_ref()
-                    .cloned()
-                    .unwrap_or_default();
-                crate::inference::infer_convolution_with_sparsity(
-                    &operands[0],
-                    &operands[1],
-                    instruction.feature_group_count,
-                    instruction.batch_group_count,
-                    instruction
-                        .window
-                        .as_ref()
-                        .ok_or_else(|| Error::new("window", "missing convolution window"))?,
-                    instruction
-                        .convolution_dimension_numbers
-                        .as_ref()
-                        .ok_or_else(|| {
-                            Error::new("dimensions", "missing convolution dimensions")
-                        })?,
-                    Some(declared.element_type()),
-                    &sparsity,
-                )?
-            }
-            Map => {
-                if callees.len() != 1 {
-                    return Err(Error::new("callee", "map requires one computation"));
-                }
-                let rank = operands
-                    .iter()
-                    .map(Shape::rank)
-                    .collect::<Result<Vec<_>>>()?
-                    .into_iter()
-                    .max()
-                    .unwrap_or(0);
-                crate::inference::infer_map(
-                    operands,
-                    &callees[0],
-                    &(0..rank as i64).collect::<Vec<_>>(),
-                )?
-            }
-            Reduce => {
-                if callees.len() != 1 {
-                    return Err(Error::new("callee", "reduce requires one computation"));
-                }
-                crate::inference::infer_reduce(operands, &instruction.dimensions, &callees[0])?
-            }
-            ReduceWindow => {
-                if callees.len() != 1 {
-                    return Err(Error::new(
-                        "callee",
-                        "reduce-window requires one computation",
-                    ));
-                }
-                crate::inference::infer_reduce_window(
-                    operands,
-                    instruction
-                        .window
-                        .as_ref()
-                        .ok_or_else(|| Error::new("window", "missing window configuration"))?,
-                    &callees[0],
-                )?
-            }
-            Call => {
-                if callees.len() != 1 {
-                    return Err(Error::new(
-                        "callee",
-                        "call requires exactly one computation",
-                    ));
-                }
-                if instruction.is_composite {
-                    let attributes = &instruction
-                        .frontend_attributes
-                        .as_ref()
-                        .ok_or_else(|| {
-                            Error::new("composite", "composite call requires frontend attributes")
-                        })?
-                        .map;
-                    if attributes
-                        .get("composite.name")
-                        .is_none_or(|name| name.is_empty())
-                        || attributes
-                            .get("composite.attributes")
-                            .is_some_and(|value| value.is_empty())
-                        || attributes.get("composite.version").is_some_and(|value| {
-                            value
-                                .trim()
-                                .parse::<i64>()
-                                .map_or(true, |version| version < 0)
-                        })
-                    {
-                        return Err(Error::new(
-                            "composite",
-                            "invalid composite name, attributes or version",
-                        ));
-                    }
-                }
-                callable::verify_parameters(operands, &callees[0], options, false)?;
-                crate::inference::infer_call(operands, &callees[0])?
-            }
-            While => {
-                if callees.len() != 2 {
-                    return Err(Error::new(
-                        "callee",
-                        "while requires body and condition computations",
-                    ));
-                }
-                for callee in callees {
-                    callable::verify_parameters(operands, callee, options, false)?;
-                }
-                crate::inference::infer_while(&operands[0], &callees[0], &callees[1])?
-            }
-            Conditional => {
-                let (selector, branches) = operands
-                    .split_first()
-                    .ok_or_else(|| Error::new("arity", "conditional requires a selector"))?;
-                let result = crate::inference::infer_conditional(selector, branches, callees)?;
-                for (operand, callee) in branches.iter().zip(callees) {
-                    callable::verify_parameters(
-                        std::slice::from_ref(operand),
-                        callee,
-                        options,
-                        false,
-                    )?;
-                    let root = Shape::from_proto(
-                        callee
-                            .result
-                            .as_ref()
-                            .ok_or_else(|| Error::new("callee", "missing branch result"))?
-                            .clone(),
-                    )?;
-                    if options.layout_sensitive
-                        && !same_shapes(declared, &root, LayoutComparison::Exact)
-                    {
-                        return Err(Error::new(
-                            "result-shape",
-                            "conditional differs from a branch result",
-                        ));
-                    }
-                }
-                result
-            }
-            Reverse => infer_reverse(&operands[0], &instruction.dimensions)?,
-            Broadcast => {
-                let operand = &operands[0];
-                if operand.element_type() != declared.element_type()
-                    || instruction.dimensions.len() != operand.rank()?
-                    || (options.verify_broadcast_dimensions_order
-                        && !instruction.dimensions.is_sorted())
-                {
-                    return Err(Error::new(
-                        "broadcast",
-                        "broadcast element type, dimensions or required ordering mismatch",
-                    ));
-                }
-                for (axis, &target) in instruction.dimensions.iter().enumerate() {
-                    if usize::try_from(target)
-                        .ok()
-                        .and_then(|target| declared.dimensions().get(target))
-                        != operand.dimensions().get(axis)
-                    {
-                        return Err(Error::new(
-                            "broadcast",
-                            "broadcast mapped dimension is invalid or differs from operand",
-                        ));
-                    }
-                }
-                declared.rank()?;
-                declared.clone()
-            }
-            DynamicSlice => {
-                let (operand, indices) = operands
-                    .split_first()
-                    .ok_or_else(|| Error::new("arity", "dynamic-slice missing operand"))?;
-                infer_dynamic_slice(operand, indices, &instruction.dynamic_slice_sizes)?
-            }
-            AsyncStart | AsyncUpdate | AsyncDone => declared.clone(),
-            DynamicUpdateSlice => {
-                if operands.len() < 2 {
-                    return Err(Error::new(
-                        "arity",
-                        "dynamic-update-slice requires operand and update",
-                    ));
-                }
-                infer_dynamic_update_slice(&operands[0], &operands[1], &operands[2..])?
-            }
-            Transpose => infer_transpose(&operands[0], &instruction.dimensions)?,
-            Slice => {
-                let starts: Vec<_> = instruction
-                    .slice_dimensions
-                    .iter()
-                    .map(|d| d.start)
-                    .collect();
-                let limits: Vec<_> = instruction
-                    .slice_dimensions
-                    .iter()
-                    .map(|d| d.limit)
-                    .collect();
-                let strides: Vec<_> = instruction
-                    .slice_dimensions
-                    .iter()
-                    .map(|d| d.stride)
-                    .collect();
-                infer_slice(&operands[0], &starts, &limits, &strides)?
-            }
-            Reshape => {
-                let operand = operands[0].array_view()?;
-                let result = declared.array_view()?;
-                if operand.element_type() != result.element_type() {
-                    return Err(Error::new(
-                        "type-domain",
-                        "reshape cannot change element type",
-                    ));
-                }
-                if options.verify_reshape_is_bitcast
-                    && !in_fusion
-                    && !operands[0].reshape_is_bitcast(declared, false)?
-                {
-                    return Err(Error::new("reshape", "reshape is not a physical bitcast"));
-                }
-                if operand.element_count()? != result.element_count()? {
-                    return Err(Error::new("reshape", "reshape element counts differ"));
-                }
-                declared.clone()
-            }
-            _ => {
-                return Err(Error::new(
-                    "unsupported",
-                    format!("semantic verification for {opcode}"),
-                ));
-            }
-        }
-    };
-    if !options.allow_mixed_precision && matches!(opcode, Map | Reduce | ReduceWindow) {
-        for (operand, parameter) in operands.iter().zip(&callees[0].parameters) {
-            if operand.element_type()
-                != parameter.element_type.enum_value().map_err(|_| {
-                    Error::new("type-domain", "unknown callee parameter element type")
-                })?
-            {
-                return Err(Error::new(
-                    "mixed-precision",
-                    "callee parameter and operand element types differ",
-                ));
-            }
-        }
-    }
-    let exact = matches!(
-        opcode,
-        Bitcast
-            | Call
-            | Conditional
-            | Constant
-            | CopyDone
-            | CopyStart
-            | CustomCall
-            | GetTupleElement
-            | Infeed
-            | Outfeed
-            | OptimizationBarrier
-            | Parameter
-            | Recv
-            | RecvDone
-            | Send
-            | SendDone
-            | Tuple
-            | While
-            | DynamicUpdateSlice
-            | Fusion
-    );
-    let equal = if options.layout_sensitive && opcode == Copy {
-        match (declared.layout(), expected.layout()) {
-            (Some(output), Some(input))
-                if output.memory_space != input.memory_space
-                    && (output.memory_space == 5 || input.memory_space == 5) =>
-            {
-                if output.memory_space == 5 {
-                    declared.element_type() == expected.element_type()
-                } else {
-                    same_shapes(declared, &expected, LayoutComparison::IgnoreMemory)
-                }
-            }
-            _ if options.allow_mixed_precision => {
-                declared.compatible_ignoring_fp_precision(&expected)
-            }
-            _ => declared.compatible(&expected),
-        }
-    } else if exact && options.layout_sensitive {
-        let mode = if matches!(opcode, Infeed | Send | Recv | CopyStart) {
-            LayoutComparison::MinorOnly
-        } else if opcode == DynamicUpdateSlice && in_fusion {
-            LayoutComparison::IgnoreMemoryAndTiles
-        } else {
-            LayoutComparison::Exact
-        };
-        same_shapes(declared, &expected, mode)
-    } else if !exact && options.allow_mixed_precision {
-        declared.compatible_ignoring_fp_precision(&expected)
-    } else {
-        declared.compatible(&expected)
-    };
-    if !equal {
-        return Err(Error::new(
-            "result-shape",
-            "declared result differs from inferred shape",
-        ));
+    } else if let Some(buffer) = data.downcast_ref::<crate::types::BufferType>() {
+        *has_buffers = true;
+        verify_type(ctx, buffer.array, checked, has_buffers)?;
     }
     Ok(())
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum LayoutComparison {
-    Exact,
-    MinorOnly,
-    IgnoreMemory,
-    IgnoreMemoryAndTiles,
-    IgnoreMemoryAndSplits,
-    IgnoreEntryLayoutDifferences,
-}
-
-fn same_shapes(a: &Shape, b: &Shape, mode: LayoutComparison) -> bool {
-    use crate::proto::xla_data::{LayoutProto, PrimitiveType};
-
-    fn layout_equal(a: &LayoutProto, b: &LayoutProto, mode: LayoutComparison) -> bool {
-        if mode == LayoutComparison::MinorOnly {
-            return a.minor_to_major == b.minor_to_major;
-        }
-        let (ignore_memory, ignore_tiles, ignore_splits, ignore_tail) = match mode {
-            LayoutComparison::Exact => (false, false, false, false),
-            LayoutComparison::MinorOnly => unreachable!(),
-            LayoutComparison::IgnoreMemory => (true, false, false, false),
-            LayoutComparison::IgnoreMemoryAndTiles => (true, true, false, false),
-            LayoutComparison::IgnoreMemoryAndSplits => (true, false, true, false),
-            LayoutComparison::IgnoreEntryLayoutDifferences => (true, true, false, true),
-        };
-        a.minor_to_major == b.minor_to_major
-            && (ignore_tiles || a.tiles == b.tiles)
-            && (ignore_tail
-                || a.tail_padding_alignment_in_elements.max(1)
-                    == b.tail_padding_alignment_in_elements.max(1))
-            && a.element_size_in_bits == b.element_size_in_bits
-            && (ignore_memory || a.memory_space == b.memory_space)
-            && a.index_primitive_type == b.index_primitive_type
-            && a.pointer_primitive_type == b.pointer_primitive_type
-            && (ignore_splits || a.split_configs == b.split_configs)
-            && matches!(
-                (a.physical_shape.as_ref(), b.physical_shape.as_ref()),
-                (None, None) | (Some(_), Some(_))
-            )
-    }
-
-    let mut pending = vec![(a.as_proto().clone(), b.as_proto().clone(), mode)];
-    while let Some((left, right, mode)) = pending.pop() {
-        if left.element_type != right.element_type
-            || left.logical_dimensions() != right.logical_dimensions()
-            || left.logical_children().len() != right.logical_children().len()
-            || (0..left.logical_dimensions().len()).any(|axis| {
-                left.is_dynamic_dimension
-                    .get(axis)
-                    .copied()
-                    .unwrap_or(false)
-                    != right
-                        .is_dynamic_dimension
-                        .get(axis)
-                        .copied()
-                        .unwrap_or(false)
-            })
+fn verify_block(ctx: &Context, block: Ptr<BasicBlock>) -> Result<()> {
+    let data = block.deref(ctx);
+    let ordered: Vec<_> = data.iter(ctx).collect();
+    let positions: HashMap<_, _> = ordered.iter().enumerate().map(|(i, &op)| (op, i)).collect();
+    let args: HashSet<_> = data.arguments().collect();
+    let mut parameter_indices = HashSet::new();
+    for (i, &op) in ordered.iter().enumerate() {
+        let data = op.deref(ctx);
+        if let Some(parameter) = Operation::get_op::<ParameterOp>(op, ctx)
+            && let Some(index) = parameter.index(ctx)
         {
-            return false;
+            require(
+                parameter_indices.insert(index.0),
+                "duplicate parameter index",
+            )?;
         }
-        if left.element_type.enum_value() == Ok(PrimitiveType::BUFFER) {
-            pending.push((
-                left.array_storage().into_owned(),
-                right.array_storage().into_owned(),
-                mode,
-            ));
-            continue;
-        }
-        match (left.layout.as_ref(), right.layout.as_ref()) {
-            (None, None) => {}
-            (Some(left_layout), Some(right_layout)) => {
-                if !layout_equal(left_layout, right_layout, mode) {
-                    return false;
-                }
-                if let (Some(left_shape), Some(right_shape)) = (
-                    left_layout.physical_shape.as_ref(),
-                    right_layout.physical_shape.as_ref(),
-                ) {
-                    pending.push((
-                        left_shape.clone(),
-                        right_shape.clone(),
-                        LayoutComparison::Exact,
-                    ));
-                }
+        require(
+            !Operation::is_op::<ReturnOp>(op, ctx) || i + 1 == ordered.len(),
+            "return must be last",
+        )?;
+        for operand in data.operands() {
+            match operand.defining_entity() {
+                DefiningEntity::Op(def) => require(
+                    positions.get(&def).is_some_and(|&pos| pos < i),
+                    "operand does not dominate use or captures another region",
+                )?,
+                DefiningEntity::Block(owner) => require(
+                    owner == block && args.contains(&operand),
+                    "invalid block argument capture",
+                )?,
             }
-            _ => return false,
         }
-        pending.extend(
-            left.logical_children()
-                .iter()
-                .zip(right.logical_children())
-                .map(|(left, right)| (left.clone(), right.clone(), mode)),
-        );
     }
-    true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{InstructionContext, VerifyOptions, verify_instruction};
-    use crate::{Opcode, PrimitiveType as P, Shape, proto::hlo::HloInstructionProto};
-
-    #[test]
-    fn iota_shape_verification_accepts_buffer_arrays_and_checks_inner_type() {
-        for element_type in [P::S32, P::F32, P::C64] {
-            let shape = Shape::buffer(Shape::array(element_type, [3]).unwrap()).unwrap();
-            let instruction = HloInstructionProto {
-                dimensions: vec![0],
-                ..Default::default()
-            };
-            verify_instruction(
-                &instruction,
-                Opcode::Iota,
-                &shape,
-                &[],
-                &[],
-                InstructionContext {
-                    options: VerifyOptions::default(),
-                    in_fusion: false,
-                    channel: None,
-                },
-            )
-            .unwrap();
-        }
-
-        let shape = Shape::buffer(Shape::array(P::PRED, [3]).unwrap()).unwrap();
-        let instruction = HloInstructionProto {
-            dimensions: vec![0],
-            ..Default::default()
-        };
-        assert_eq!(
-            verify_instruction(
-                &instruction,
-                Opcode::Iota,
-                &shape,
-                &[],
-                &[],
-                InstructionContext {
-                    options: VerifyOptions::default(),
-                    in_fusion: false,
-                    channel: None,
-                },
-            )
-            .unwrap_err()
-            .category,
-            "iota"
-        );
-    }
+    metadata::verify_control_dependencies(ctx, block)
 }

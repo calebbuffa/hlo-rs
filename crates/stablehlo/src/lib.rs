@@ -1,66 +1,85 @@
+//! Native StableHLO dialect for the pliron intermediate representation.
+//!
+//! Public APIs are organized under [`attributes`], [`inference`], [`integer`],
+//! [`ops`], [`sparse`], [`types`], and [`verification`].
+
 #![doc = include_str!("../README.md")]
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
-mod affine;
-mod artifact;
-mod attribute;
-pub mod bytecode;
-mod inference;
-mod ir;
-mod location;
-mod operation;
-mod sparse;
-pub mod text;
-mod types;
-mod verification;
-mod version;
+pub use pliron;
 
-pub use affine::{
-    AffineBinaryOp, AffineConstraint, AffineError, AffineExpr, AffineMap, IntegerSet,
-};
-pub use artifact::{ArtifactVersionError, portable_artifact_version};
-pub use attribute::stablehlo::{
-    ArrayOfLayout, ArrayOfTiling, AttributeError, AxisRef, ChannelHandle, ConvDimensionNumbers,
-    DotAlgorithm, DotDimensionNumbers, GatherDimensionNumbers, IndexTensor, Layout, Mesh, MeshAxis,
-    MeshReference, OutputOperandAlias, Precision, ReplicaGroupMeshAxes, ResultAccuracy,
-    ResultAccuracyMode, ScatterDimensionNumbers, StableHloAttribute, SubAxisInfo, Tiling,
-    TypeExtensions,
-};
-pub use attribute::{Attribute, AttributeValidationError, Attributes, ScalarValue};
-pub use inference::{
-    ComparisonType, ConvolutionOptions, FftType, InferenceError, RngAlgorithm, RngDistribution,
-    infer_abs_type, infer_all_gather_types, infer_all_reduce_types, infer_all_to_all_types,
-    infer_batch_norm_grad_types, infer_batch_norm_inference_type, infer_batch_norm_training_types,
-    infer_bitcast_convert_type, infer_broadcast_type, infer_case_types, infer_cholesky_type,
-    infer_clamp_type, infer_collective_broadcast_types, infer_collective_permute_type,
-    infer_compare_type, infer_complex_type, infer_concatenate_type, infer_convert_type,
-    infer_convolution_type, infer_dot_general_type, infer_dot_type, infer_dynamic_gather_type,
-    infer_dynamic_slice_type, infer_dynamic_update_slice_type, infer_fft_type, infer_gather_type,
-    infer_get_dimension_size_type, infer_get_tuple_element_type, infer_if_types, infer_imag_type,
-    infer_is_finite_type, infer_least_specific_type, infer_map_type, infer_most_specific_type,
-    infer_optimization_barrier_types, infer_pad_type, infer_real_type, infer_reduce_scatter_type,
-    infer_reduce_types, infer_reduce_window_types, infer_reverse_type,
-    infer_rng_bit_generator_types, infer_rng_type, infer_scatter_types,
-    infer_select_and_scatter_type, infer_select_type, infer_set_dimension_size_type,
-    infer_slice_type, infer_sort_types, infer_transpose_type, infer_triangular_solve_type,
-    infer_tuple_type, infer_uniform_dequantize_type, infer_uniform_quantize_type,
-    infer_while_types,
-};
-pub use ir::{
-    Block, BlockArgument, Computation, ComputationId, Instruction, Module, OperationResult, Region,
-    ValueId,
-};
-pub use location::Location;
-pub use operation::{Operation, StableHloOp};
-pub use sparse::{
-    SparseEncodingError, SparseLevelFormat, SparseLevelType, SparseSliceError,
-    SparseTensorDimSlice, SparseTensorEncoding, infer_sparse_level_to_dimension,
-};
-pub use types::{
-    BufferLayout, BufferType, ElementType, FunctionType, QuantizedElementType, QuantizedTensorType,
-    TensorType, Type, TypeError, UnrankedTensorType,
-};
-pub use verification::BuildError;
-pub use version::{
-    CompatibilityRequirement, STABLEHLO_CURRENT_VERSION, STABLEHLO_MINIMUM_VERSION,
-    STABLEHLO_SOURCE_COMMIT, StableHloVersion, VersionError,
-};
+pub mod attributes;
+mod error;
+pub use error::{Diagnostic, RecoveryCategory};
+pub mod inference;
+pub mod integer;
+pub mod ops;
+pub mod sparse;
+pub mod types;
+pub mod verification;
+
+#[cfg(test)]
+mod tests {
+    use crate::{ops::*, types::*};
+    use pliron::{common_traits::Verify, context::Context, op::Op, r#type::Typed};
+
+    #[test]
+    fn context_registers_stablehlo_entities_without_key_collisions() {
+        let _ctx = Context::new();
+    }
+
+    #[test]
+    fn tensor_type_accepts_explicit_dtype_set() {
+        let ctx = Context::default();
+        for ty in [
+            ElementType::F16,
+            ElementType::Bf16,
+            ElementType::F32,
+            ElementType::F64,
+            ElementType::I1,
+            ElementType::I8,
+            ElementType::I16,
+            ElementType::I32,
+            ElementType::I64,
+            ElementType::Ui8,
+            ElementType::Ui32,
+        ] {
+            assert_eq!(
+                tensor_parts(&ctx, tensor(&ctx, &[2, 3], ty)),
+                Some((vec![2, 3], ty))
+            );
+        }
+    }
+
+    #[test]
+    fn dense_constants_validate_bit_pattern_count() {
+        let mut ctx = Context::new();
+        let ty = tensor(&ctx, &[2], ElementType::F32);
+        let splat = ConstantOp::new(&mut ctx, ty, vec![0x8000_0000], true);
+        assert_eq!(splat.bits(&ctx), Some(vec![0x8000_0000]));
+        assert!(splat.verify(&ctx).is_ok());
+        let bad = ConstantOp::new(&mut ctx, ty, vec![1, 2, 3], false);
+        assert!(bad.verify(&ctx).is_err());
+    }
+
+    #[test]
+    fn inferred_add_preserves_identical_tensor_type() {
+        let mut ctx = Context::new();
+        let ty = tensor(&ctx, &[4], ElementType::F32);
+        let a = ConstantOp::new(&mut ctx, ty, vec![1], true);
+        let b = ConstantOp::new(&mut ctx, ty, vec![2], true);
+        let av = a.get_operation().deref(&ctx).get_result(0);
+        let bv = b.get_operation().deref(&ctx).get_result(0);
+        let add_result = AddOp::new_inferred(&mut ctx, av, bv);
+        assert!(add_result.is_some());
+        if let Some(add) = add_result {
+            assert_eq!(
+                tensor_parts(
+                    &ctx,
+                    add.get_operation().deref(&ctx).get_result(0).get_type(&ctx)
+                ),
+                Some((vec![4], ElementType::F32))
+            );
+        }
+    }
+}

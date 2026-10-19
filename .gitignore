@@ -3,7 +3,7 @@
 debug
 target
 
-# Test-only pinned LLVM source extracted by the native StableHLO build.
+# Optional developer reference sources.
 /extern/llvm-project-*/
 /extern/eigen-*/
 /extern/ml_dtypes-*/

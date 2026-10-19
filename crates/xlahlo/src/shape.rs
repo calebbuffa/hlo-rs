@@ -1,555 +1,789 @@
-use protobuf::Enum;
-
+//! Native shape operations on pliron type handles.
+use crate::Diagnostic;
 use crate::{
-    Error, Result,
-    proto::xla_data::{LayoutProto, PrimitiveType, ShapeProto},
+    primitive::PrimitiveType,
+    types::{
+        BufferType, ElementType, OpaqueType, TensorType, TokenType, TupleType, tensor,
+        tensor_structure,
+    },
 };
+use pliron::result::Result;
+use pliron::{
+    common_traits::Verify,
+    context::Context,
+    derive::pliron_attr,
+    r#type::{Type, TypeHandle},
+};
+use std::{cell::Ref, slice};
 
-impl ShapeProto {
-    pub(crate) fn array_storage(&self) -> std::borrow::Cow<'_, Self> {
-        if self.element_type.enum_value() == Ok(PrimitiveType::BUFFER) {
-            let child = &self.tuple_shapes[0];
-            if let Some(layout) = self.layout.as_ref() {
-                let mut child = child.clone();
-                child.layout = Some(layout.clone()).into();
-                std::borrow::Cow::Owned(child)
-            } else {
-                std::borrow::Cow::Borrowed(child)
-            }
-        } else {
-            std::borrow::Cow::Borrowed(self)
-        }
-    }
-
-    pub(crate) fn logical_children(&self) -> &[Self] {
-        if matches!(
-            self.element_type.enum_value(),
-            Ok(PrimitiveType::TUPLE | PrimitiveType::BUFFER)
-        ) {
-            &self.tuple_shapes
-        } else {
-            &[]
-        }
-    }
-
-    pub(crate) fn logical_dimensions(&self) -> &[i64] {
-        if self
-            .element_type
-            .enum_value()
-            .is_ok_and(PrimitiveType::is_array_element)
-        {
-            &self.dimensions
-        } else {
-            &[]
-        }
-    }
-}
-
-/// HLO's wire sentinel, not MLIR's `-1`.
+/// Dimension extent for an unbounded dynamic axis.
 pub const UNBOUNDED_SIZE: i64 = i64::MIN;
+/// Tile marker combining a logical dimension with its neighbor.
 pub const COMBINE_DIMENSION: i64 = i64::MIN;
+/// Tile marker matching the corresponding bound.
 pub const MATCH_DIMENSION: i64 = i64::MIN + 1;
-const MAX_SHAPE_DEPTH: usize = 128;
 
-impl PrimitiveType {
-    pub fn is_integral(self) -> bool {
-        matches!(
-            self,
-            Self::S1
-                | Self::S2
-                | Self::S4
-                | Self::S8
-                | Self::S16
-                | Self::S32
-                | Self::S64
-                | Self::U1
-                | Self::U2
-                | Self::U4
-                | Self::U8
-                | Self::U16
-                | Self::U32
-                | Self::U64
-        )
-    }
-
-    pub fn is_signed_integral(self) -> bool {
-        matches!(
-            self,
-            Self::S1 | Self::S2 | Self::S4 | Self::S8 | Self::S16 | Self::S32 | Self::S64
-        )
-    }
-
-    pub fn is_floating(self) -> bool {
-        matches!(
-            self,
-            Self::F16
-                | Self::BF16
-                | Self::F32
-                | Self::F64
-                | Self::F8E5M2
-                | Self::F8E4M3
-                | Self::F8E4M3FN
-                | Self::F8E4M3B11FNUZ
-                | Self::F8E3M4
-                | Self::F8E5M2FNUZ
-                | Self::F8E4M3FNUZ
-                | Self::F4E2M1FN
-                | Self::F8E8M0FNU
-                | Self::F6E3M2FN
-                | Self::F6E2M3FN
-        )
-    }
-
-    pub fn is_complex(self) -> bool {
-        matches!(self, Self::C64 | Self::C128)
-    }
-
-    pub fn same_ignoring_fp_precision(self, other: Self) -> bool {
-        self == other || (self.is_floating() && other.is_floating())
-    }
-
-    pub fn is_array_element(self) -> bool {
-        self == Self::PRED || self.is_integral() || self.is_floating() || self.is_complex()
-    }
-
-    pub fn bit_width(self) -> Option<u32> {
-        use PrimitiveType::*;
-        Some(match self {
-            PRED | S1 | U1 => 1,
-            S2 | U2 => 2,
-            S4 | U4 | F4E2M1FN => 4,
-            F6E3M2FN | F6E2M3FN => 6,
-            S8 | U8 | F8E5M2 | F8E4M3 | F8E4M3FN | F8E4M3B11FNUZ | F8E3M4 | F8E5M2FNUZ
-            | F8E4M3FNUZ | F8E8M0FNU => 8,
-            S16 | U16 | F16 | BF16 => 16,
-            S32 | U32 | F32 => 32,
-            S64 | U64 | F64 | C64 => 64,
-            C128 => 128,
-            _ => return None,
-        })
-    }
-
-    /// Match the pinned upstream range-first precision ordering.
-    /// Distinct types with identical ordering keys are an upstream fatal case.
-    pub fn higher_precision(self, other: Self) -> Result<Self> {
-        fn properties(ty: PrimitiveType) -> Result<(bool, i32, i32, u32, bool)> {
-            use PrimitiveType::*;
-            if !ty.is_array_element() {
-                return Err(Error::new(
-                    "primitive",
-                    "precision ordering requires array element types",
-                ));
-            }
-            let component = match ty {
-                C64 => F32,
-                C128 => F64,
-                _ => ty,
-            };
-            let (exponent, digits) = match component {
-                F16 => (16, 11),
-                BF16 => (128, 8),
-                F32 => (128, 24),
-                F64 => (1024, 53),
-                F8E3M4 => (4, 5),
-                F8E4M3 | F8E4M3FNUZ => (8, 4),
-                F8E4M3FN => (9, 4),
-                F8E4M3B11FNUZ => (5, 4),
-                F8E5M2 | F8E5M2FNUZ => (16, 3),
-                F8E8M0FNU => (128, 1),
-                F4E2M1FN => (3, 2),
-                F6E3M2FN => (5, 3),
-                F6E2M3FN => (3, 4),
-                _ => (-1, -1),
-            };
-            Ok((
-                ty.is_complex(),
-                exponent,
-                digits,
-                component
-                    .bit_width()
-                    .ok_or_else(|| Error::new("primitive", "missing element bit width"))?,
-                component.is_signed_integral(),
-            ))
-        }
-        match properties(self)?.cmp(&properties(other)?) {
-            std::cmp::Ordering::Greater => Ok(self),
-            std::cmp::Ordering::Less => Ok(other),
-            std::cmp::Ordering::Equal if self == other => Ok(self),
-            _ => Err(Error::new(
-                "precision",
-                "distinct primitive types tie in the upstream precision ordering",
-            )),
-        }
-    }
-
-    pub fn hlo_name(self) -> String {
-        match self {
-            Self::OPAQUE_TYPE => "opaque".into(),
-            _ => format!("{self:?}").to_ascii_lowercase(),
-        }
-    }
-
-    pub fn from_hlo_name(name: &str) -> Result<Self> {
-        Self::VALUES
-            .iter()
-            .copied()
-            .find(|ty| ty.hlo_name() == name && *ty != Self::PRIMITIVE_TYPE_INVALID)
-            .ok_or_else(|| Error::new("primitive", format!("unknown primitive type {name:?}")))
-    }
-}
-
+#[pliron_attr(name = "hlo.dimension", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// Static extent, bounded runtime extent, or unbounded dynamic extent.
 pub enum Dimension {
     Static(i64),
     Bounded(i64),
     Unbounded,
 }
 
-/// An immutable, validated shape. Raw metadata is retained except for pinned
-/// OpenXLA import defaults, such as zero tail alignment becoming one.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Shape(ShapeProto);
+#[pliron_attr(
+    name = "hlo.tile",
+    format = "`[` vec($dimensions, CharSpace(`,`)) `]`",
+    verifier = "succ"
+)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Physical tiling dimensions in minor-to-major order.
+pub struct Tile {
+    pub dimensions: Vec<i64>,
+}
+
+#[pliron_attr(
+    name = "hlo.split_config",
+    format = "`<` $dimension `,` `[` vec($split_indices, CharSpace(`,`)) `]` `>`",
+    verifier = "succ"
+)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Split boundaries for one physical dimension.
+pub struct SplitConfig {
+    pub dimension: i64,
+    pub split_indices: Vec<i64>,
+}
+
+#[pliron_attr(name = "hlo.dim_level_type", format, verifier = "succ")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// Sparse level annotations retained independently from layout equality.
+pub enum DimLevelType {
+    Dense,
+    Compressed,
+    Singleton,
+    LooseCompressed,
+}
+
+#[pliron_attr(
+    name = "hlo.layout",
+    format = "`<` `[` vec($minor_to_major, CharSpace(`,`)) `]` `,` `[` vec($tiles, CharSpace(`,`)) `]` `,` $tail_padding_alignment_in_elements `,` $element_size_in_bits `,` $memory_space `,` `[` vec($index_primitive_type, CharSpace(`,`)) `]` `,` `[` vec($pointer_primitive_type, CharSpace(`,`)) `]` `,` `[` vec($physical_shape, CharSpace(`,`)) `]` `,` `[` vec($split_configs, CharSpace(`,`)) `]` `,` $dynamic_shape_metadata_prefix_bytes `,` `[` vec($dim_level_types, CharSpace(`,`)) `]` `,` `[` vec($dim_unique, CharSpace(`,`)) `]` `,` `[` vec($dim_ordered, CharSpace(`,`)) `]` `>`",
+    verifier = "succ"
+)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Complete physical layout, including tiling, padding, memory space, and sparse metadata.
+pub struct Layout {
+    pub minor_to_major: Vec<i64>,
+    pub tiles: Vec<Tile>,
+    pub tail_padding_alignment_in_elements: i64,
+    pub element_size_in_bits: i64,
+    pub memory_space: i64,
+    pub index_primitive_type: Vec<ElementType>,
+    pub pointer_primitive_type: Vec<ElementType>,
+    pub physical_shape: Vec<TypeHandle>,
+    pub split_configs: Vec<SplitConfig>,
+    pub dynamic_shape_metadata_prefix_bytes: i64,
+    pub dim_level_types: Vec<DimLevelType>,
+    pub dim_unique: Vec<bool>,
+    pub dim_ordered: Vec<bool>,
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Self {
+            minor_to_major: Vec::new(),
+            tiles: Vec::new(),
+            tail_padding_alignment_in_elements: 1,
+            element_size_in_bits: 0,
+            memory_space: 0,
+            index_primitive_type: Vec::new(),
+            pointer_primitive_type: Vec::new(),
+            physical_shape: Vec::new(),
+            split_configs: Vec::new(),
+            dynamic_shape_metadata_prefix_bytes: 0,
+            dim_level_types: Vec::new(),
+            dim_unique: Vec::new(),
+            dim_ordered: Vec::new(),
+        }
+    }
+}
+
+impl Layout {
+    /// Construct the conventional dense descending minor-to-major order.
+    pub fn descending(rank: usize) -> Self {
+        Self {
+            minor_to_major: (0..rank as i64).rev().collect(),
+            ..Self::default()
+        }
+    }
+    fn equal(&self, ctx: &Context, other: &Self) -> bool {
+        self.minor_to_major == other.minor_to_major
+            && self.tiles == other.tiles
+            && self.tail_padding_alignment_in_elements.max(1)
+                == other.tail_padding_alignment_in_elements.max(1)
+            && self.element_size_in_bits == other.element_size_in_bits
+            && self.memory_space == other.memory_space
+            && self.index_primitive_type == other.index_primitive_type
+            && self.pointer_primitive_type == other.pointer_primitive_type
+            && self.split_configs == other.split_configs
+            && self.physical_shape.len() == other.physical_shape.len()
+            && self
+                .physical_shape
+                .iter()
+                .zip(&other.physical_shape)
+                .all(|(&a, &b)| Shape::equal_including_layout(ctx, a, b))
+    }
+}
+
+/// Compare layouts semantically, ignoring metadata prefixes and obsolete annotations.
+pub fn layouts_equal(ctx: &Context, a: &Layout, b: &Layout) -> bool {
+    a.equal(ctx, b)
+}
+
+/// Validate the pinned LayoutUtil rules, including sparse-layout restrictions.
+pub fn validate_layout(layout: &Layout, dimensions: &[i64]) -> Result<()> {
+    if layout.minor_to_major.is_empty() && layout.memory_space != 0 {
+        return Ok(());
+    }
+    if layout.minor_to_major.len() != dimensions.len() {
+        return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+            message: "layout rank mismatch".into(),
+        }));
+    }
+    let mut seen = vec![false; dimensions.len()];
+    for &axis in &layout.minor_to_major {
+        let axis = usize::try_from(axis).map_err(|_| {
+            pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "negative layout axis".into(),
+            })
+        })?;
+        let slot = seen.get_mut(axis).ok_or_else(|| {
+            pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "layout axis out of range".into(),
+            })
+        })?;
+        if std::mem::replace(slot, true) {
+            return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "duplicate layout axis".into(),
+            }));
+        }
+    }
+    if layout.tail_padding_alignment_in_elements < 0 || layout.element_size_in_bits < 0 {
+        return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+            message: "negative layout alignment or element size".into(),
+        }));
+    }
+    if !layout.index_primitive_type.is_empty()
+        || !layout.pointer_primitive_type.is_empty()
+        || !layout.physical_shape.is_empty()
+    {
+        return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+            message: "sparse physical/index/pointer fields rejected by pinned LayoutUtil".into(),
+        }));
+    }
+    for tile in &layout.tiles {
+        if tile.dimensions.is_empty()
+            || tile
+                .dimensions
+                .iter()
+                .any(|&n| n <= 0 && n != COMBINE_DIMENSION && n != MATCH_DIMENSION)
+        {
+            return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "invalid tile dimension".into(),
+            }));
+        }
+    }
+    let mut split_axes = vec![false; dimensions.len()];
+    for split in &layout.split_configs {
+        let axis = usize::try_from(split.dimension).map_err(|_| {
+            pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "negative split axis".into(),
+            })
+        })?;
+        let slot = split_axes.get_mut(axis).ok_or_else(|| {
+            pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "split axis out of range".into(),
+            })
+        })?;
+        if std::mem::replace(slot, true) {
+            return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "duplicate split axis".into(),
+            }));
+        }
+        let logical_axis = layout.minor_to_major[dimensions.len() - 1 - axis] as usize;
+        let mut previous = 0;
+        for &index in &split.split_indices {
+            if index <= previous || index >= dimensions[logical_axis] {
+                return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                    message: "split indices must increase within the physical dimension".into(),
+                }));
+            }
+            previous = index;
+        }
+    }
+    Ok(())
+}
+
+/// A namespace, not a runtime shape wrapper: every shape is an interned pliron
+/// TensorType, TupleType, TokenType, OpaqueType or BufferType.
+pub struct Shape;
 
 impl Shape {
-    pub fn array(element: PrimitiveType, dimensions: impl Into<Vec<i64>>) -> Result<Self> {
-        Self::dynamic_array(
-            element,
-            dimensions
-                .into()
-                .into_iter()
-                .map(Dimension::Static)
-                .collect(),
-        )
-    }
-
-    pub fn scalar(element: PrimitiveType) -> Result<Self> {
-        Self::array(element, vec![])
-    }
-
-    pub fn dynamic_array(element: PrimitiveType, dimensions: Vec<Dimension>) -> Result<Self> {
-        if !element.is_array_element() {
-            return Err(Error::new("shape", "array requires an array element type"));
-        }
-        let mut wire = ShapeProto {
-            element_type: element.into(),
-            ..Default::default()
+    /// Construct a static array without imposing a physical layout.
+    pub fn array(
+        ctx: &Context,
+        element: impl Into<PrimitiveType>,
+        dimensions: impl Into<Vec<i64>>,
+    ) -> Result<TypeHandle> {
+        let dimensions = dimensions.into();
+        let ty = TensorType {
+            element: element.into().array_element()?,
+            dynamic_dimensions: vec![false; dimensions.len()],
+            dimensions,
+            layout: Vec::new(),
         };
+        ty.verify(ctx)?;
+        Ok(TensorType::instantiate(ty, ctx).into())
+    }
+    /// Construct a rank-zero array without imposing a physical layout.
+    pub fn scalar(ctx: &Context, element: impl Into<PrimitiveType>) -> Result<TypeHandle> {
+        Self::array(ctx, element, Vec::new())
+    }
+    /// Construct an array with explicit static, bounded, and unbounded dimensions.
+    pub fn dynamic_array(
+        ctx: &Context,
+        element: impl Into<PrimitiveType>,
+        dimensions: Vec<Dimension>,
+    ) -> Result<TypeHandle> {
+        let element = element.into().array_element()?;
+        let mut sizes = Vec::with_capacity(dimensions.len());
+        let mut dynamic_dimensions = Vec::with_capacity(dimensions.len());
         for dimension in dimensions {
-            let (extent, dynamic) = match dimension {
+            let (size, dynamic) = match dimension {
                 Dimension::Static(n) => (n, false),
                 Dimension::Bounded(n) if n >= 0 => (n, true),
-                Dimension::Bounded(_) => return Err(Error::new("shape", "negative dynamic bound")),
+                Dimension::Bounded(_) => {
+                    return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                        message: "negative dynamic bound".into(),
+                    }));
+                }
                 Dimension::Unbounded => (UNBOUNDED_SIZE, true),
             };
-            wire.dimensions.push(extent);
-            wire.is_dynamic_dimension.push(dynamic);
+            sizes.push(size);
+            dynamic_dimensions.push(dynamic);
         }
-        Self::from_proto(wire)
+        let ty = TensorType {
+            element,
+            dimensions: sizes,
+            layout: Vec::new(),
+            dynamic_dimensions,
+        };
+        ty.verify(ctx)?;
+        Ok(TensorType::instantiate(ty, ctx).into())
     }
-
-    pub fn tuple(elements: Vec<Self>) -> Result<Self> {
-        Self::from_proto(ShapeProto {
-            element_type: PrimitiveType::TUPLE.into(),
-            tuple_shapes: elements.into_iter().map(Self::into_proto).collect(),
-            ..Default::default()
-        })
+    /// Construct a checked tuple of native HLO types.
+    pub fn tuple(ctx: &Context, elements: Vec<TypeHandle>) -> Result<TypeHandle> {
+        TupleType::get(ctx, elements)
     }
-
-    pub fn token() -> Self {
-        Self(ShapeProto {
-            element_type: PrimitiveType::TOKEN.into(),
-            ..Default::default()
-        })
+    /// Return the interned sequencing token type.
+    pub fn token(ctx: &Context) -> TypeHandle {
+        TokenType::get(ctx)
     }
-
-    pub fn opaque() -> Self {
-        Self(ShapeProto {
-            element_type: PrimitiveType::OPAQUE_TYPE.into(),
-            ..Default::default()
-        })
+    /// Return the interned opaque type.
+    pub fn opaque(ctx: &Context) -> TypeHandle {
+        OpaqueType::get(ctx)
     }
-
-    pub fn buffer(array: Self) -> Result<Self> {
-        if !array.is_array() {
-            return Err(Error::new("shape", "buffer must wrap an array"));
+    /// Construct a buffer whose storage is a native array type.
+    pub fn buffer(ctx: &Context, array: TypeHandle) -> Result<TypeHandle> {
+        BufferType::get(ctx, array)
+    }
+    /// Whether the type is a native array, excluding buffers.
+    pub fn is_array(ctx: &Context, shape: TypeHandle) -> bool {
+        shape.deref(ctx).is::<TensorType>()
+    }
+    /// Whether the type is an array or an array-backed buffer.
+    pub fn is_array_or_buffer(ctx: &Context, shape: TypeHandle) -> bool {
+        let ty = shape.deref(ctx);
+        ty.is::<TensorType>() || ty.is::<BufferType>()
+    }
+    /// Whether any descendant array has an unbounded dynamic dimension.
+    pub fn has_unbounded(ctx: &Context, shape: TypeHandle) -> bool {
+        let ty = shape.deref(ctx);
+        if let Some(ty) = ty.downcast_ref::<TensorType>() {
+            ty.dimensions.contains(&UNBOUNDED_SIZE)
+        } else {
+            Self::children(ctx, shape)
+                .iter()
+                .any(|&child| Self::has_unbounded(ctx, child))
         }
-        Self::from_proto(ShapeProto {
-            element_type: PrimitiveType::BUFFER.into(),
-            tuple_shapes: vec![array.into_proto()],
-            ..Default::default()
-        })
     }
-
-    pub fn from_proto(wire: ShapeProto) -> Result<Self> {
-        validate_import(&wire, 0)?;
-        let mut wire = wire;
-        normalize_layout_defaults(&mut wire);
-        validate_shape(&wire, 0)?;
-        Ok(Self(wire))
-    }
-
-    pub fn as_proto(&self) -> &ShapeProto {
-        &self.0
-    }
-    pub fn into_proto(self) -> ShapeProto {
-        self.0
-    }
-
-    pub fn element_type(&self) -> PrimitiveType {
-        // Construction has already excluded unknown enum values.
-        self.0.element_type.enum_value_or_default()
-    }
-
-    pub fn is_array(&self) -> bool {
-        self.element_type().is_array_element()
-    }
-    pub fn is_tuple(&self) -> bool {
-        self.element_type() == PrimitiveType::TUPLE
-    }
-
-    /// Number of non-tuple leaves. Empty tuples contribute no leaves.
-    pub fn leaf_count(&self) -> usize {
-        let mut count = 0;
-        let mut pending = vec![&self.0];
-        while let Some(shape) = pending.pop() {
-            if shape.element_type == PrimitiveType::TUPLE.into() {
-                pending.extend(&shape.tuple_shapes);
-            } else {
-                count += 1;
+    /// Whether every descendant array specifies a physical layout.
+    pub fn has_complete_layout(ctx: &Context, shape: TypeHandle) -> Result<bool> {
+        if Self::is_array_or_buffer(ctx, shape) {
+            return Ok(Self::layout(ctx, shape)?.is_some());
+        }
+        for &child in Self::children(ctx, shape).iter() {
+            if !Self::has_complete_layout(ctx, child)? {
+                return Ok(false);
             }
         }
-        count
+        Ok(true)
     }
-    pub fn dimensions(&self) -> &[i64] {
-        self.0.logical_dimensions()
+    /// Whether the type is a native tuple.
+    pub fn is_tuple(ctx: &Context, shape: TypeHandle) -> bool {
+        shape.deref(ctx).is::<TupleType>()
     }
-    pub fn rank(&self) -> Result<usize> {
-        if !self.is_array() {
-            return Err(Error::new("shape", "expected array"));
+    /// Return array rank, rejecting structural types.
+    pub fn rank(ctx: &Context, shape: TypeHandle) -> Result<usize> {
+        Ok(tensor_structure(ctx, shape)?.dimensions.len())
+    }
+    /// Borrow dimension bounds without copying the interned type.
+    pub fn dimensions(ctx: &Context, shape: TypeHandle) -> Result<Ref<'_, [i64]>> {
+        Ok(Ref::map(tensor(ctx, shape)?, |ty| ty.dimensions.as_slice()))
+    }
+    /// Return the numeric element format of an array.
+    pub fn element_type(ctx: &Context, shape: TypeHandle) -> Result<ElementType> {
+        Ok(tensor_structure(ctx, shape)?.element)
+    }
+    /// Return the primitive kind, including tuple, token, opaque, and buffer kinds.
+    pub fn primitive_type(ctx: &Context, shape: TypeHandle) -> Result<PrimitiveType> {
+        let ty = shape.deref(ctx);
+        if let Some(ty) = ty.downcast_ref::<TensorType>() {
+            return Ok(ty.element.into());
         }
-        Ok(self.0.dimensions.len())
+        if ty.is::<TupleType>() {
+            return Ok(PrimitiveType::TUPLE);
+        }
+        if ty.is::<TokenType>() {
+            return Ok(PrimitiveType::TOKEN);
+        }
+        if ty.is::<OpaqueType>() {
+            return Ok(PrimitiveType::OPAQUE_TYPE);
+        }
+        if ty.is::<BufferType>() {
+            return Ok(PrimitiveType::BUFFER);
+        }
+        Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+            message: "expected native HLO type".into(),
+        }))
     }
-
-    pub fn dimension(&self, axis: usize) -> Result<Dimension> {
-        let &size = self
-            .dimensions()
-            .get(axis)
-            .ok_or_else(|| Error::new("dimension", "axis out of range"))?;
+    /// Return an array axis's extent and dynamic classification.
+    ///
+    /// Checks structural cardinalities and the requested axis in constant time.
+    /// Use `Verify::verify` to validate the entire raw type before consuming it.
+    pub fn dimension(ctx: &Context, shape: TypeHandle, axis: usize) -> Result<Dimension> {
+        let ty = tensor_structure(ctx, shape)?;
+        let &size = ty.dimensions.get(axis).ok_or_else(|| {
+            pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "axis out of range".into(),
+            })
+        })?;
+        if (size < 0 && !(size == UNBOUNDED_SIZE && ty.dynamic_dimensions[axis]))
+            || ty.layout.first().is_some_and(|layout| {
+                layout.minor_to_major.get(axis).is_some_and(|&value| {
+                    usize::try_from(value).map_or(true, |value| value >= ty.dimensions.len())
+                })
+            })
+        {
+            return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "malformed array dimension or layout axis".into(),
+            }));
+        }
         Ok(if size == UNBOUNDED_SIZE {
             Dimension::Unbounded
-        } else if self
-            .0
-            .is_dynamic_dimension
-            .get(axis)
-            .copied()
-            .unwrap_or(false)
-        {
+        } else if ty.dynamic_dimensions[axis] {
             Dimension::Bounded(size)
         } else {
             Dimension::Static(size)
         })
     }
-
-    pub fn is_dynamic(&self) -> bool {
-        proto_is_dynamic(&self.0)
-    }
-
-    pub fn element_count(&self) -> Result<i64> {
-        self.rank()?;
-        if self.dimensions().contains(&UNBOUNDED_SIZE) {
-            return Err(Error::new(
-                "unbounded",
-                "unbounded shape has no fixed element count",
-            ));
-        }
-        self.dimensions().iter().try_fold(1_i64, |n, d| {
-            n.checked_mul(*d)
-                .ok_or_else(|| Error::new("overflow", "shape element count overflow"))
+    /// Borrow tuple elements or a buffer's storage type; arrays have no children.
+    pub fn children(ctx: &Context, shape: TypeHandle) -> Ref<'_, [TypeHandle]> {
+        Ref::map(shape.deref(ctx), |ty| {
+            if let Some(ty) = ty.downcast_ref::<TupleType>() {
+                ty.elements.as_slice()
+            } else if let Some(ty) = ty.downcast_ref::<BufferType>() {
+                slice::from_ref(&ty.array)
+            } else {
+                &[]
+            }
         })
     }
-
-    pub fn layout(&self) -> Option<&LayoutProto> {
-        self.0.layout.as_ref().or_else(|| {
-            (self.element_type() == PrimitiveType::BUFFER)
-                .then(|| self.0.tuple_shapes[0].layout.as_ref())
-                .flatten()
-        })
-    }
-
-    /// The underlying array shape for an array or buffer; the wrapper is unchanged.
-    pub fn array_view(&self) -> Result<Self> {
-        let array = if self.element_type() == PrimitiveType::BUFFER {
-            Self::from_proto(self.0.array_storage().into_owned())?
+    /// Count tuple-tree leaves; a non-tuple contributes one leaf.
+    pub fn leaf_count(ctx: &Context, shape: TypeHandle) -> usize {
+        if Self::is_tuple(ctx, shape) {
+            Self::children(ctx, shape)
+                .iter()
+                .map(|&child| Self::leaf_count(ctx, child))
+                .sum()
         } else {
-            self.clone()
-        };
-        array.rank()?;
+            1
+        }
+    }
+    /// Whether any descendant array has a bounded or unbounded runtime extent.
+    pub fn is_dynamic(ctx: &Context, shape: TypeHandle) -> bool {
+        let ty = shape.deref(ctx);
+        if let Some(ty) = ty.downcast_ref::<TensorType>() {
+            ty.dynamic_dimensions.contains(&true)
+        } else {
+            Self::children(ctx, shape)
+                .iter()
+                .any(|&child| Self::is_dynamic(ctx, child))
+        }
+    }
+    /// Multiply array bounds, rejecting unbounded extents and overflow.
+    pub fn element_count(ctx: &Context, shape: TypeHandle) -> Result<i64> {
+        let ty = tensor(ctx, shape)?;
+        if ty.dimensions.contains(&UNBOUNDED_SIZE) {
+            return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "unbounded shape has no fixed element count".into(),
+            }));
+        }
+        ty.dimensions.iter().try_fold(1i64, |n, &d| {
+            n.checked_mul(d).ok_or_else(|| {
+                pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                    message: "shape element count overflow".into(),
+                })
+            })
+        })
+    }
+    /// Return an array or a buffer's underlying array without copying its type.
+    pub fn array_view(ctx: &Context, shape: TypeHandle) -> Result<TypeHandle> {
+        let array = shape
+            .deref(ctx)
+            .downcast_ref::<BufferType>()
+            .map_or(shape, |ty| ty.array);
+        tensor(ctx, array)?;
         Ok(array)
     }
-
-    /// Pinned `ShapeUtil::ReshapeIsBitcast`, using `IndexUtil`'s dense indexing.
-    /// Tiles, padding, memory spaces and dynamic flags do not affect this test.
-    pub fn reshape_is_bitcast(&self, output: &Self, ignore_element_type: bool) -> Result<bool> {
-        if self.element_type() == PrimitiveType::BUFFER
-            || output.element_type() == PrimitiveType::BUFFER
-        {
-            return self
-                .array_view()?
-                .reshape_is_bitcast(&output.array_view()?, ignore_element_type);
+    /// Borrow the optional array or buffer layout without copying its metadata.
+    pub fn layout(ctx: &Context, shape: TypeHandle) -> Result<Option<Ref<'_, Layout>>> {
+        let shape = Self::array_view(ctx, shape)?;
+        let ty = tensor(ctx, shape)?;
+        Ok(Ref::filter_map(ty, |ty| ty.layout.first()).ok())
+    }
+    /// Rebuild an array or buffer with a checked physical layout.
+    pub fn with_layout(ctx: &Context, shape: TypeHandle, mut layout: Layout) -> Result<TypeHandle> {
+        if let Some(ty) = shape.deref(ctx).downcast_ref::<BufferType>() {
+            let array = Self::with_layout(ctx, ty.array, layout)?;
+            return Self::buffer(ctx, array);
         }
-        fn strides(shape: &Shape) -> Result<Vec<i64>> {
-            let rank = shape.rank()?;
-            let layout = shape
-                .layout()
-                .ok_or_else(|| Error::new("layout", "reshape bitcast test requires layouts"))?;
-            if layout.minor_to_major.len() != rank {
-                return Err(Error::new(
-                    "layout",
-                    "reshape bitcast test requires a complete minor order",
-                ));
+        if layout.tail_padding_alignment_in_elements == 0 {
+            layout.tail_padding_alignment_in_elements = 1;
+        }
+        validate_layout(&layout, &tensor(ctx, shape)?.dimensions)?;
+        let source = tensor(ctx, shape)?;
+        let ty = TensorType {
+            element: source.element,
+            dimensions: source.dimensions.clone(),
+            dynamic_dimensions: source.dynamic_dimensions.clone(),
+            layout: vec![layout],
+        };
+        ty.verify(ctx)?;
+        Ok(TensorType::instantiate(ty, ctx).into())
+    }
+    /// Rebuild an array with its conventional dense descending layout.
+    pub fn with_default_layout(ctx: &Context, shape: TypeHandle) -> Result<TypeHandle> {
+        Self::with_layout(ctx, shape, Layout::descending(Self::rank(ctx, shape)?))
+    }
+    /// Remove physical layouts recursively from arrays, tuples, and buffers.
+    pub fn without_layout(ctx: &Context, shape: TypeHandle) -> Result<TypeHandle> {
+        if Self::is_array(ctx, shape) {
+            let source = tensor(ctx, shape)?;
+            let ty = TensorType {
+                element: source.element,
+                dimensions: source.dimensions.clone(),
+                dynamic_dimensions: source.dynamic_dimensions.clone(),
+                layout: Vec::new(),
+            };
+            return Ok(TensorType::instantiate(ty, ctx).into());
+        }
+        if Self::is_tuple(ctx, shape) {
+            return Self::tuple(
+                ctx,
+                Self::children(ctx, shape)
+                    .iter()
+                    .map(|&ty| Self::without_layout(ctx, ty))
+                    .collect::<Result<_>>()?,
+            );
+        }
+        if shape.deref(ctx).is::<BufferType>() {
+            return Self::buffer(
+                ctx,
+                Self::without_layout(ctx, Self::array_view(ctx, shape)?)?,
+            );
+        }
+        Ok(shape)
+    }
+    /// Rebuild an array with a new numeric format and normalized storage-bit metadata.
+    pub fn with_element_type(
+        ctx: &Context,
+        shape: TypeHandle,
+        element: impl Into<PrimitiveType>,
+    ) -> Result<TypeHandle> {
+        let element = element.into().array_element()?;
+        let mut ty = tensor(ctx, shape)?.clone();
+        ty.element = element;
+        if element.storage_bit_width() >= 8 {
+            for layout in &mut ty.layout {
+                layout.element_size_in_bits = 0;
             }
-            let mut result = vec![0; rank];
-            let mut stride = 1_i64;
+        }
+        ty.verify(ctx)?;
+        Ok(TensorType::instantiate(ty, ctx).into())
+    }
+    /// Compare shape structure, ignoring layouts and dynamic flags; unbounded extents match any bound.
+    pub fn compatible(ctx: &Context, a: TypeHandle, b: TypeHandle) -> bool {
+        Self::compare(ctx, a, b, false, false, true)
+    }
+    /// Compare compatible shapes while also allowing differing floating-point precisions.
+    pub fn compatible_ignoring_fp_precision(ctx: &Context, a: TypeHandle, b: TypeHandle) -> bool {
+        Self::compare(ctx, a, b, true, false, true)
+    }
+    /// Compare types, bounds, and dynamic flags without considering physical layouts.
+    pub fn equal_ignoring_layout(ctx: &Context, a: TypeHandle, b: TypeHandle) -> bool {
+        Self::compare(ctx, a, b, false, false, false)
+    }
+    /// Compare structure and dynamic flags, ignoring layout and floating-point precision.
+    pub fn equal_ignoring_layout_and_fp_precision(
+        ctx: &Context,
+        a: TypeHandle,
+        b: TypeHandle,
+    ) -> bool {
+        Self::compare(ctx, a, b, true, false, false)
+    }
+    /// Compare complete shapes using semantic layout equality.
+    pub fn equal_including_layout(ctx: &Context, a: TypeHandle, b: TypeHandle) -> bool {
+        Self::compare(ctx, a, b, false, true, false)
+    }
+    fn compare(
+        ctx: &Context,
+        a: TypeHandle,
+        b: TypeHandle,
+        fp: bool,
+        layout: bool,
+        compatible: bool,
+    ) -> bool {
+        let at = a.deref(ctx);
+        let bt = b.deref(ctx);
+        if let (Some(ta), Some(tb)) = (
+            at.downcast_ref::<TensorType>(),
+            bt.downcast_ref::<TensorType>(),
+        ) {
+            return (ta.element == tb.element
+                || fp && ta.element.is_float() && tb.element.is_float())
+                && ta.dimensions.len() == tb.dimensions.len()
+                && ta.dimensions.iter().zip(&tb.dimensions).all(|(&a, &b)| {
+                    a == b || compatible && (a == UNBOUNDED_SIZE || b == UNBOUNDED_SIZE)
+                })
+                && (compatible || ta.dynamic_dimensions == tb.dynamic_dimensions)
+                && (!layout
+                    || match (Self::layout(ctx, a), Self::layout(ctx, b)) {
+                        (Ok(None), Ok(None)) => true,
+                        (Ok(Some(a)), Ok(Some(b))) => a.equal(ctx, &b),
+                        _ => false,
+                    });
+        }
+        if at.get_type_id() != bt.get_type_id() {
+            return false;
+        }
+        let ac = Self::children(ctx, a);
+        let bc = Self::children(ctx, b);
+        ac.len() == bc.len()
+            && ac
+                .iter()
+                .zip(bc.iter())
+                .all(|(&a, &b)| Self::compare(ctx, a, b, fp, layout, compatible))
+    }
+    /// Follow checked tuple indices, returning the root for an empty index.
+    pub fn subshape(ctx: &Context, mut shape: TypeHandle, index: &[usize]) -> Result<TypeHandle> {
+        for &axis in index {
+            let next = shape
+                .deref(ctx)
+                .downcast_ref::<TupleType>()
+                .ok_or_else(|| {
+                    pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                        message: "index traverses non-tuple shape".into(),
+                    })
+                })?
+                .elements
+                .get(axis)
+                .copied()
+                .ok_or_else(|| {
+                    pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                        message: "tuple index out of range".into(),
+                    })
+                })?;
+            shape = next;
+        }
+        Ok(shape)
+    }
+    /// Return bounded byte storage size, using `pointer_size` for tuple entries.
+    pub fn byte_size(ctx: &Context, shape: TypeHandle, pointer_size: i64) -> Result<i64> {
+        let ty = shape.deref(ctx);
+        if ty.is::<TupleType>() || ty.is::<OpaqueType>() {
+            if pointer_size <= 0 {
+                return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                    message: "tuple/opaque size requires positive pointer size".into(),
+                }));
+            }
+            let count = ty
+                .downcast_ref::<TupleType>()
+                .map_or(1, |t| t.elements.len() as i64);
+            return count.checked_mul(pointer_size).ok_or_else(|| {
+                pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                    message: "pointer table byte size overflow".into(),
+                })
+            });
+        }
+        if ty.is::<TokenType>() {
+            return Ok(0);
+        }
+        let array = Self::array_view(ctx, shape)?;
+        let count = Self::element_count(ctx, array)?;
+        let size = Self::layout(ctx, array)?.map_or(0, |l| l.element_size_in_bits);
+        if size != 0 {
+            let bits = count.checked_mul(size).ok_or_else(|| {
+                pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                    message: "packed array bit size overflow".into(),
+                })
+            })?;
+            Ok(bits / 8 + i64::from(bits % 8 != 0))
+        } else {
+            count
+                .checked_mul(i64::from(
+                    Self::element_type(ctx, array)?.bit_width().div_ceil(8),
+                ))
+                .ok_or_else(|| {
+                    pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                        message: "array byte size overflow".into(),
+                    })
+                })
+        }
+    }
+    /// Test dense stride compatibility without moving elements; tiles and padding are ignored.
+    pub fn reshape_is_bitcast(
+        ctx: &Context,
+        input: TypeHandle,
+        output: TypeHandle,
+        ignore_element_type: bool,
+    ) -> Result<bool> {
+        let input = Self::array_view(ctx, input)?;
+        let output = Self::array_view(ctx, output)?;
+        fn strides(ctx: &Context, shape: TypeHandle) -> Result<Vec<i64>> {
+            let dimensions = Shape::dimensions(ctx, shape)?;
+            let layout = Shape::layout(ctx, shape)?.ok_or_else(|| {
+                pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                    message: "reshape bitcast requires layouts".into(),
+                })
+            })?;
+            if layout.minor_to_major.len() != dimensions.len() {
+                return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                    message: "reshape bitcast requires complete minor order".into(),
+                }));
+            }
+            let mut result = vec![0; dimensions.len()];
+            let mut stride = 1i64;
             for &axis in &layout.minor_to_major {
-                let axis = usize::try_from(axis)
-                    .map_err(|_| Error::new("layout", "negative layout axis"))?;
-                let slot = result
-                    .get_mut(axis)
-                    .ok_or_else(|| Error::new("layout", "layout axis exceeds rank"))?;
-                if *slot != 0 {
-                    return Err(Error::new("layout", "duplicate layout axis"));
-                }
-                *slot = stride;
+                result[axis as usize] = stride;
                 stride = stride
-                    .checked_mul(shape.dimensions()[axis])
-                    .ok_or_else(|| Error::new("overflow", "reshape bitcast stride overflow"))?;
+                    .checked_mul(dimensions[axis as usize])
+                    .ok_or_else(|| {
+                        pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                            message: "reshape stride overflow".into(),
+                        })
+                    })?;
             }
             Ok(result)
         }
-        self.rank()?;
-        output.rank()?;
-        if self.layout().is_none() || output.layout().is_none() {
-            return Err(Error::new(
-                "layout",
-                "reshape bitcast test requires layouts",
-            ));
+        if Self::layout(ctx, input)?.is_none() || Self::layout(ctx, output)?.is_none() {
+            return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "reshape bitcast requires layouts".into(),
+            }));
         }
-        if !ignore_element_type && self.element_type() != output.element_type() {
+        if !ignore_element_type
+            && Self::element_type(ctx, input)? != Self::element_type(ctx, output)?
+        {
             return Ok(false);
         }
-        let count = self.element_count()?;
-        if count != output.element_count()? {
+        let count = Self::element_count(ctx, input)?;
+        if count != Self::element_count(ctx, output)? {
             return Ok(false);
         }
         if count == 0 {
             return Ok(true);
         }
-        let input_strides = strides(self)?;
-        let output_strides = strides(output)?;
+        let input_strides = strides(ctx, input)?;
+        let output_strides = strides(ctx, output)?;
         fn units(
-            input: &Shape,
-            output: &Shape,
+            input: &[i64],
+            output: &[i64],
             input_strides: &[i64],
             output_strides: &[i64],
         ) -> Result<bool> {
-            let mut logical_stride = 1_i64;
-            for axis in (0..input.dimensions().len()).rev() {
-                if input.dimensions()[axis] > 1 {
+            let mut logical_stride = 1i64;
+            for axis in (0..input.len()).rev() {
+                if input[axis] > 1 {
                     let mut remaining = logical_stride;
-                    let mut physical = 0_i64;
-                    for target in (0..output.dimensions().len()).rev() {
-                        let size = output.dimensions()[target];
+                    let mut physical = 0i64;
+                    for target in (0..output.len()).rev() {
                         physical = physical
                             .checked_add(
-                                (remaining % size)
+                                (remaining % output[target])
                                     .checked_mul(output_strides[target])
                                     .ok_or_else(|| {
-                                        Error::new("overflow", "reshape physical index overflow")
+                                        pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                                            message: "reshape physical index overflow".into(),
+                                        })
                                     })?,
                             )
                             .ok_or_else(|| {
-                                Error::new("overflow", "reshape physical index overflow")
+                                pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                                    message: "reshape physical index overflow".into(),
+                                })
                             })?;
-                        remaining /= size;
+                        remaining /= output[target];
                     }
                     if physical != input_strides[axis] {
                         return Ok(false);
                     }
                 }
-                logical_stride = logical_stride
-                    .checked_mul(input.dimensions()[axis])
-                    .ok_or_else(|| Error::new("overflow", "reshape logical index overflow"))?;
+                logical_stride = logical_stride.checked_mul(input[axis]).ok_or_else(|| {
+                    pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                        message: "reshape logical stride overflow".into(),
+                    })
+                })?;
             }
             Ok(true)
         }
-        Ok(units(self, output, &input_strides, &output_strides)?
-            && units(output, self, &output_strides, &input_strides)?)
+        let input = Self::dimensions(ctx, input)?;
+        let output = Self::dimensions(ctx, output)?;
+        Ok(units(&input, &output, &input_strides, &output_strides)?
+            && units(&output, &input, &output_strides, &input_strides)?)
     }
-
-    /// Pinned `ShapeUtil::ByteSizeOf`, not a target's tiled/padded allocation size.
-    /// Tuple tables and opaque values require an explicit positive pointer size.
-    pub fn byte_size(&self, pointer_size: i64) -> Result<i64> {
-        if self.is_tuple() || self.element_type() == PrimitiveType::OPAQUE_TYPE {
-            if pointer_size <= 0 {
-                return Err(Error::new(
-                    "shape-size",
-                    "tuple/opaque size requires a positive pointer size",
-                ));
-            }
-            let count = if self.is_tuple() {
-                i64::try_from(self.0.tuple_shapes.len())
-                    .map_err(|_| Error::new("overflow", "tuple cardinality exceeds i64"))?
-            } else {
-                1
-            };
-            return count
-                .checked_mul(pointer_size)
-                .ok_or_else(|| Error::new("overflow", "pointer table byte size overflow"));
-        }
-        if self.element_type() == PrimitiveType::TOKEN {
-            return Ok(0);
-        }
-        if self.element_type() == PrimitiveType::BUFFER {
-            return self.array_view()?.byte_size(pointer_size);
-        }
-        let count = self.element_count()?;
-        if let Some(layout) = self.layout()
-            && layout.element_size_in_bits != 0
-        {
-            let bits = count
-                .checked_mul(layout.element_size_in_bits)
-                .ok_or_else(|| Error::new("overflow", "packed array bit size overflow"))?;
-            return Ok(bits / 8 + i64::from(bits % 8 != 0));
-        }
-        count
-            .checked_mul(i64::from(
-                self.element_type()
-                    .bit_width()
-                    .ok_or_else(|| Error::new("shape-size", "element type has no fixed size"))?
-                    .div_ceil(8),
-            ))
-            .ok_or_else(|| Error::new("overflow", "array byte size overflow"))
-    }
-
-    /// Bytes through the last logical element, excluding trailing padding.
-    /// Matches `ShapeUtil::ArrayDataSize`: only the outer tile participates in
-    /// indexing; a second tile can resolve MATCH dimensions' packing.
-    pub fn array_data_size(&self) -> Result<i64> {
-        if self.element_type() == PrimitiveType::BUFFER {
-            return self.array_view()?.array_data_size();
-        }
-        let rank = self.rank()?;
-        self.element_count()?;
-        let layout = self
-            .layout()
-            .ok_or_else(|| Error::new("layout", "array data size requires a layout"))?;
+    /// Pinned ArrayDataSize: through the last logical element, without trailing
+    /// padding. Only the outer tile indexes; the second resolves MATCH packing.
+    /// Return tiled array data bytes, excluding tail-alignment padding.
+    pub fn array_data_size(ctx: &Context, shape: TypeHandle) -> Result<i64> {
+        let shape = Self::array_view(ctx, shape)?;
+        let dimensions = Self::dimensions(ctx, shape)?;
+        let rank = dimensions.len();
+        Self::element_count(ctx, shape)?;
+        let layout = Self::layout(ctx, shape)?.ok_or_else(|| {
+            pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "array data size requires layout".into(),
+            })
+        })?;
         if layout.minor_to_major.len() != rank {
-            return Err(Error::new(
-                "layout",
-                "array data size requires a full minor order",
-            ));
+            return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "array data size requires full minor order".into(),
+            }));
         }
-        let overflow = || Error::new("overflow", "array data size overflow");
+        let overflow = || {
+            pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "array data size overflow".into(),
+            })
+        };
         let mul = |a: i64, b: i64| a.checked_mul(b).ok_or_else(overflow);
         let add = |a: i64, b: i64| a.checked_add(b).ok_or_else(overflow);
         let divide = |a: i64, b: i64| a.checked_div(b).ok_or_else(overflow);
@@ -559,7 +793,7 @@ impl Shape {
         let count = if rank == 0 {
             1
         } else if rank == 1 {
-            self.dimensions()[0]
+            dimensions[0]
         } else {
             let tiles = layout
                 .tiles
@@ -587,19 +821,15 @@ impl Shape {
                     if minor >= rank {
                         continue;
                     }
-                    resolve(
-                        axis,
-                        self.dimensions()[layout.minor_to_major[minor] as usize],
-                    )?
+                    resolve(axis, dimensions[layout.minor_to_major[minor] as usize])?
                 } else {
                     tile
                 };
                 outer = mul(outer, size)?;
             }
-            let mut inner = 1;
-            let mut index = 0;
+            let (mut inner, mut index) = (1, 0);
             for (minor, &logical) in layout.minor_to_major.iter().enumerate() {
-                let bound = self.dimensions()[logical as usize];
+                let bound = dimensions[logical as usize];
                 let coordinate = bound.checked_sub(1).ok_or_else(overflow)?;
                 if minor < tiles.len() {
                     let axis = tiles.len() - 1 - minor;
@@ -625,477 +855,17 @@ impl Shape {
             add(index, 1)?
         };
         if count < 0 {
-            return Err(Error::new("shape-size", "array data size is negative"));
+            return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "array data size is negative".into(),
+            }));
         }
         if layout.element_size_in_bits != 0 {
             ceil(mul(count, layout.element_size_in_bits)?, 8)
         } else {
             mul(
                 count,
-                i64::from(
-                    self.element_type()
-                        .bit_width()
-                        .ok_or_else(|| Error::new("shape-size", "element type has no fixed size"))?
-                        .div_ceil(8),
-                ),
+                i64::from(Self::element_type(ctx, shape)?.bit_width().div_ceil(8)),
             )
         }
     }
-
-    pub fn with_layout(mut self, layout: LayoutProto) -> Result<Self> {
-        self.0.layout = Some(layout).into();
-        Self::from_proto(self.0)
-    }
-
-    pub fn with_default_layout(self) -> Result<Self> {
-        let rank = self.rank()?;
-        self.with_layout(LayoutProto {
-            minor_to_major: (0..rank as i64).rev().collect(),
-            tail_padding_alignment_in_elements: 1,
-            ..Default::default()
-        })
-    }
-
-    pub fn without_layout(&self) -> Self {
-        let mut wire = self.0.clone();
-        let mut pending = vec![&mut wire];
-        while let Some(wire) = pending.pop() {
-            wire.layout.clear();
-            if matches!(
-                wire.element_type.enum_value(),
-                Ok(PrimitiveType::TUPLE | PrimitiveType::BUFFER)
-            ) {
-                pending.extend(wire.tuple_shapes.iter_mut());
-            }
-        }
-        Self(wire)
-    }
-
-    pub fn with_element_type(&self, element: PrimitiveType) -> Result<Self> {
-        self.rank()?;
-        if !element.is_array_element() {
-            return Err(Error::new("shape", "invalid array element replacement"));
-        }
-        let mut wire = self.0.clone();
-        wire.element_type = element.into();
-        if (element.bit_width().is_some_and(|bits| bits >= 8) || element == PrimitiveType::PRED)
-            && let Some(layout) = wire.layout.as_mut()
-        {
-            layout.element_size_in_bits = 0;
-        }
-        Self::from_proto(wire)
-    }
-
-    /// Upstream ShapeUtil::Compatible: ignores layout and dynamic flags.
-    /// Unbounded dimensions are wildcards; bounded/static extents must match.
-    pub fn compatible(&self, other: &Self) -> bool {
-        self.compatible_impl(other, false)
-    }
-
-    pub fn compatible_ignoring_fp_precision(&self, other: &Self) -> bool {
-        self.compatible_impl(other, true)
-    }
-
-    pub fn equal_ignoring_layout(&self, other: &Self) -> bool {
-        self.equal_ignoring_layout_impl(other, false)
-    }
-
-    pub fn equal_ignoring_layout_and_fp_precision(&self, other: &Self) -> bool {
-        self.equal_ignoring_layout_impl(other, true)
-    }
-
-    fn equal_ignoring_layout_impl(&self, other: &Self, ignore_fp: bool) -> bool {
-        let mut pending = vec![(&self.0, &other.0)];
-        while let Some((a, b)) = pending.pop() {
-            let same_type = a.element_type == b.element_type
-                || (ignore_fp
-                    && a.element_type
-                        .enum_value()
-                        .is_ok_and(PrimitiveType::is_floating)
-                    && b.element_type
-                        .enum_value()
-                        .is_ok_and(PrimitiveType::is_floating));
-            if !same_type
-                || a.logical_dimensions() != b.logical_dimensions()
-                || (0..a.logical_dimensions().len()).any(|axis| {
-                    a.is_dynamic_dimension.get(axis).copied().unwrap_or(false)
-                        != b.is_dynamic_dimension.get(axis).copied().unwrap_or(false)
-                })
-                || a.logical_children().len() != b.logical_children().len()
-            {
-                return false;
-            }
-            pending.extend(a.logical_children().iter().zip(b.logical_children()));
-        }
-        true
-    }
-
-    fn compatible_impl(&self, other: &Self, ignore_fp_precision: bool) -> bool {
-        let mut pending = vec![(&self.0, &other.0)];
-        while let Some((a, b)) = pending.pop() {
-            let same_type = a.element_type == b.element_type
-                || (ignore_fp_precision
-                    && a.element_type
-                        .enum_value()
-                        .is_ok_and(PrimitiveType::is_floating)
-                    && b.element_type
-                        .enum_value()
-                        .is_ok_and(PrimitiveType::is_floating));
-            if !same_type
-                || a.logical_dimensions().len() != b.logical_dimensions().len()
-                || !a
-                    .logical_dimensions()
-                    .iter()
-                    .zip(b.logical_dimensions())
-                    .all(|(&a, &b)| a == b || a == UNBOUNDED_SIZE || b == UNBOUNDED_SIZE)
-                || a.logical_children().len() != b.logical_children().len()
-            {
-                return false;
-            }
-            pending.extend(a.logical_children().iter().zip(b.logical_children()));
-        }
-        true
-    }
-
-    /// Exact logical and layout equality under pinned C++ semantics.
-    /// Unlike wire equality (`PartialEq`), unknown fields, obsolete layout
-    /// annotations and dynamic metadata prefix sizes do not participate.
-    pub fn equal_including_layout(&self, other: &Self) -> bool {
-        shapes_equal_including_layout(&self.0, &other.0)
-    }
-
-    pub fn subshape(&self, index: &[usize]) -> Result<Self> {
-        let mut current = &self.0;
-        for &axis in index {
-            if current.element_type.enum_value_or_default() != PrimitiveType::TUPLE {
-                return Err(Error::new(
-                    "shape-index",
-                    "index traverses a non-tuple shape",
-                ));
-            }
-            current = current
-                .tuple_shapes
-                .get(axis)
-                .ok_or_else(|| Error::new("shape-index", "tuple index out of range"))?;
-        }
-        Ok(Self(current.clone()))
-    }
-}
-
-pub(crate) fn layouts_equal(a: &LayoutProto, b: &LayoutProto) -> bool {
-    layout_fields_equal(a, b)
-        && match (a.physical_shape.as_ref(), b.physical_shape.as_ref()) {
-            (None, None) => true,
-            (Some(a), Some(b)) => shapes_equal_including_layout(a, b),
-            _ => false,
-        }
-}
-
-fn layout_fields_equal(a: &LayoutProto, b: &LayoutProto) -> bool {
-    a.minor_to_major == b.minor_to_major
-        && a.tail_padding_alignment_in_elements.max(1)
-            == b.tail_padding_alignment_in_elements.max(1)
-        && a.element_size_in_bits == b.element_size_in_bits
-        && a.memory_space == b.memory_space
-        && a.index_primitive_type == b.index_primitive_type
-        && a.pointer_primitive_type == b.pointer_primitive_type
-        && a.tiles.len() == b.tiles.len()
-        && a.tiles
-            .iter()
-            .zip(&b.tiles)
-            .all(|(a, b)| a.dimensions == b.dimensions)
-        && a.split_configs.len() == b.split_configs.len()
-        && a.split_configs
-            .iter()
-            .zip(&b.split_configs)
-            .all(|(a, b)| a.dimension == b.dimension && a.split_indices == b.split_indices)
-}
-
-fn shapes_equal_including_layout(a: &ShapeProto, b: &ShapeProto) -> bool {
-    let mut pending = vec![(a.clone(), b.clone())];
-    while let Some((a, b)) = pending.pop() {
-        if a.element_type.enum_value() == Ok(PrimitiveType::BUFFER) {
-            pending.push((
-                a.array_storage().into_owned(),
-                b.array_storage().into_owned(),
-            ));
-            continue;
-        }
-        if a.element_type != b.element_type
-            || a.logical_dimensions() != b.logical_dimensions()
-            || (0..a.logical_dimensions().len()).any(|axis| {
-                a.is_dynamic_dimension.get(axis).copied().unwrap_or(false)
-                    != b.is_dynamic_dimension.get(axis).copied().unwrap_or(false)
-            })
-            || a.logical_children().len() != b.logical_children().len()
-        {
-            return false;
-        }
-        match (a.layout.as_ref(), b.layout.as_ref()) {
-            (None, None) => {}
-            (Some(a), Some(b)) if layout_fields_equal(a, b) => {
-                match (a.physical_shape.as_ref(), b.physical_shape.as_ref()) {
-                    (None, None) => {}
-                    (Some(a), Some(b)) => pending.push((a.clone(), b.clone())),
-                    _ => return false,
-                }
-            }
-            _ => return false,
-        }
-        pending.extend(
-            a.logical_children()
-                .iter()
-                .cloned()
-                .zip(b.logical_children().iter().cloned()),
-        );
-    }
-    true
-}
-
-fn proto_is_dynamic(wire: &ShapeProto) -> bool {
-    let mut pending = vec![wire];
-    while let Some(shape) = pending.pop() {
-        if shape
-            .element_type
-            .enum_value()
-            .is_ok_and(PrimitiveType::is_array_element)
-        {
-            if shape.is_dynamic_dimension.iter().any(|dynamic| *dynamic) {
-                return true;
-            }
-        } else {
-            pending.extend(shape.logical_children());
-        }
-    }
-    false
-}
-
-fn validate_import(wire: &ShapeProto, depth: usize) -> Result<()> {
-    let mut pending = vec![(wire, depth)];
-    while let Some((wire, depth)) = pending.pop() {
-        if depth >= MAX_SHAPE_DEPTH {
-            return Err(Error::new("resource-limit", "shape import nesting limit"));
-        }
-        let element = wire
-            .element_type
-            .enum_value()
-            .map_err(|_| Error::new("shape", "unknown primitive enum value"))?;
-        if element.is_array_element() {
-            if !wire.is_dynamic_dimension.is_empty()
-                && wire.is_dynamic_dimension.len() != wire.dimensions.len()
-            {
-                return Err(Error::new("shape", "array field cardinality mismatch"));
-            }
-        } else if element == PrimitiveType::BUFFER
-            && (wire.tuple_shapes.len() != 1
-                || !wire.tuple_shapes[0]
-                    .element_type
-                    .enum_value()
-                    .is_ok_and(PrimitiveType::is_array_element))
-        {
-            return Err(Error::new("shape", "buffer requires one array shape"));
-        }
-        pending.extend(
-            wire.logical_children()
-                .iter()
-                .map(|child| (child, depth + 1)),
-        );
-        if let Some(layout) = wire.layout.as_ref() {
-            if !element.is_array_element() && element != PrimitiveType::BUFFER {
-                return Err(Error::new("shape", "nonarray shape has layout"));
-            }
-            if layout.tail_padding_alignment_in_elements < 0 {
-                return Err(Error::new("layout", "negative imported tail alignment"));
-            }
-            if layout
-                .tiles
-                .iter()
-                .flat_map(|tile| &tile.dimensions)
-                .any(|&dimension| {
-                    dimension < 0 && dimension != COMBINE_DIMENSION && dimension != MATCH_DIMENSION
-                })
-            {
-                return Err(Error::new("layout", "invalid imported tile dimension"));
-            }
-            if let Some(physical) = layout.physical_shape.as_ref() {
-                pending.push((physical, depth + 1));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn normalize_layout_defaults(wire: &mut ShapeProto) {
-    let mut pending = vec![wire];
-    while let Some(wire) = pending.pop() {
-        if let Some(layout) = wire.layout.as_mut() {
-            if layout.tail_padding_alignment_in_elements == 0 {
-                layout.tail_padding_alignment_in_elements = 1;
-            }
-            if let Some(physical_shape) = layout.physical_shape.as_mut() {
-                pending.push(physical_shape);
-            }
-        }
-        if matches!(
-            wire.element_type.enum_value(),
-            Ok(PrimitiveType::TUPLE | PrimitiveType::BUFFER)
-        ) {
-            pending.extend(&mut wire.tuple_shapes);
-        }
-    }
-}
-
-fn validate_shape(wire: &ShapeProto, depth: usize) -> Result<()> {
-    let mut pending = vec![(std::borrow::Cow::Borrowed(wire), depth)];
-    while let Some((wire, depth)) = pending.pop() {
-        if depth >= MAX_SHAPE_DEPTH {
-            return Err(Error::new("resource-limit", "shape nesting limit"));
-        }
-        let element = wire
-            .element_type
-            .enum_value()
-            .map_err(|_| Error::new("shape", "unknown primitive enum value"))?;
-        match element {
-            PrimitiveType::TUPLE => {
-                if wire.layout.is_some() {
-                    return Err(Error::new("shape", "tuple has layout"));
-                }
-                pending.extend(
-                    wire.tuple_shapes
-                        .iter()
-                        .cloned()
-                        .map(|child| (std::borrow::Cow::Owned(child), depth + 1)),
-                );
-            }
-            PrimitiveType::BUFFER => {
-                if wire.tuple_shapes.len() != 1 {
-                    return Err(Error::new(
-                        "shape",
-                        "buffer requires exactly one array shape",
-                    ));
-                }
-                pending.push((
-                    std::borrow::Cow::Owned(wire.array_storage().into_owned()),
-                    depth + 1,
-                ));
-                if !wire.tuple_shapes[0]
-                    .element_type
-                    .enum_value_or_default()
-                    .is_array_element()
-                {
-                    return Err(Error::new("shape", "buffer must wrap array"));
-                }
-            }
-            PrimitiveType::TOKEN | PrimitiveType::OPAQUE_TYPE => {
-                if wire.layout.is_some() {
-                    return Err(Error::new("shape", "token/opaque has layout"));
-                }
-            }
-            ty if ty.is_array_element() => {
-                if !wire.is_dynamic_dimension.is_empty()
-                    && wire.is_dynamic_dimension.len() != wire.dimensions.len()
-                {
-                    return Err(Error::new("shape", "array field cardinality mismatch"));
-                }
-                let mut count = 1_i64;
-                for (axis, &size) in wire.dimensions.iter().enumerate() {
-                    if size == UNBOUNDED_SIZE {
-                        if !wire
-                            .is_dynamic_dimension
-                            .get(axis)
-                            .copied()
-                            .unwrap_or(false)
-                        {
-                            return Err(Error::new("shape", "unbounded dimension must be dynamic"));
-                        }
-                    } else {
-                        if size < 0 {
-                            return Err(Error::new("shape", "negative dimension"));
-                        }
-                        count = count
-                            .checked_mul(size)
-                            .ok_or_else(|| Error::new("overflow", "shape dimensions overflow"))?;
-                    }
-                }
-                count
-                    .checked_mul(i64::from(ty.bit_width().unwrap_or(0).div_ceil(8)))
-                    .ok_or_else(|| Error::new("overflow", "shape byte size overflow"))?;
-                if let Some(layout) = wire.layout.as_ref() {
-                    validate_layout(layout, &wire.dimensions)?;
-                }
-            }
-            _ => return Err(Error::new("shape", "invalid element type")),
-        }
-    }
-    Ok(())
-}
-
-/// Mirrors the pinned LayoutUtil dense-layout checks. Sparse fields are retained
-/// by wire messages, but rejected here as they are by that pinned validator.
-pub fn validate_layout(layout: &LayoutProto, dimensions: &[i64]) -> Result<()> {
-    let fail = |message| Error::new("layout", message);
-    if layout.minor_to_major.is_empty() && layout.memory_space != 0 {
-        return Ok(());
-    }
-    if layout.minor_to_major.len() != dimensions.len() {
-        return Err(fail("layout rank mismatch"));
-    }
-    let mut seen = vec![false; dimensions.len()];
-    for &axis in &layout.minor_to_major {
-        let axis = usize::try_from(axis).map_err(|_| fail("negative layout axis"))?;
-        let slot = seen
-            .get_mut(axis)
-            .ok_or_else(|| fail("layout axis out of range"))?;
-        if std::mem::replace(slot, true) {
-            return Err(fail("duplicate layout axis"));
-        }
-    }
-    if layout.tail_padding_alignment_in_elements < 0 {
-        return Err(fail("negative tail padding alignment"));
-    }
-    // Layout::FromProto normalizes zero to the C++ default of one.
-    if layout.element_size_in_bits < 0 {
-        return Err(fail("negative element size"));
-    }
-    if layout.index_primitive_type.value() != 0
-        || layout.pointer_primitive_type.value() != 0
-        || layout.physical_shape.is_some()
-    {
-        return Err(fail(
-            "sparse physical/index/pointer fields rejected by pinned LayoutUtil",
-        ));
-    }
-    for tile in &layout.tiles {
-        if tile.dimensions.is_empty() {
-            return Err(fail("empty tile"));
-        }
-        if tile
-            .dimensions
-            .iter()
-            .any(|&n| n <= 0 && n != COMBINE_DIMENSION && n != MATCH_DIMENSION)
-        {
-            return Err(fail("invalid tile dimension"));
-        }
-    }
-    let mut split_axes = vec![false; dimensions.len()];
-    for split in &layout.split_configs {
-        let axis = usize::try_from(split.dimension).map_err(|_| fail("negative split axis"))?;
-        let slot = split_axes
-            .get_mut(axis)
-            .ok_or_else(|| fail("split axis out of range"))?;
-        if std::mem::replace(slot, true) {
-            return Err(fail("duplicate split axis"));
-        }
-        let logical_axis = layout.minor_to_major[dimensions.len() - 1 - axis] as usize;
-        let mut previous = 0;
-        for &index in &split.split_indices {
-            if index <= previous || index >= dimensions[logical_axis] {
-                return Err(fail(
-                    "split indices must increase within the physical dimension",
-                ));
-            }
-            previous = index;
-        }
-    }
-    Ok(())
 }

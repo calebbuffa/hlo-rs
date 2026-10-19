@@ -1,294 +1,254 @@
-use std::collections::BTreeSet;
-
-use crate::{
-    Error, PrimitiveType, Result, Shape,
-    proto::xla_data::{OpSharding, op_sharding::Type},
+//! Native tile-assignment and named-mesh sharding attributes.
+use crate::Diagnostic;
+use crate::{attributes::Metadata, shape::Shape, types::TokenType};
+use pliron::{
+    common_traits::Verify, context::Context, derive::pliron_attr, result::Result,
+    r#type::TypeHandle,
 };
+use std::collections::BTreeSet;
 
 mod canonical;
 mod named;
-pub(crate) use named::iota_value;
-pub use named::{AxisRef, Mesh, NamedSharding};
+use canonical::Kind;
+pub use named::{
+    AxisRef, DimensionSharding, IotaTransform, Mesh, MeshAxis, NamedSharding, ReductionOp, SubAxis,
+};
+pub(crate) use named::{iota_value, product, validate_iota};
 
-/// Validated legacy and named HLO sharding import. Wire fields are retained separately
-/// from constructor-normalized semantics, including unknown fields.
-#[derive(Clone, Debug)]
+#[pliron_attr(name = "hlo.sharding_type", format, verifier = "succ")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// Replication, maximal, tuple, tiled, manual, unknown, or unreduced assignment.
+pub enum ShardingType {
+    Replicated,
+    Maximal,
+    Tuple,
+    Other,
+    Manual,
+    Unknown,
+    Unreduced,
+}
+
+#[pliron_attr(name = "hlo.shard_group", format, verifier = "succ")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// Constraint identifying values that must shard together or share a sharding pattern.
+pub enum ShardGroup {
+    As(i64),
+    Like(i64),
+}
+
+#[pliron_attr(
+    name = "hlo.sharding",
+    format = "`<` $kind `,` `[` vec($tile_shape, CharSpace(`,`)) `]` `,` `[` vec($tile_assignment_dimensions, CharSpace(`,`)) `]` `,` `[` vec($tile_assignment_devices, CharSpace(`,`)) `]` `,` `[` vec($tuple_shardings, CharSpace(`,`)) `]` `,` $replicate_on_last_tile_dim `,` $metadata `,` `[` vec($last_tile_dims, CharSpace(`,`)) `]` `,` `[` vec($iota_reshape_dims, CharSpace(`,`)) `]` `,` `[` vec($iota_transpose_perm, CharSpace(`,`)) `]` `,` `[` vec($shard_group, CharSpace(`,`)) `]` `,` `[` vec($named_sharding, CharSpace(`,`)) `]` `>`"
+)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Native tuple, tile-assignment, or named-mesh sharding annotation.
 pub struct Sharding {
-    wire: OpSharding,
-    kind: Kind,
+    pub kind: ShardingType,
+    pub tile_shape: Vec<TypeHandle>,
+    pub tile_assignment_dimensions: Vec<i64>,
+    pub tile_assignment_devices: Vec<i64>,
+    pub tuple_shardings: Vec<Sharding>,
+    pub replicate_on_last_tile_dim: bool,
+    pub metadata: Metadata,
+    pub last_tile_dims: Vec<ShardingType>,
+    pub iota_reshape_dims: Vec<i64>,
+    pub iota_transpose_perm: Vec<i64>,
+    pub shard_group: Vec<ShardGroup>,
+    pub named_sharding: Vec<NamedSharding>,
 }
 
-#[derive(Clone, Debug)]
-enum Kind {
-    Named(Box<NamedSharding>),
-    Leaf(Type),
-    Single(i64),
-    Tuple(Vec<Sharding>),
-    Tiled(canonical::Tiling),
-}
-
-fn error(message: &str) -> Error {
-    Error::new("sharding", message)
-}
-
-fn product(dimensions: &[i64]) -> Result<i64> {
-    dimensions.iter().try_fold(1_i64, |product, &size| {
-        if size <= 0 {
-            return Err(error("tile dimensions must be positive"));
+impl Default for Sharding {
+    fn default() -> Self {
+        Self {
+            kind: ShardingType::Replicated,
+            tile_shape: Vec::new(),
+            tile_assignment_dimensions: Vec::new(),
+            tile_assignment_devices: Vec::new(),
+            tuple_shardings: Vec::new(),
+            replicate_on_last_tile_dim: false,
+            metadata: Metadata::default(),
+            last_tile_dims: Vec::new(),
+            iota_reshape_dims: Vec::new(),
+            iota_transpose_perm: Vec::new(),
+            shard_group: Vec::new(),
+            named_sharding: Vec::new(),
         }
-        product
-            .checked_mul(size)
-            .ok_or_else(|| Error::new("overflow", "tile assignment product overflow"))
-    })
+    }
 }
 
 impl Sharding {
-    pub fn from_proto(wire: OpSharding) -> Result<Self> {
-        Self::parse(wire, 0)
+    /// Construct fully replicated sharding.
+    pub fn replicated() -> Self {
+        Self::default()
     }
-
-    fn parse(wire: OpSharding, depth: usize) -> Result<Self> {
-        enum Task {
-            Visit(OpSharding, usize),
-            FinishTuple(OpSharding, usize),
+    /// Construct a maximal assignment; contextual validation checks the device range.
+    pub fn maximal(device: i64) -> Self {
+        Self {
+            kind: ShardingType::Maximal,
+            tile_assignment_devices: vec![device],
+            ..Self::default()
         }
-        let mut tasks = vec![Task::Visit(wire, depth)];
-        let mut parsed = Vec::new();
-        while let Some(task) = tasks.pop() {
-            match task {
-                Task::FinishTuple(wire, count) => {
-                    let start = parsed
-                        .len()
-                        .checked_sub(count)
-                        .ok_or_else(|| error("tuple sharding parse stack underflow"))?;
-                    let children = parsed.split_off(start);
-                    parsed.push(Self {
-                        wire,
-                        kind: Kind::Tuple(children),
-                    });
-                    continue;
-                }
-                Task::Visit(wire, depth) => {
-                    if depth >= 100 {
-                        return Err(Error::new("resource-limit", "sharding nesting limit"));
-                    }
-                    if let Some(named) = wire.named_sharding.as_ref() {
-                        parsed.push(Self {
-                            kind: Kind::Named(Box::new(NamedSharding::from_proto(named.clone())?)),
-                            wire,
-                        });
-                        continue;
-                    }
-                    let ty = wire
-                        .type_
-                        .enum_value()
-                        .map_err(|_| error("unknown sharding type"))?;
-                    if ty == Type::TUPLE {
-                        if wire
-                            .metadata
-                            .iter()
-                            .any(|metadata| metadata.op_type != "sdy::reduction_op")
-                        {
-                            return Err(error("tuple sharding cannot have metadata"));
-                        }
-                        tasks.push(Task::FinishTuple(wire.clone(), wire.tuple_shardings.len()));
-                        tasks.extend(
-                            wire.tuple_shardings
-                                .iter()
-                                .rev()
-                                .cloned()
-                                .map(|child| Task::Visit(child, depth + 1)),
-                        );
-                        continue;
-                    }
-                    let kind = match ty {
-                        Type::REPLICATED | Type::MANUAL | Type::UNKNOWN | Type::UNREDUCED => {
-                            Kind::Leaf(ty)
-                        }
-                        Type::MAXIMAL => {
-                            if wire.tile_assignment_devices.len() != 1 {
-                                return Err(error("maximal sharding requires exactly one device"));
-                            }
-                            Kind::Single(wire.tile_assignment_devices[0])
-                        }
-                        Type::OTHER => {
-                            let iota = !wire.iota_reshape_dims.is_empty();
-                            if iota {
-                                if !wire.tile_assignment_devices.is_empty()
-                                    || wire.iota_reshape_dims.len()
-                                        != wire.iota_transpose_perm.len()
-                                {
-                                    return Err(error(
-                                        "iota sharding requires exclusive compact assignment and matching permutation rank",
-                                    ));
-                                }
-                            } else if wire.tile_assignment_devices.is_empty() {
-                                return Err(error("tiled sharding requires device assignments"));
-                            }
-                            if (iota && wire.iota_reshape_dims.iter().all(|&size| size == 1))
-                                || (!iota && wire.tile_assignment_devices.len() == 1)
-                            {
-                                Kind::Leaf(Type::REPLICATED)
-                            } else {
-                                if wire.tile_assignment_dimensions.is_empty() {
-                                    return Err(error("tile assignment dimensions are missing"));
-                                }
-                                let count = product(&wire.tile_assignment_dimensions)?;
-                                let expected = if iota {
-                                    let mut seen = BTreeSet::new();
-                                    for &axis in &wire.iota_transpose_perm {
-                                        if axis < 0
-                                            || axis as usize >= wire.iota_reshape_dims.len()
-                                            || !seen.insert(axis)
-                                        {
-                                            return Err(error(
-                                                "invalid iota transpose permutation",
-                                            ));
-                                        }
-                                    }
-                                    product(&wire.iota_reshape_dims)?
-                                } else {
-                                    i64::try_from(wire.tile_assignment_devices.len())
-                                        .map_err(|_| error("device count exceeds i64"))?
-                                };
-                                if count != expected {
-                                    return Err(error(
-                                        "tile assignment cardinality differs from its dimensions",
-                                    ));
-                                }
-                                if !wire.last_tile_dims.is_empty()
-                                    && wire.replicate_on_last_tile_dim
-                                {
-                                    return Err(error(
-                                        "subgroups and legacy partial replication are exclusive",
-                                    ));
-                                }
-                                let subgroups = wire
-                                    .last_tile_dims
-                                    .iter()
-                                    .map(|ty| {
-                                        ty.enum_value().map_err(|_| error("unknown subgroup type"))
-                                    })
-                                    .collect::<Result<Vec<_>>>()?;
-                                let subgroup_count = if wire.replicate_on_last_tile_dim {
-                                    1
-                                } else {
-                                    subgroups.len()
-                                };
-                                let rank = wire
-                                    .tile_assignment_dimensions
-                                    .len()
-                                    .checked_sub(subgroup_count)
-                                    .ok_or_else(|| error("more subgroups than tile dimensions"))?;
-                                canonical::Tiling::classify(&wire, &subgroups, rank, count)
-                            }
-                        }
-                        Type::TUPLE => return Err(error("tuple sharding task was not scheduled")),
-                    };
-                    parsed.push(Self { wire, kind });
-                }
-            }
+    }
+    /// Take flattened tuple-leaf sharding assignments.
+    pub fn tuple(elements: Vec<Self>) -> Self {
+        Self {
+            kind: ShardingType::Tuple,
+            tuple_shardings: elements,
+            ..Self::default()
         }
-        parsed
-            .pop()
-            .ok_or_else(|| error("sharding parse produced no result"))
     }
-
-    pub fn as_proto(&self) -> &OpSharding {
-        &self.wire
-    }
-    pub fn into_proto(self) -> OpSharding {
-        self.wire
-    }
-
-    /// Repeat a non-tuple sharding over the flat leaves of a tuple instruction.
-    /// Empty (including nested-empty) tuples retain a single unused entry.
-    pub fn normalize_tuple(&self, shape: &Shape) -> Result<Self> {
-        if !shape.is_tuple() || matches!(self.kind, Kind::Tuple(_)) {
+    /// Expand a non-tuple annotation to the tuple shape's flattened leaves.
+    pub fn normalize_tuple(&self, ctx: &Context, shape: TypeHandle) -> Result<Self> {
+        self.verify(ctx)?;
+        if !Shape::is_tuple(ctx, shape) || self.kind == ShardingType::Tuple {
             return Ok(self.clone());
         }
-        Self::from_proto(OpSharding {
-            type_: Type::TUPLE.into(),
-            tuple_shardings: vec![self.wire.clone(); shape.leaf_count().max(1)],
-            ..Default::default()
-        })
+        Ok(Self::tuple(vec![
+            self.clone();
+            Shape::leaf_count(ctx, shape).max(1)
+        ]))
     }
-
-    /// `num_devices` is supplied only for upstream's SPMD device-number policy.
-    /// Non-tuple shardings applied to tuples are repeated over leaves, matching
-    /// HLO instruction import's `NormalizeTupleSharding`.
-    pub fn validate(&self, shape: &Shape, num_devices: Option<i64>) -> Result<()> {
+    /// Validate the annotation against a shape and optional configured device count.
+    pub fn validate(
+        &self,
+        ctx: &Context,
+        shape: TypeHandle,
+        num_devices: Option<i64>,
+    ) -> Result<()> {
+        self.verify(ctx)?;
         if num_devices.is_some_and(|n| n <= 0) {
-            return Err(error("device count must be positive"));
+            return Err(pliron::verify_error_noloc!(Diagnostic::InvalidAttribute {
+                attribute: "sharding",
+                message: "device count must be positive".into(),
+            }));
         }
-        if shape.element_type() == PrimitiveType::TOKEN {
+        if shape.deref(ctx).is::<TokenType>() {
             return Ok(());
         }
-        if shape.is_tuple() {
-            fn leaves(shape: &Shape, output: &mut Vec<Shape>) -> Result<()> {
-                if shape.is_tuple() {
-                    for index in 0..shape.as_proto().tuple_shapes.len() {
-                        leaves(&shape.subshape(&[index])?, output)?;
-                    }
+        if Shape::is_tuple(ctx, shape) {
+            let mut leaves = Vec::new();
+            let mut pending = vec![shape];
+            while let Some(shape) = pending.pop() {
+                if Shape::is_tuple(ctx, shape) {
+                    pending.extend(Shape::children(ctx, shape).iter().rev().copied());
                 } else {
-                    output.push(shape.clone());
+                    leaves.push(shape);
                 }
-                Ok(())
             }
-            let mut shapes = Vec::new();
-            leaves(shape, &mut shapes)?;
-            if let Kind::Tuple(elements) = &self.kind {
-                if elements.len() != shapes.len() && !(shapes.is_empty() && elements.len() == 1) {
-                    return Err(error("tuple sharding leaf count differs from shape"));
+            if self.kind == ShardingType::Tuple && self.named_sharding.is_empty() {
+                if self.tuple_shardings.len() != leaves.len()
+                    && !(leaves.is_empty() && self.tuple_shardings.len() == 1)
+                {
+                    return Err(pliron::verify_error_noloc!(Diagnostic::InvalidAttribute {
+                        attribute: "sharding",
+                        message: "tuple sharding leaf count differs from shape".into(),
+                    }));
                 }
-                for (element, shape) in elements.iter().zip(shapes) {
-                    element.validate_leaf(&shape, num_devices)?;
+                for (sharding, leaf) in self.tuple_shardings.iter().zip(leaves) {
+                    sharding.validate_leaf(ctx, leaf, num_devices)?;
                 }
-                Ok(())
             } else {
-                for shape in shapes {
-                    self.validate_leaf(&shape, num_devices)?;
+                for leaf in leaves {
+                    self.validate_leaf(ctx, leaf, num_devices)?;
                 }
-                Ok(())
             }
-        } else {
-            self.validate_leaf(shape, num_devices)
+            return Ok(());
         }
+        self.validate_leaf(ctx, shape, num_devices)
     }
-
-    fn validate_leaf(&self, shape: &Shape, num_devices: Option<i64>) -> Result<()> {
-        let in_range = |device| {
-            if device < 0 || num_devices.is_some_and(|count| device >= count) {
-                Err(error("device assignment is out of range"))
-            } else {
-                Ok(())
+    fn validate_leaf(&self, ctx: &Context, shape: TypeHandle, devices: Option<i64>) -> Result<()> {
+        let in_range = |device: i64| -> Result<()> {
+            if device < 0 || devices.is_some_and(|count| device >= count) {
+                return Err(pliron::verify_error_noloc!(Diagnostic::InvalidAttribute {
+                    attribute: "sharding",
+                    message: "device assignment out of range".into(),
+                }));
             }
+            Ok(())
         };
-        match &self.kind {
-            Kind::Named(named) => named.validate_shape(shape, num_devices),
+        if let Some(named) = self.named_sharding.first() {
+            return named.validate_shape(ctx, shape, devices);
+        }
+        match self.classify()? {
             Kind::Leaf(_) => Ok(()),
-            Kind::Tuple(_) => Err(error("tuple sharding applied to a non-tuple leaf")),
-            Kind::Single(device) => in_range(*device),
+            Kind::Single(device) => in_range(device),
+            Kind::Tuple => Err(pliron::verify_error_noloc!(Diagnostic::InvalidAttribute {
+                attribute: "sharding",
+                message: "tuple sharding applied to non-tuple leaf".into(),
+            })),
             Kind::Tiled(tiling) => {
-                let canonical::Tiling { rank, count, .. } = tiling;
-                let shape = shape.array_view()?;
-                if shape.rank()? != *rank {
-                    return Err(error("tile assignment data rank differs from shape"));
+                if Shape::rank(ctx, Shape::array_view(ctx, shape)?)? != tiling.rank {
+                    return Err(pliron::verify_error_noloc!(Diagnostic::InvalidAttribute {
+                        attribute: "sharding",
+                        message: "tile assignment data rank differs from shape".into(),
+                    }));
                 }
-                if num_devices.is_some_and(|devices| devices != *count) {
-                    return Err(error(
-                        "tile assignment does not cover the configured device count",
-                    ));
+                if devices.is_some_and(|n| n != tiling.count) {
+                    return Err(pliron::verify_error_noloc!(Diagnostic::InvalidAttribute {
+                        attribute: "sharding",
+                        message: "tile assignment does not cover configured devices".into(),
+                    }));
                 }
                 let mut seen = BTreeSet::new();
-                for &device in &self.wire.tile_assignment_devices {
+                for &device in &self.tile_assignment_devices {
                     in_range(device)?;
                     if !seen.insert(device) {
-                        return Err(error("device assignment contains duplicates"));
+                        return Err(pliron::verify_error_noloc!(Diagnostic::InvalidAttribute {
+                            attribute: "sharding",
+                            message: "duplicate device assignment".into(),
+                        }));
                     }
                 }
                 Ok(())
             }
         }
+    }
+}
+
+impl Verify for Sharding {
+    fn verify(&self, ctx: &Context) -> Result<()> {
+        let mut pending = vec![(self, 0)];
+        while let Some((sharding, depth)) = pending.pop() {
+            if depth >= 100 {
+                return Err(pliron::verify_error_noloc!(Diagnostic::InvalidAttribute {
+                    attribute: "sharding",
+                    message: "sharding nesting limit".into(),
+                }));
+            }
+            if sharding.named_sharding.len() > 1
+                || sharding.shard_group.len() > 1
+                || sharding.tile_shape.len() > 1
+            {
+                return Err(pliron::verify_error_noloc!(Diagnostic::InvalidAttribute {
+                    attribute: "sharding",
+                    message: "multiple singleton sharding fields".into(),
+                }));
+            }
+            if let Some(named) = sharding.named_sharding.first() {
+                named.verify(ctx)?;
+                continue;
+            }
+            if sharding.kind == ShardingType::Tuple {
+                if sharding
+                    .metadata
+                    .0
+                    .iter()
+                    .any(|m| m.op_type != "sdy::reduction_op")
+                {
+                    return Err(pliron::verify_error_noloc!(Diagnostic::InvalidAttribute {
+                        attribute: "sharding",
+                        message: "tuple sharding cannot have metadata".into(),
+                    }));
+                }
+                pending.extend(
+                    sharding
+                        .tuple_shardings
+                        .iter()
+                        .map(|child| (child, depth + 1)),
+                );
+            }
+            sharding.classify()?;
+        }
+        Ok(())
     }
 }

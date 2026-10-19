@@ -1,100 +1,104 @@
 # xlahlo
 
-`xlahlo` is a Rust implementation of the OpenXLA HLO model and its text and
-protobuf representations. It provides HLO data structures, parsing, printing,
-and validation; optimization and execution belong to downstream projects such
-as `nanoxla`.
+`xlahlo` is a OpenXLA HLO dialect for [pliron](https://crates.io/crates/pliron).
 
-The crate is under active development and does not claim complete OpenXLA
-conformance. See [HLO compatibility](docs/CONFORMANCE.md) for its scope and
-known limitations.
+## Example
 
-## Use
-
-Build a module from the typed model, then validate or serialize it:
+Construct a computation that adds a vector parameter to itself:
 
 ```rust
-use xlahlo::{text, Instruction, Module, Opcode, PrimitiveType, Shape};
+use xlahlo::{
+    attributes::Index,
+    ops::{ComputationOp, ReturnOp, control::ParameterOp, elementwise::AddOp},
+    pliron::{
+        basic_block::BasicBlock, builtin::types::FunctionType,
+        context::Context, identifier::Identifier, op::Op,
+    },
+    types::{ElementType, TensorType},
+    verification::verify,
+};
 
-let shape = Shape::array(PrimitiveType::F32, vec![2])?;
-let mut module = Module::new("example");
-let entry = module.add_computation("entry")?;
-let x = module.add_instruction(
-    entry,
-    Instruction::new("x", Opcode::Parameter, shape.clone()),
-    &[],
-    &[],
-)?;
-let y = module.add_instruction(
-    entry,
-    Instruction::new("y", Opcode::Parameter, shape.clone())
-        .with_fields(|instruction| instruction.parameter_number = 1)?,
-    &[],
-    &[],
-)?;
-let sum = module.add_instruction(
-    entry,
-    Instruction::new("sum", Opcode::Add, shape),
-    &[x, y],
-    &[],
-)?;
-module.set_root(entry, sum)?;
-module.set_entry(entry)?;
-module.verify(Default::default())?;
+let mut ctx = Context::new();
+xlahlo::register(&mut ctx);
+let ty = TensorType::get(&ctx, ElementType::F32, vec![16])?;
+let signature = FunctionType::get(&ctx, vec![ty], vec![ty]).into();
+let computation = ComputationOp::new(&mut ctx, Identifier::new("main"), signature);
+let body = BasicBlock::new(&mut ctx, None, vec![]);
+body.insert_at_back(computation.body(&ctx), &ctx);
 
-let text = text::print_module(&module)?;
-# Ok::<(), xlahlo::Error>(())
+let parameter = ParameterOp::new(&mut ctx, ty, vec![], Index(0));
+parameter.get_operation().insert_at_back(body, &ctx);
+let x = parameter.result(&ctx);
+let add = AddOp::new(&mut ctx, ty, vec![x, x]);
+add.get_operation().insert_at_back(body, &ctx);
+let sum = add.result(&ctx);
+ReturnOp::new(&mut ctx, sum).get_operation().insert_at_back(body, &ctx);
+
+verify(&ctx, computation.get_operation())?;
+# Ok::<(), xlahlo::pliron::result::Error>(())
 ```
 
-Consult the crate API for supported builders and operation-specific
-verification requirements. Parsing and printing report unsupported or
-unrepresentable constructs explicitly rather than silently changing them.
+Constructors accept explicit result types and typed attributes. They do not
+implicitly verify the graph; use the checked `inference` functions when computing
+result types, then verify before consuming the IR.
 
-## Model and interoperability
+pliron maintains stable operation/value handles and use lists. Use its
+`Value::replace_all_uses_with`, `Operation::replace_operand`, `Operation::erase`
+and block insertion/movement APIs directly. Erasure requires no remaining users.
+Batch edits before calling `verification::verify`.
 
-- Shapes represent arrays, tuples, layouts, and dynamic dimensions. Literals
-  retain typed values and their physical representations.
-- A module can be imported from or exported to the generated HLO protobuf
-  types. Protobuf data not modeled by the Rust API is retained where possible.
-- `Module::verify` checks semantic invariants. Protobuf import also performs
-  structural checks; successful import alone does not imply a valid HLO
-  program.
-- `ModuleConfig` is crate-side metadata and is not encoded in
-  `HloModuleProto`. Preserve it across conversions with the configuration-aware
-  APIs.
-- Nested parsing and validation use bounded worklists to avoid input-driven
-  call-stack growth.
+## API organization
 
-## Workspace checks
+| Namespace                                             | Contents                                                               |
+| ----------------------------------------------------- | ---------------------------------------------------------------------- |
+| `types`, `primitive`                                  | Interned IR types, `ElementType` and the complete `PrimitiveType` enum |
+| `shape`                                               | Shape construction, borrowed queries, layouts and allocation sizes     |
+| `literal`                                             | Typed literal storage, borrowed sub-literals and logical-bit equality  |
+| `attributes`                                          | Geometry, precision, comparison and instruction metadata               |
+| `sharding`, `replica_groups`, `original_value`        | Distributed assignments, groups and provenance                         |
+| `opcode`                                              | Opcode names, operand arities and capabilities                         |
+| `ops`                                                 | `ComputationOp`, `ReturnOp` and `HloOpInterface`                       |
+| `ops::{elementwise,movement,numerical,control}`       | Concrete instruction families                                          |
+| `inference::{elementwise,movement,numerical,control}` | Checked shape inference                                                |
+| `ir`                                                  | Module configuration, entry points, aliases, donors and schedules      |
+| `verification`                                        | Whole-graph verification and caller policies                           |
 
-Run these commands from the `hlo-rs` workspace root:
+`register` installs the complete dialect. `pliron` is re-exported as a dependency
+namespace so consumers can use the matching IR APIs. Shape and attribute queries
+borrow context storage; transformations explicitly construct owned output records.
+See the API documentation for individual contracts and attribute keys.
 
-```powershell
-cargo fmt --manifest-path crates/xlahlo/Cargo.toml --check
-cargo test --locked -p xlahlo
-cargo clippy --locked -p xlahlo --all-targets --all-features -- -D warnings
-```
+## Verification
 
-## OpenXLA source and tools
+`verification::verify` accepts a builtin module or a self-contained computation.
+It checks local opcode contracts, isolated SSA/dominance, computation signatures,
+nonrecursive calls, execution threads, asynchronous chains, collective topology,
+sharding, control dependencies, schedules, aliases and buffer writers.
 
-Initialize the `extern/xla` submodule before building. Cargo generates the
-protobuf bindings and opcode catalog directly from that checkout, and
-`XLA_SOURCE_COMMIT` identifies the revision used by the build. No copied schema
-or manually refreshed revision manifest is required.
+A builtin module must declare its entry symbol through `ir::set_entry`.
+`ir::set_config` attaches module configuration.
+`verification::verify_with_options` supplies policies such as layout sensitivity,
+mixed precision and target allocation sizes. Module topology overrides the
+corresponding caller context unless `ignore_module_config` is enabled.
+Standalone computations cannot resolve external callee symbols.
 
-The optional native oracles use the same checkout. Their build artifacts live
-under `target`; numeric-oracle dependency sources are extracted under `extern`
-at the revisions declared by XLA.
+## Errors and handle safety
 
-```powershell
-git submodule update --init extern/xla
-python crates/xlahlo/tools/hlo_oracle.py
-python crates/xlahlo/tools/numeric_oracle.py
-```
+Fallible APIs return `pliron::result::Result<T>`. Its `Error` retains the error
+category, source location and backtrace; `error.err.downcast_ref::<Diagnostic>()`
+exposes typed dialect details without parsing message text. `Diagnostic` is
+available at the crate root. Whole-graph instruction failures include the
+operation name and a source diagnostic. Framework-generated parser and interface
+errors retain their native payloads. Use pliron's `Printable::disp` to format
+errors with context-aware locations.
 
-Extracted Cargo packages do not contain the submodule. Set `XLA_SOURCE_DIR` to
-the workspace's `extern/xla` checkout when building or verifying a package.
+Invalid input returns an error without consuming the context, so callers can
+repair the IR and verify again. Production dialect code denies Clippy's
+`unwrap_used` and `expect_used` lints. As with pliron itself, handles must belong
+to the supplied context and remain live; dereferencing erased or foreign-context
+handles is outside this contract. Constructors and SSA-result accessors assume
+their documented structural preconditions.
 
 ## License
 
-Apache-2.0 or MIT.
+See the workspace license file.

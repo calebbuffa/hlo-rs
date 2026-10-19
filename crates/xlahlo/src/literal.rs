@@ -1,311 +1,346 @@
-use crate::{Dimension, Error, PrimitiveType, Result, Shape, proto::xla_data::LiteralProto};
+//! Exact native literals, stored in physical minor-to-major order.
+use crate::Diagnostic;
+use crate::{
+    shape::{Dimension, Shape},
+    types::{ElementType, TokenType},
+};
+use pliron::{
+    common_traits::Verify, context::Context, derive::pliron_attr, result::Result,
+    r#type::TypeHandle,
+};
 
-/// A validated literal retaining its original wire fields and floating bits.
-#[derive(Clone, Debug)]
+#[pliron_attr(
+    name = "hlo.typed_literal",
+    format = "`<` $shape `,` `[` vec($storage, CharSpace(`,`)) `]` `,` `[` vec($tuple_literals, CharSpace(`,`)) `]` `,` `[` vec($dynamic_sizes, CharSpace(`,`)) `]` `>`"
+)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Exact physical storage and runtime bounds for an array, tuple, or token literal.
 pub struct Literal {
-    shape: Shape,
-    wire: LiteralProto,
-}
-
-macro_rules! byte_fields {
-    ($ty:expr, $wire:expr, $action:ident $(, $arg:expr)?) => {{
-        use PrimitiveType::*;
-        match $ty {
-            S1 => $action!($wire.s1s $(, $arg)?), S2 => $action!($wire.s2s $(, $arg)?),
-            S4 => $action!($wire.s4s $(, $arg)?), S8 => $action!($wire.s8s $(, $arg)?),
-            S16 => $action!($wire.s16s $(, $arg)?), U1 => $action!($wire.u1s $(, $arg)?),
-            U2 => $action!($wire.u2s $(, $arg)?), U4 => $action!($wire.u4s $(, $arg)?),
-            U8 => $action!($wire.u8s $(, $arg)?), U16 => $action!($wire.u16s $(, $arg)?),
-            F16 => $action!($wire.f16s $(, $arg)?), BF16 => $action!($wire.bf16s $(, $arg)?),
-            F4E2M1FN => $action!($wire.f4e2m1fns $(, $arg)?),
-            F6E2M3FN => $action!($wire.f6e2m3fns $(, $arg)?),
-            F6E3M2FN => $action!($wire.f6e3m2fns $(, $arg)?),
-            F8E3M4 => $action!($wire.f8e3m4s $(, $arg)?),
-            F8E4M3 => $action!($wire.f8e4m3s $(, $arg)?),
-            F8E4M3FN => $action!($wire.f8e4m3fns $(, $arg)?),
-            F8E4M3FNUZ => $action!($wire.f8e4m3fnuzs $(, $arg)?),
-            F8E4M3B11FNUZ => $action!($wire.f8e4m3b11fnuzs $(, $arg)?),
-            F8E5M2 => $action!($wire.f8e5m2s $(, $arg)?),
-            F8E5M2FNUZ => $action!($wire.f8e5m2fnuzs $(, $arg)?),
-            F8E8M0FNU => $action!($wire.f8e8m0fnus $(, $arg)?),
-            _ => return Err(Error::new("literal", "not a byte-backed primitive")),
-        }
-    }};
-}
-
-macro_rules! set_bytes {
-    ($field:expr, $value:expr) => {
-        $field = $value
-    };
-}
-macro_rules! get_bytes {
-    ($field:expr) => {
-        &$field
-    };
+    pub shape: TypeHandle,
+    /// Little-endian exact encoding; sub-byte elements occupy one byte and
+    /// retain unused storage bits. Complex real components precede imaginary.
+    pub storage: Vec<u8>,
+    pub tuple_literals: Vec<Literal>,
+    pub dynamic_sizes: Vec<i64>,
 }
 
 impl Literal {
-    /// Little-endian physical storage, with one byte per sub-byte element.
-    /// Unused bits in sub-byte storage are retained in the wire representation.
-    pub fn from_storage_bytes(shape: Shape, bytes: &[u8]) -> Result<Self> {
-        let element = shape.element_type();
-        let width = element
-            .bit_width()
-            .ok_or_else(|| Error::new("literal", "storage bytes require array shape"))?;
-        let byte_width = width.div_ceil(8) as usize;
-        let count = usize::try_from(shape.element_count()?)
-            .map_err(|_| Error::new("overflow", "literal element count"))?;
-        if count.checked_mul(byte_width) != Some(bytes.len()) {
-            return Err(Error::new("literal", "storage byte count mismatch"));
+    /// Construct a static array from physical-order exact element encodings.
+    pub fn from_bits(ctx: &Context, shape: TypeHandle, bits: &[u128]) -> Result<Self> {
+        if Shape::is_dynamic(ctx, shape) {
+            return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "from_bits requires static dimensions; use from_dynamic_storage_bytes"
+                    .into(),
+            }));
         }
-        if element == PrimitiveType::PRED && bytes.iter().any(|&byte| byte > 1) {
-            return Err(Error::new(
-                "literal",
-                "predicate storage must be zero or one",
-            ));
+        let width = Shape::element_type(ctx, shape)?.bit_width();
+        if width < 128 && bits.iter().any(|&n| n >> width != 0) {
+            return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "element bits exceed primitive width".into(),
+            }));
         }
-        let bits = bytes
-            .chunks_exact(byte_width)
-            .map(|bytes| {
-                let mut word = [0; 16];
-                word[..bytes.len()].copy_from_slice(bytes);
-                let value = u128::from_le_bytes(word);
-                if width == 128 {
-                    value
-                } else {
-                    value & ((1_u128 << width) - 1)
-                }
-            })
-            .collect::<Vec<_>>();
-        let mut literal = Self::from_bits(shape, &bits)?;
-        if width < 8 && element != PrimitiveType::PRED {
-            byte_fields!(element, literal.wire, set_bytes, bytes.to_vec());
+        let storage = bits
+            .iter()
+            .flat_map(|n| n.to_le_bytes().into_iter().take(width.div_ceil(8) as usize))
+            .collect();
+        Self::from_dynamic_storage_bytes(ctx, shape, storage, Vec::new())
+    }
+    /// Take physical bytes without copying owned storage; borrowed slices are copied.
+    pub fn from_storage_bytes(
+        ctx: &Context,
+        shape: TypeHandle,
+        bytes: impl Into<Vec<u8>>,
+    ) -> Result<Self> {
+        if Shape::is_dynamic(ctx, shape) {
+            return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "dynamic literals require runtime sizes".into(),
+            }));
         }
+        Self::from_dynamic_storage_bytes(ctx, shape, bytes.into(), Vec::new())
+    }
+    /// Take physical storage and per-axis runtime sizes, checking bounds and byte count.
+    ///
+    /// Storage includes the full bounded allocation; unbounded arrays are rejected.
+    pub fn from_dynamic_storage_bytes(
+        ctx: &Context,
+        mut shape: TypeHandle,
+        storage: Vec<u8>,
+        dynamic_sizes: Vec<i64>,
+    ) -> Result<Self> {
+        if Shape::layout(ctx, shape)?.is_none() {
+            shape = Shape::with_default_layout(ctx, shape)?;
+        }
+        let layout = Shape::layout(ctx, shape)?;
+        if let Some(layout) = layout
+            && layout.element_size_in_bits != 0
+        {
+            let mut layout = (*layout).clone();
+            layout.element_size_in_bits = 0;
+            shape = Shape::with_layout(ctx, shape, layout)?;
+        }
+        let literal = Self {
+            shape,
+            storage,
+            tuple_literals: Vec::new(),
+            dynamic_sizes,
+        };
+        literal.verify(ctx)?;
         Ok(literal)
     }
-
-    /// Elements are in physical minor-to-major order. One u128 contains the
-    /// exact element bit pattern; complex values pack real in the low bits.
-    pub fn from_bits(shape: Shape, bits: &[u128]) -> Result<Self> {
-        if shape.is_dynamic() {
-            return Err(Error::new(
-                "unsupported",
-                "use from_proto for dynamic literal sizes",
-            ));
-        }
-        let count = usize::try_from(shape.element_count()?)
-            .map_err(|_| Error::new("overflow", "literal count"))?;
-        if count != bits.len() {
-            return Err(Error::new("literal", "literal element count mismatch"));
-        }
-        let width = shape
-            .element_type()
-            .bit_width()
-            .ok_or_else(|| Error::new("literal", "expected array"))?;
-        if width < 128 && bits.iter().any(|&n| n >> width != 0) {
-            return Err(Error::new("literal", "element bits exceed primitive width"));
-        }
-        let shape = if shape.layout().is_none() {
-            shape.with_default_layout()?
-        } else {
-            shape
+    /// Take ownership of tuple children and derive the tuple type from their shapes.
+    pub fn tuple(ctx: &Context, elements: Vec<Self>) -> Result<Self> {
+        let literal = Self {
+            shape: Shape::tuple(ctx, elements.iter().map(|v| v.shape).collect())?,
+            storage: Vec::new(),
+            tuple_literals: elements,
+            dynamic_sizes: Vec::new(),
         };
-        let mut wire = LiteralProto {
-            shape: Some(shape.as_proto().clone()).into(),
-            ..Default::default()
-        };
-        use PrimitiveType::*;
-        match shape.element_type() {
-            PRED => wire.preds = bits.iter().map(|&n| n != 0).collect(),
-            S32 => wire.s32s = bits.iter().map(|&n| n as i32).collect(),
-            U32 => wire.u32s = bits.iter().map(|&n| n as u32).collect(),
-            S64 => wire.s64s = bits.iter().map(|&n| n as i64).collect(),
-            U64 => wire.u64s = bits.iter().map(|&n| n as u64).collect(),
-            F32 => wire.f32s = bits.iter().map(|&n| f32::from_bits(n as u32)).collect(),
-            F64 => wire.f64s = bits.iter().map(|&n| f64::from_bits(n as u64)).collect(),
-            C64 => {
-                wire.c64s = bits
-                    .iter()
-                    .flat_map(|&n| [f32::from_bits(n as u32), f32::from_bits((n >> 32) as u32)])
-                    .collect()
-            }
-            C128 => {
-                wire.c128s = bits
-                    .iter()
-                    .flat_map(|&n| [f64::from_bits(n as u64), f64::from_bits((n >> 64) as u64)])
-                    .collect()
-            }
-            ty => {
-                let bytes: Vec<u8> = bits
-                    .iter()
-                    .flat_map(|n| n.to_le_bytes().into_iter().take(width.div_ceil(8) as usize))
-                    .collect();
-                byte_fields!(ty, wire, set_bytes, bytes);
-            }
-        }
-        Self::from_proto(wire)
+        literal.verify(ctx)?;
+        Ok(literal)
     }
-
-    pub fn tuple(elements: Vec<Self>) -> Result<Self> {
-        let shape = Shape::tuple(elements.iter().map(|v| v.shape.clone()).collect())?;
-        Self::from_proto(LiteralProto {
-            shape: Some(shape.into_proto()).into(),
-            tuple_literals: elements.into_iter().map(Self::into_proto).collect(),
-            ..Default::default()
-        })
-    }
-
-    pub fn token() -> Self {
-        let shape = Shape::token();
+    /// Construct a sequencing token with no payload.
+    pub fn token(ctx: &Context) -> Self {
         Self {
-            wire: LiteralProto {
-                shape: Some(shape.as_proto().clone()).into(),
-                ..Default::default()
-            },
-            shape,
+            shape: Shape::token(ctx),
+            storage: Vec::new(),
+            tuple_literals: Vec::new(),
+            dynamic_sizes: Vec::new(),
         }
     }
-
-    pub fn from_proto(wire: LiteralProto) -> Result<Self> {
-        let shape = Shape::from_proto(
-            wire.shape
-                .as_ref()
-                .ok_or_else(|| Error::new("literal", "missing literal shape"))?
-                .clone(),
-        )?;
-        Self::validate_piece(&wire, &shape, 0)?;
-        Ok(Self { shape, wire })
+    /// Return the literal's interned shape without copying its data.
+    pub fn shape(&self) -> TypeHandle {
+        self.shape
     }
-
-    fn validate_piece(wire: &LiteralProto, shape: &Shape, depth: usize) -> Result<()> {
-        let mut pending = vec![(wire, shape.clone(), depth)];
-        while let Some((wire, shape, depth)) = pending.pop() {
-            if depth >= 128 {
-                return Err(Error::new("resource-limit", "literal nesting limit"));
+    /// Borrow a checked tuple descendant without copying its storage.
+    pub fn sub_literal(&self, ctx: &Context, index: &[usize]) -> Result<&Self> {
+        let shape = Shape::subshape(ctx, self.shape, index)?;
+        let mut current = self;
+        for &axis in index {
+            current = current.tuple_literals.get(axis).ok_or_else(|| {
+                pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                    message: "missing tuple literal element".into(),
+                })
+            })?;
+        }
+        if !Shape::equal_including_layout(ctx, shape, current.shape) {
+            return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "tuple literal child shape mismatch".into(),
+            }));
+        }
+        current.verify(ctx)?;
+        Ok(current)
+    }
+    /// Materialize physical-order element encodings, masking unused sub-byte bits.
+    pub fn bits(&self, ctx: &Context) -> Result<Vec<u128>> {
+        let width = Shape::element_type(ctx, self.shape)?.bit_width();
+        let byte_width = width.div_ceil(8) as usize;
+        if !self.storage.len().is_multiple_of(byte_width) {
+            return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "partial element bytes".into(),
+            }));
+        }
+        Ok((0..self.storage.len() / byte_width)
+            .map(|index| self.element_bits(index, byte_width, width))
+            .collect())
+    }
+    /// Compare active logical elements exactly, independent of layouts and unused bits.
+    pub fn equal_logical_bits(&self, ctx: &Context, other: &Self) -> Result<bool> {
+        self.verify(ctx)?;
+        other.verify(ctx)?;
+        if Shape::is_tuple(ctx, self.shape) {
+            if !Shape::is_tuple(ctx, other.shape)
+                || self.tuple_literals.len() != other.tuple_literals.len()
+            {
+                return Ok(false);
             }
-            if shape.is_tuple() {
-                if shape.as_proto().tuple_shapes.len() != wire.tuple_literals.len() {
-                    return Err(Error::new("literal", "tuple literal arity mismatch"));
+            for (a, b) in self.tuple_literals.iter().zip(&other.tuple_literals) {
+                if !a.equal_logical_bits(ctx, b)? {
+                    return Ok(false);
                 }
-                for (index, child) in wire.tuple_literals.iter().enumerate() {
-                    pending.push((child, shape.subshape(&[index])?, depth + 1));
+            }
+            return Ok(true);
+        }
+        if self.shape.deref(ctx).is::<TokenType>() {
+            return Ok(other.shape.deref(ctx).is::<TokenType>());
+        }
+        if !Shape::is_array(ctx, other.shape)
+            || Shape::element_type(ctx, self.shape)? != Shape::element_type(ctx, other.shape)?
+        {
+            return Ok(false);
+        }
+        let (dimensions, a_strides) = self.geometry(ctx)?;
+        let (b_dimensions, b_strides) = other.geometry(ctx)?;
+        if dimensions != b_dimensions {
+            return Ok(false);
+        }
+        let width = Shape::element_type(ctx, self.shape)?.bit_width();
+        let byte_width = width.div_ceil(8) as usize;
+        let count = dimensions.iter().try_fold(1usize, |n, &d| {
+            n.checked_mul(d).ok_or_else(|| {
+                pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                    message: "active element count overflow".into(),
+                })
+            })
+        })?;
+        for logical in 0..count {
+            let (mut remaining, mut a, mut b) = (logical, 0, 0);
+            for axis in (0..dimensions.len()).rev() {
+                let coordinate = remaining % dimensions[axis];
+                remaining /= dimensions[axis];
+                a += coordinate * a_strides[axis];
+                b += coordinate * b_strides[axis];
+            }
+            if self.element_bits(a, byte_width, width) != other.element_bits(b, byte_width, width) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+    fn element_bits(&self, index: usize, byte_width: usize, width: u32) -> u128 {
+        let start = index * byte_width;
+        let mut word = [0; 16];
+        word[..byte_width].copy_from_slice(&self.storage[start..start + byte_width]);
+        let bits = u128::from_le_bytes(word);
+        if width == 128 {
+            bits
+        } else {
+            bits & ((1u128 << width) - 1)
+        }
+    }
+    fn geometry(&self, ctx: &Context) -> Result<(Vec<usize>, Vec<usize>)> {
+        let bounds = Shape::dimensions(ctx, self.shape)?;
+        let layout = Shape::layout(ctx, self.shape)?.ok_or_else(|| {
+            pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "missing literal layout".into(),
+            })
+        })?;
+        if layout.minor_to_major.len() != bounds.len() {
+            return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: "literal requires concrete minor order".into(),
+            }));
+        }
+        let mut strides = vec![0; bounds.len()];
+        let mut stride = 1usize;
+        for &axis in &layout.minor_to_major {
+            strides[axis as usize] = stride;
+            stride = stride
+                .checked_mul(bounds[axis as usize] as usize)
+                .ok_or_else(|| {
+                    pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                        message: "literal stride overflow".into(),
+                    })
+                })?;
+        }
+        let dimensions = bounds
+            .iter()
+            .enumerate()
+            .map(|(axis, &bound)| {
+                let size = if matches!(
+                    Shape::dimension(ctx, self.shape, axis)?,
+                    Dimension::Bounded(_)
+                ) {
+                    self.dynamic_sizes[axis]
+                } else {
+                    bound
+                };
+                usize::try_from(size).map_err(|_| {
+                    pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                        message: "invalid literal dimension".into(),
+                    })
+                })
+            })
+            .collect::<Result<_>>()?;
+        Ok((dimensions, strides))
+    }
+}
+
+impl Verify for Literal {
+    fn verify(&self, ctx: &Context) -> Result<()> {
+        let mut pending = vec![(self, 0)];
+        while let Some((literal, depth)) = pending.pop() {
+            if depth >= 128 {
+                return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                    message: "literal nesting limit".into(),
+                }));
+            }
+            literal.shape.deref(ctx).verify(ctx)?;
+            if Shape::is_tuple(ctx, literal.shape) {
+                let children = Shape::children(ctx, literal.shape);
+                if children.len() != literal.tuple_literals.len() {
+                    return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                        message: "tuple literal arity mismatch".into(),
+                    }));
                 }
-            } else if shape.element_type() != PrimitiveType::TOKEN {
-                shape.rank()?;
-                if shape.layout().is_none() {
-                    return Err(Error::new("literal", "literal requires physical layout"));
-                }
-                let declared = Shape::from_proto(
-                    wire.shape
-                        .as_ref()
-                        .ok_or_else(|| Error::new("literal", "missing array literal shape"))?
-                        .clone(),
-                )?;
-                if !declared.equal_including_layout(&shape) {
-                    return Err(Error::new(
-                        "literal",
-                        "array literal shape differs from enclosing shape",
-                    ));
-                }
-                if shape.is_dynamic() {
-                    if wire.dynamic_sizes.len() != shape.rank()? {
-                        return Err(Error::new("literal", "dynamic size cardinality"));
+
+                for (&ty, child) in children.iter().zip(&literal.tuple_literals) {
+                    if !Shape::equal_including_layout(ctx, ty, child.shape) {
+                        return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                            message: "tuple literal child shape mismatch".into(),
+                        }));
                     }
-                    for (axis, &size) in wire.dynamic_sizes.iter().enumerate() {
-                        if matches!(shape.dimension(axis)?, Dimension::Bounded(_))
-                            && (size < 0 || i64::from(size) > shape.dimensions()[axis])
+                    pending.push((child, depth + 1));
+                }
+            } else if !literal.shape.deref(ctx).is::<TokenType>() {
+                let element = Shape::element_type(ctx, literal.shape)?;
+                let layout = Shape::layout(ctx, literal.shape)?.ok_or_else(|| {
+                    pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                        message: "literal requires physical layout".into(),
+                    })
+                })?;
+                if layout.element_size_in_bits != 0 {
+                    return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                        message: "literal requires default storage bits".into(),
+                    }));
+                }
+                if Shape::is_dynamic(ctx, literal.shape) {
+                    if literal.dynamic_sizes.len() != Shape::rank(ctx, literal.shape)? {
+                        return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                            message: "dynamic size cardinality".into(),
+                        }));
+                    }
+                    for (axis, &size) in literal.dynamic_sizes.iter().enumerate() {
+                        if let Dimension::Bounded(bound) =
+                            Shape::dimension(ctx, literal.shape, axis)?
+                            && (size < 0 || size > bound)
                         {
-                            return Err(Error::new("literal", "dynamic size out of bounds"));
+                            return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                                message: "dynamic size out of bounds".into(),
+                            }));
                         }
                     }
                 }
-                let count = usize::try_from(shape.element_count()?)
-                    .map_err(|_| Error::new("overflow", "literal size"))?;
-                if Self::bits_from_wire(&shape, wire)?.len() != count {
-                    return Err(Error::new("literal", "payload length mismatch"));
+                let count =
+                    usize::try_from(Shape::element_count(ctx, literal.shape)?).map_err(|_| {
+                        pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                            message: "literal size overflow".into(),
+                        })
+                    })?;
+                if count.checked_mul(element.bit_width().div_ceil(8) as usize)
+                    != Some(literal.storage.len())
+                {
+                    return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                        message: "payload length mismatch".into(),
+                    }));
+                }
+                if element == ElementType::Pred && literal.storage.iter().any(|&n| n > 1) {
+                    return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                        message: "predicate storage must be zero or one".into(),
+                    }));
+                }
+                if !literal.tuple_literals.is_empty() {
+                    return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                        message: "array literal has tuple payload".into(),
+                    }));
                 }
             }
         }
         Ok(())
     }
+}
 
-    /// Extract a subtree, materializing its root shape from the enclosing
-    /// literal. Native tuple/token payload shapes are otherwise ignored.
-    /// The original literal's raw wire fields remain unchanged.
-    pub fn sub_literal(&self, index: &[usize]) -> Result<Self> {
-        let shape = self.shape.subshape(index)?;
-        let mut current = &self.wire;
-        for &axis in index {
-            current = current
-                .tuple_literals
-                .get(axis)
-                .ok_or_else(|| Error::new("literal", "missing tuple literal element"))?;
-        }
-        let mut wire = current.clone();
-        wire.shape = Some(shape.into_proto()).into();
-        Self::from_proto(wire)
-    }
-
-    pub fn shape(&self) -> &Shape {
-        &self.shape
-    }
-    pub fn as_proto(&self) -> &LiteralProto {
-        &self.wire
-    }
-    pub fn into_proto(self) -> LiteralProto {
-        self.wire
-    }
-
-    pub fn bits(&self) -> Result<Vec<u128>> {
-        Self::bits_from_wire(&self.shape, &self.wire)
-    }
-
-    fn bits_from_wire(shape: &Shape, wire: &LiteralProto) -> Result<Vec<u128>> {
-        use PrimitiveType::*;
-        Ok(match shape.element_type() {
-            PRED => wire.preds.iter().map(|&n| u128::from(n)).collect(),
-            S32 => wire.s32s.iter().map(|&n| u128::from(n as u32)).collect(),
-            U32 => wire.u32s.iter().map(|&n| u128::from(n)).collect(),
-            S64 => wire.s64s.iter().map(|&n| u128::from(n as u64)).collect(),
-            U64 => wire.u64s.iter().map(|&n| u128::from(n)).collect(),
-            F32 => wire.f32s.iter().map(|n| u128::from(n.to_bits())).collect(),
-            F64 => wire.f64s.iter().map(|n| u128::from(n.to_bits())).collect(),
-            C64 => {
-                if !wire.c64s.len().is_multiple_of(2) {
-                    return Err(Error::new("literal", "odd complex component count"));
-                }
-                wire.c64s
-                    .chunks_exact(2)
-                    .map(|n| u128::from(n[0].to_bits()) | (u128::from(n[1].to_bits()) << 32))
-                    .collect()
-            }
-            C128 => {
-                if !wire.c128s.len().is_multiple_of(2) {
-                    return Err(Error::new("literal", "odd complex component count"));
-                }
-                wire.c128s
-                    .chunks_exact(2)
-                    .map(|n| u128::from(n[0].to_bits()) | (u128::from(n[1].to_bits()) << 64))
-                    .collect()
-            }
-            ty => {
-                let width = ty
-                    .bit_width()
-                    .ok_or_else(|| Error::new("literal", "expected array literal"))?;
-                let bytes = byte_fields!(ty, wire, get_bytes);
-                let byte_width = width.div_ceil(8) as usize;
-                if !bytes.len().is_multiple_of(byte_width) {
-                    return Err(Error::new("literal", "partial element bytes"));
-                }
-                bytes
-                    .chunks_exact(byte_width)
-                    .map(|bytes| {
-                        let mut word = [0; 16];
-                        word[..bytes.len()].copy_from_slice(bytes);
-                        u128::from_le_bytes(word) & ((1_u128 << width) - 1)
-                    })
-                    .collect()
-            }
-        })
+#[pliron::derive::attr_interface_impl]
+impl pliron::builtin::attr_interfaces::TypedAttrInterface for Literal {
+    fn get_type(&self, _: &Context) -> TypeHandle {
+        self.shape
     }
 }

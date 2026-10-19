@@ -1,129 +1,146 @@
+//! Instruction provenance as a normalized last-write-wins tuple tree.
+use crate::Diagnostic;
+
+use crate::shape::Shape;
+use pliron::{
+    common_traits::Verify, context::Context, derive::pliron_attr, result::Result,
+    r#type::TypeHandle,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{
-    Error, PrimitiveType, Result, Shape,
-    proto::xla_data::{
-        OriginalArrayProto, OriginalValueElementProto, OriginalValueProto, ShapeProto,
-    },
-};
-
-/// Original-value metadata, retaining its wire representation separately from
-/// the last-write-wins tuple-tree semantics used by pinned XLA.
-#[derive(Clone, Debug, PartialEq)]
-pub struct OriginalValue {
-    wire: OriginalValueProto,
-    leaves: BTreeMap<Vec<i64>, Option<OriginalArrayProto>>,
+#[pliron_attr(
+    name = "hlo.original_array",
+    format = "`<` $instruction_name `,` `[` vec($shape_index, CharSpace(`,`)) `]` `>`",
+    verifier = "succ"
+)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Source instruction and tuple index identifying an original array.
+pub struct OriginalArray {
+    pub instruction_name: String,
+    pub shape_index: Vec<i64>,
 }
-
+#[pliron_attr(
+    name = "hlo.original_value_element",
+    format = "`<` `[` vec($shape_index, CharSpace(`,`)) `]` `,` `[` vec($original_array, CharSpace(`,`)) `]` `>`",
+    verifier = "succ"
+)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// A tuple-tree path and its optional original-array provenance.
+pub struct OriginalValueElement {
+    pub shape_index: Vec<i64>,
+    pub original_array: Vec<OriginalArray>,
+}
+#[pliron_attr(
+    name = "hlo.original_value",
+    format = "`<` `[` vec($elements, CharSpace(`,`)) `]` `,` $is_synthetic_call `,` `[` vec($call_hierarchy, CharSpace(`,`)) `]` `>`"
+)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+/// Instruction provenance with last-write-wins tree entries and optional call hierarchy.
+pub struct OriginalValue {
+    pub elements: Vec<OriginalValueElement>,
+    pub is_synthetic_call: bool,
+    pub call_hierarchy: Vec<String>,
+}
+impl Verify for OriginalValue {
+    fn verify(&self, _: &Context) -> Result<()> {
+        self.leaf_refs().map(|_| ())
+    }
+}
 impl OriginalValue {
-    pub fn from_proto(wire: OriginalValueProto) -> Result<Self> {
-        let mut leaves: BTreeMap<Vec<i64>, Option<OriginalArrayProto>> = BTreeMap::new();
-        if !wire.is_synthetic_call {
-            for element in &wire.elements {
-                if element.shape_index.iter().any(|&axis| axis < 0)
+    /// Whether a present empty call hierarchy marks a synthetic call.
+    pub fn is_synthetic_call(&self) -> bool {
+        self.call_hierarchy.first().is_some_and(String::is_empty)
+    }
+    /// Materialize normalized leaf provenance, removing overwritten ancestors and descendants.
+    pub fn leaves(&self) -> Result<BTreeMap<Vec<i64>, Option<OriginalArray>>> {
+        Ok(self
+            .leaf_refs()?
+            .into_iter()
+            .map(|(index, original)| (index.to_vec(), original.cloned()))
+            .collect())
+    }
+    fn leaf_refs(&self) -> Result<BTreeMap<&[i64], Option<&OriginalArray>>> {
+        if self.call_hierarchy.len() > 1 {
+            return Err(pliron::verify_error_noloc!(Diagnostic::InvalidAttribute {
+                attribute: "original_value",
+                message: "multiple call hierarchies".into(),
+            }));
+        }
+        let mut leaves = BTreeMap::<&[i64], Option<&OriginalArray>>::new();
+        if !self.is_synthetic_call {
+            for element in &self.elements {
+                if element.original_array.len() > 1
+                    || element.shape_index.iter().any(|&axis| axis < 0)
                     || element
                         .original_array
-                        .as_ref()
-                        .is_some_and(|array| array.shape_index.iter().any(|&axis| axis < 0))
+                        .iter()
+                        .any(|array| array.shape_index.iter().any(|&axis| axis < 0))
                 {
-                    return Err(Error::new(
-                        "original-value",
-                        "negative original-value shape index",
-                    ));
+                    return Err(pliron::verify_error_noloc!(Diagnostic::InvalidAttribute {
+                        attribute: "original_value",
+                        message: "invalid original-value shape index or array cardinality".into(),
+                    }));
                 }
                 leaves.retain(|index, _| {
                     !index.starts_with(&element.shape_index)
                         && !element.shape_index.starts_with(index)
                 });
-                let array = element
-                    .original_array
-                    .as_ref()
-                    .map(|array| OriginalArrayProto {
-                        instruction_name: array.instruction_name.clone(),
-                        shape_index: array.shape_index.clone(),
-                        ..Default::default()
-                    });
-                leaves.insert(element.shape_index.clone(), array);
+                leaves.insert(&element.shape_index, element.original_array.first());
             }
         }
-        Ok(Self { wire, leaves })
+        Ok(leaves)
     }
-
-    pub fn as_proto(&self) -> &OriginalValueProto {
-        &self.wire
+    /// Compare call hierarchy and normalized provenance without copying array records.
+    pub fn equal(&self, other: &Self) -> Result<bool> {
+        Ok(self.call_hierarchy == other.call_hierarchy
+            && (self.is_synthetic_call() || self.leaf_refs()? == other.leaf_refs()?))
     }
-
-    pub fn into_proto(self) -> OriginalValueProto {
-        self.wire
-    }
-
-    /// The deprecated boolean controls imported tree construction, not this
-    /// predicate: XLA recognizes synthetic calls by a present empty hierarchy.
-    pub fn is_synthetic_call(&self) -> bool {
-        self.wire.call_hierarchy.as_deref() == Some("")
-    }
-
-    pub fn leaves(&self) -> impl Iterator<Item = (&[i64], Option<&OriginalArrayProto>)> {
-        self.leaves
-            .iter()
-            .map(|(index, array)| (index.as_slice(), array.as_ref()))
-    }
-
-    /// Export the semantic tuple tree as XLA would, omitting unknown wire fields.
-    /// Use `as_proto` or `into_proto` for lossless wire retention.
-    pub fn normalized_proto(&self) -> OriginalValueProto {
-        OriginalValueProto {
+    /// Construct a canonical owned record containing only effective tree leaves.
+    pub fn normalized(&self) -> Result<Self> {
+        Ok(Self {
             elements: if self.is_synthetic_call() {
                 Vec::new()
             } else {
-                self.leaves
-                    .iter()
-                    .map(|(index, array)| OriginalValueElementProto {
-                        shape_index: index.clone(),
-                        original_array: array.clone().into(),
-                        ..Default::default()
+                self.leaves()?
+                    .into_iter()
+                    .map(|(shape_index, original_array)| OriginalValueElement {
+                        shape_index,
+                        original_array: original_array.into_iter().collect(),
                     })
                     .collect()
             },
             is_synthetic_call: self.is_synthetic_call(),
-            call_hierarchy: self.wire.call_hierarchy.clone(),
-            ..Default::default()
-        }
+            call_hierarchy: self.call_hierarchy.clone(),
+        })
     }
-
-    /// Semantic equality; `PartialEq` also compares the retained wire fields.
-    pub fn equal(&self, other: &Self) -> bool {
-        self.wire.call_hierarchy == other.wire.call_hierarchy
-            && (self.is_synthetic_call() || self.leaves == other.leaves)
-    }
-
-    /// Check leaf indices, not reference names or whether a leaf has a value.
-    /// Empty tuples have no leaves; buffers, tokens and opaque shapes do.
-    pub fn verify_shape(&self, shape: &Shape) -> Result<()> {
+    /// Require one provenance entry for every non-tuple leaf of a result shape.
+    pub fn verify_shape(&self, ctx: &Context, shape: TypeHandle) -> Result<()> {
         if self.is_synthetic_call() {
             return Ok(());
         }
         let mut expected = BTreeSet::new();
-        let mut pending: Vec<(&ShapeProto, Vec<i64>)> = vec![(shape.as_proto(), Vec::new())];
+        let mut pending = vec![(shape, Vec::new())];
         while let Some((shape, index)) = pending.pop() {
-            if shape.element_type == PrimitiveType::TUPLE.into() {
-                for (axis, child) in shape.tuple_shapes.iter().enumerate() {
+            if Shape::is_tuple(ctx, shape) {
+                for (axis, &child) in Shape::children(ctx, shape).iter().enumerate() {
                     let mut child_index = index.clone();
-                    child_index
-                        .push(i64::try_from(axis).map_err(|_| {
-                            Error::new("original-value", "tuple index exceeds i64")
-                        })?);
+                    child_index.push(axis as i64);
                     pending.push((child, child_index));
                 }
             } else {
                 expected.insert(index);
             }
         }
-        if expected != self.leaves.keys().cloned().collect() {
-            return Err(Error::new(
-                "original-value",
-                "original-value leaf indices differ from instruction shape",
-            ));
+        let leaves = self.leaf_refs()?;
+        if expected.len() != leaves.len()
+            || expected
+                .iter()
+                .any(|index| !leaves.contains_key(index.as_slice()))
+        {
+            return Err(pliron::verify_error_noloc!(Diagnostic::InvalidAttribute {
+                attribute: "original_value",
+                message: "original-value leaf indices differ from shape".into(),
+            }));
         }
         Ok(())
     }

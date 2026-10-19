@@ -1,97 +1,110 @@
-use crate::{Error, InstructionId, Module, Opcode, Result, Sharding, VerifyOptions};
+use super::{VerifyOptions, error, optional_attr, require};
+use crate::{
+    attributes::Callees,
+    opcode::Opcode,
+    ops::{HloOpInterface, control::ParameterOp},
+    sharding::{NamedSharding, Sharding},
+};
+use pliron::{
+    context::{Context, Ptr},
+    identifier::Identifier,
+    linked_list::ContainsLinkedList,
+    op::op_cast,
+    operation::Operation,
+    result::Result,
+    value::DefiningEntity,
+};
+use std::collections::HashMap;
 
-/// Module configuration and verifier policy not stored in HloModuleProto.
-#[derive(Clone, Copy, Debug)]
-pub struct ShardingContext {
-    pub use_spmd_partitioning: bool,
-    pub verify_device_numbers: bool,
-}
-
-impl Default for ShardingContext {
-    fn default() -> Self {
-        Self {
-            use_spmd_partitioning: false,
-            verify_device_numbers: true,
-        }
-    }
-}
-
-fn normalized(module: &Module, id: InstructionId) -> Result<Option<Sharding>> {
-    module
-        .instruction(id)?
-        .sharding
-        .as_ref()
-        .map(|wire| Sharding::from_proto(wire.clone())?.normalize_tuple(&module.shape(id)?))
-        .transpose()
-}
-
-fn consistent(module: &Module, ids: &[InstructionId]) -> Result<()> {
-    let mut previous: Option<Sharding> = None;
-    for &id in ids {
-        if let Some(sharding) = normalized(module, id)? {
-            if let Some(previous) = &previous
-                && !previous.equal_semantics(&sharding)?
-            {
-                return Err(Error::new("sharding", "inconsistent control-flow sharding")
-                    .context(&module.instruction(id)?.name));
-            }
-            previous = Some(sharding);
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn verify(module: &Module, options: VerifyOptions) -> Result<()> {
-    let context = options.sharding_context;
+pub(super) fn verify(
+    ctx: &Context,
+    instructions: &[(Ptr<Operation>, Option<Ptr<Operation>>)],
+    computations: &HashMap<Identifier, Ptr<Operation>>,
+    options: VerifyOptions,
+) -> Result<()> {
     let partitions = options.collective_context.partition_count;
-    if partitions <= 0 {
-        return Err(Error::new("sharding", "partition count must be positive"));
+    require(partitions > 0, "partition count must be positive")?;
+    let policy = options.sharding_context;
+    let devices = (policy.use_spmd_partitioning && policy.verify_device_numbers && partitions > 1)
+        .then_some(partitions);
+    let mut shardings = HashMap::new();
+    let mut control_flow = Vec::new();
+    for &(op, _) in instructions {
+        let data = op.deref(ctx);
+        if data.get_num_results() != 1 {
+            continue;
+        }
+        if let Some(sharding) = optional_attr::<Sharding>(ctx, op, "hlo_sharding")? {
+            let shape = data.get_type(0);
+            let sharding = sharding.normalize_tuple(ctx, shape)?;
+            sharding.validate(ctx, shape, devices)?;
+            shardings.insert(op, sharding);
+        }
+        if let Some(named) = optional_attr::<NamedSharding>(ctx, op, "hlo_named_sharding")? {
+            named.validate_shape(ctx, data.get_type(0), devices)?;
+        }
+        let dynamic = Operation::get_op_dyn(op, ctx);
+        if let Some(hlo) = op_cast::<dyn HloOpInterface>(dynamic.as_ref())
+            && matches!(hlo.opcode(), Opcode::While | Opcode::Conditional)
+        {
+            control_flow.push((op, hlo.opcode()));
+        }
     }
-    let num_devices =
-        (context.use_spmd_partitioning && context.verify_device_numbers && partitions > 1)
-            .then_some(partitions);
-    for computation in module.computations() {
-        for id in module.instructions(computation)? {
-            let instruction = module.instruction(id)?;
-            if let Some(sharding) = normalized(module, id)? {
-                sharding
-                    .validate(&module.shape(id)?, num_devices)
-                    .map_err(|error| error.context(&instruction.name))?;
+    if control_flow.is_empty() {
+        return Ok(());
+    }
+    let mut roots = HashMap::new();
+    let mut parameters = HashMap::new();
+    for &computation in computations.values() {
+        let block = super::single_block(ctx, computation.deref(ctx).get_region(0))?;
+        let term = block
+            .deref(ctx)
+            .get_terminator(ctx)
+            .ok_or_else(|| error("missing computation return"))?;
+        if let DefiningEntity::Op(root) = term.deref(ctx).get_operand(0).defining_entity() {
+            roots.insert(computation, root);
+        }
+        for op in block.deref(ctx).iter(ctx) {
+            if let Some(parameter) = Operation::get_op::<ParameterOp>(op, ctx)
+                && parameter.index(ctx).is_some_and(|index| index.0 == 0)
+            {
+                parameters.insert(computation, op);
             }
-            match instruction.opcode.parse::<Opcode>()? {
-                Opcode::While => {
-                    let callees = &instruction.called_computation_ids;
-                    let body = module.computation_handle(callees[0]);
-                    let condition = module.computation_handle(callees[1]);
-                    let parameter = |computation| -> Result<InstructionId> {
-                        for id in module.instructions(computation)? {
-                            let instruction = module.instruction(id)?;
-                            if instruction.opcode == "parameter"
-                                && instruction.parameter_number == 0
-                            {
-                                return Ok(id);
-                            }
-                        }
-                        Err(Error::new("sharding", "missing while parameter"))
-                    };
-                    consistent(
-                        module,
-                        &[
-                            id,
-                            module.root(body)?,
-                            parameter(body)?,
-                            parameter(condition)?,
-                        ],
+        }
+    }
+    for (op, opcode) in control_flow {
+        let callees = optional_attr::<Callees>(ctx, op, "hlo_callees")?
+            .ok_or_else(|| error("missing control-flow callees"))?;
+        let mut related = vec![op];
+        for (index, callee) in callees.0.iter().enumerate() {
+            let computation = computations
+                .get(callee)
+                .ok_or_else(|| error("control-flow callee not found"))?;
+            if opcode == Opcode::Conditional || index == 0 {
+                related.push(
+                    *roots
+                        .get(computation)
+                        .ok_or_else(|| error("control-flow callee root not found"))?,
+                );
+            }
+            if opcode == Opcode::While {
+                related.push(
+                    *parameters
+                        .get(computation)
+                        .ok_or_else(|| error("missing while parameter"))?,
+                );
+            }
+        }
+        let mut previous: Option<&Sharding> = None;
+        for related in related {
+            if let Some(sharding) = shardings.get(&related) {
+                if let Some(previous) = previous {
+                    require(
+                        previous.equal_semantics(sharding)?,
+                        "inconsistent control-flow sharding",
                     )?;
                 }
-                Opcode::Conditional => {
-                    let mut related = vec![id];
-                    for &callee in &instruction.called_computation_ids {
-                        related.push(module.root(module.computation_handle(callee))?);
-                    }
-                    consistent(module, &related)?;
-                }
-                _ => (),
+                previous = Some(sharding);
             }
         }
     }
