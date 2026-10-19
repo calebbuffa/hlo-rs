@@ -1,0 +1,429 @@
+//! Native typed operation definitions for elementwise HLO opcodes.
+use crate::attributes::{ComparisonOrder, Direction, ReducePrecision};
+use pliron::{context::Context, op::Op};
+
+native_instruction!(
+    AbsOp,
+    "hlo.abs",
+    Abs,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    AcosOp,
+    "hlo.acos",
+    Acos,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    AcoshOp,
+    "hlo.acosh",
+    Acosh,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    AddOp,
+    "hlo.add",
+    Add,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    AndOp,
+    "hlo.and",
+    And,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    AsinOp,
+    "hlo.asin",
+    Asin,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    AsinhOp,
+    "hlo.asinh",
+    Asinh,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    Atan2Op,
+    "hlo.atan2",
+    Atan2,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    AtanhOp,
+    "hlo.atanh",
+    Atanh,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    BitcastConvertOp,
+    "hlo.bitcast_convert",
+    BitcastConvert,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    CbrtOp,
+    "hlo.cbrt",
+    Cbrt,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    CeilOp,
+    "hlo.ceil",
+    Ceil,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    ClampOp,
+    "hlo.clamp",
+    Clamp,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    ClzOp,
+    "hlo.count_leading_zeros",
+    Clz,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    CompareOp,
+    "hlo.compare",
+    Compare,
+    crate::verification::elementwise::instruction,
+    direction: Direction,
+    order: ComparisonOrder
+);
+native_instruction!(
+    ComplexOp,
+    "hlo.complex",
+    Complex,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    ConvertOp,
+    "hlo.convert",
+    Convert,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    CosOp,
+    "hlo.cosine",
+    Cos,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    CoshOp,
+    "hlo.cosh",
+    Cosh,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    DivideOp,
+    "hlo.divide",
+    Divide,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    ErfOp,
+    "hlo.erf",
+    Erf,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    ExpOp,
+    "hlo.exponential",
+    Exp,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    Exp2Op,
+    "hlo.exp2",
+    Exp2,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    Expm1Op,
+    "hlo.exponential_minus_one",
+    Expm1,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    FloorOp,
+    "hlo.floor",
+    Floor,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    ImagOp,
+    "hlo.imag",
+    Imag,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    IsFiniteOp,
+    "hlo.is_finite",
+    IsFinite,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    LogOp,
+    "hlo.log",
+    Log,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    Log1pOp,
+    "hlo.log_plus_one",
+    Log1p,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    Log2Op,
+    "hlo.log2",
+    Log2,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    LogisticOp,
+    "hlo.logistic",
+    Logistic,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    MaximumOp,
+    "hlo.maximum",
+    Maximum,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    MinimumOp,
+    "hlo.minimum",
+    Minimum,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    MulhiOp,
+    "hlo.mulhi",
+    Mulhi,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    MultiplyOp,
+    "hlo.multiply",
+    Multiply,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    NegateOp,
+    "hlo.negate",
+    Negate,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    NotOp,
+    "hlo.not",
+    Not,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    OrOp,
+    "hlo.or",
+    Or,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    PopulationCountOp,
+    "hlo.popcnt",
+    PopulationCount,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    PowerOp,
+    "hlo.power",
+    Power,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    RealOp,
+    "hlo.real",
+    Real,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    RemainderOp,
+    "hlo.remainder",
+    Remainder,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    ReducePrecisionOp,
+    "hlo.reduce_precision",
+    ReducePrecision,
+    crate::verification::elementwise::instruction,
+    precision: ReducePrecision
+);
+native_instruction!(
+    RoundNearestAfzOp,
+    "hlo.round_nearest_afz",
+    RoundNearestAfz,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    RoundNearestEvenOp,
+    "hlo.round_nearest_even",
+    RoundNearestEven,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    RsqrtOp,
+    "hlo.rsqrt",
+    Rsqrt,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    SelectOp,
+    "hlo.select",
+    Select,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    ShiftLeftOp,
+    "hlo.shift_left",
+    ShiftLeft,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    ShiftRightArithmeticOp,
+    "hlo.shift_right_arithmetic",
+    ShiftRightArithmetic,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    ShiftRightLogicalOp,
+    "hlo.shift_right_logical",
+    ShiftRightLogical,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    SignOp,
+    "hlo.sign",
+    Sign,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    SinOp,
+    "hlo.sine",
+    Sin,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    SinhOp,
+    "hlo.sinh",
+    Sinh,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    SqrtOp,
+    "hlo.sqrt",
+    Sqrt,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    StochasticConvertOp,
+    "hlo.stochastic_convert",
+    StochasticConvert,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    SubtractOp,
+    "hlo.subtract",
+    Subtract,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    TanOp,
+    "hlo.tan",
+    Tan,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    TanhOp,
+    "hlo.tanh",
+    Tanh,
+    crate::verification::elementwise::instruction,
+);
+native_instruction!(
+    XorOp,
+    "hlo.xor",
+    Xor,
+    crate::verification::elementwise::instruction,
+);
+
+/// Register all native elementwise HLO operation definitions in the context.
+pub(crate) fn register(ctx: &mut Context) {
+    macro_rules! ops {
+        ($($ty:ty),* $(,)?) => { $(<$ty>::register(ctx);)* };
+    }
+    ops!(
+        AbsOp,
+        AcosOp,
+        AcoshOp,
+        AddOp,
+        AndOp,
+        AsinOp,
+        AsinhOp,
+        Atan2Op,
+        AtanhOp,
+        BitcastConvertOp,
+        CbrtOp,
+        CeilOp,
+        ClampOp,
+        ClzOp,
+        CompareOp,
+        ComplexOp,
+        ConvertOp,
+        CosOp,
+        CoshOp,
+        DivideOp,
+        ErfOp,
+        ExpOp,
+        Exp2Op,
+        Expm1Op,
+        FloorOp,
+        ImagOp,
+        IsFiniteOp,
+        LogOp,
+        Log1pOp,
+        Log2Op,
+        LogisticOp,
+        MaximumOp,
+        MinimumOp,
+        MulhiOp,
+        MultiplyOp,
+        NegateOp,
+        NotOp,
+        OrOp,
+        PopulationCountOp,
+        PowerOp,
+        RealOp,
+        RemainderOp,
+        ReducePrecisionOp,
+        RoundNearestAfzOp,
+        RoundNearestEvenOp,
+        RsqrtOp,
+        SelectOp,
+        ShiftLeftOp,
+        ShiftRightArithmeticOp,
+        ShiftRightLogicalOp,
+        SignOp,
+        SinOp,
+        SinhOp,
+        SqrtOp,
+        StochasticConvertOp,
+        SubtractOp,
+        TanOp,
+        TanhOp,
+        XorOp,
+    );
+}
