@@ -714,3 +714,40 @@ fn opcode_diagnostics_expose_the_invalid_spelling() {
     ));
     assert!("add".parse::<xlahlo::opcode::Opcode>().is_ok());
 }
+
+#[test]
+fn arithmetic_verification_reuse_checks_each_structure_type_and_attribute() {
+    for fault in 0..3 {
+        let mut ctx = context();
+        let ty = tensor(&ctx, F32, &[4]);
+        let (comp, block) = computation(&mut ctx, vec![ty], ty);
+        let parameter = ParameterOp::new(&mut ctx, ty, vec![], Index(0));
+        parameter.get_operation().insert_at_back(block, &ctx);
+        let input = parameter.result(&ctx);
+        let bad = match fault {
+            0 => AddOp::new(&mut ctx, ty, vec![input]),
+            1 => {
+                let wrong = tensor(&ctx, F32, &[5]);
+                AddOp::new(&mut ctx, wrong, vec![input, input])
+            }
+            _ => {
+                let op = AddOp::new(&mut ctx, ty, vec![input, input]);
+                op.get_operation().deref_mut(&ctx).attributes.set(
+                    xlahlo::pliron::identifier::Identifier::new("hlo_result_accuracy"),
+                    Index(0),
+                );
+                op
+            }
+        };
+        bad.get_operation().insert_at_back(block, &ctx);
+        let good = AddOp::new(&mut ctx, ty, vec![input, input]);
+        good.get_operation().insert_at_back(block, &ctx);
+        let result = good.result(&ctx);
+        ret(&mut ctx, block, result);
+        assert!(xlahlo::verification::verify(&ctx, comp.get_operation()).is_err());
+        let result = bad.result(&ctx);
+        result.replace_all_uses_with(&ctx, &input);
+        Operation::erase(bad.get_operation(), &mut ctx);
+        xlahlo::verification::verify(&ctx, comp.get_operation()).unwrap();
+    }
+}

@@ -410,6 +410,9 @@ pub fn verify_with_options(
             .map_or(0, |payloads| payloads.0.len());
     let mut calls: HashMap<_, Vec<_>> = signatures.keys().map(|&op| (op, Vec::new())).collect();
     let hlo_dialect = pliron::identifier::Identifier::new("hlo").into();
+    // Attribute-free arithmetic semantics depend only on opcode and immutable
+    // interned types. Structural and instruction-specific policies still run.
+    let mut arithmetic_last: [Option<[TypeHandle; 3]>; 3] = [None; 3];
     for &(op, owner) in &all {
         let dynamic = Operation::get_op_dyn(op, ctx);
         require(
@@ -476,8 +479,37 @@ pub fn verify_with_options(
                     | Infeed
                     | Outfeed
             );
-            hlo.verify_with_options(ctx, options)
-                .map_err(|error| instruction_error(ctx, op, error))?;
+            let arithmetic_key = match hlo.opcode() {
+                Add | Multiply | Exp
+                    if data.attributes.0.is_empty()
+                        && data.get_num_results() == 1
+                        && data.num_regions() == 0
+                        && data.get_num_successors() == 0
+                        && data.get_num_operands() == if hlo.opcode() == Exp { 1 } else { 2 } =>
+                {
+                    let slot = match hlo.opcode() {
+                        Add => 0,
+                        Multiply => 1,
+                        _ => 2,
+                    };
+                    Some((
+                        slot,
+                        [
+                            data.get_type(0),
+                            data.get_operand(0).get_type(ctx),
+                            data.get_operand(data.get_num_operands() - 1).get_type(ctx),
+                        ],
+                    ))
+                }
+                _ => None,
+            };
+            if arithmetic_key.is_none_or(|(slot, key)| arithmetic_last[slot] != Some(key)) {
+                hlo.verify_with_options(ctx, options)
+                    .map_err(|error| instruction_error(ctx, op, error))?;
+                if let Some((slot, key)) = arithmetic_key {
+                    arithmetic_last[slot] = Some(key);
+                }
+            }
             layout::verify_instruction(ctx, op, hlo.opcode(), options)
                 .map_err(|error| instruction_error(ctx, op, error))?;
         } else {
