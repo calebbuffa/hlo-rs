@@ -787,7 +787,7 @@ impl Verify for CollectivePermuteOp {
     }
 }
 
-#[pliron_op(name="stablehlo.cross-replica-sum",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_cross_replica_sum_replica_groups:VecAttr))]
+#[pliron_op(name="stablehlo.cross_replica_sum",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_cross_replica_sum_replica_groups:VecAttr))]
 pub struct CrossReplicaSumOp;
 impl CrossReplicaSumOp {
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle, groups: VecAttr) -> Self {

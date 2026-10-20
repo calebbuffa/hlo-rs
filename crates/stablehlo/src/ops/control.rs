@@ -1462,7 +1462,7 @@ impl Verify for AsyncStartOp {
                     | "stablehlo.collective_broadcast"
                     | "stablehlo.collective_reduce"
                     | "stablehlo.collective_permute"
-                    | "stablehlo.cross-replica-sum"
+                    | "stablehlo.cross_replica_sum"
             ) {
                 return invalid(
                     self,

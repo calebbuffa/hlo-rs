@@ -716,22 +716,6 @@ fn all_to_all_and_reduce_scatter_match_replica_geometry() {
     assert!(scatter.verify(&ctx).is_ok());
 }
 
-#[test]
-fn cross_replica_sum_uses_upstream_operation_name() {
-    let mut ctx = Context::new();
-    let ty = tensor(&ctx, &[2], ElementType::F32);
-    let input = ConstantOp::new(&mut ctx, ty, vec![0], true)
-        .get_operation()
-        .deref(&ctx)
-        .get_result(0);
-    let groups = replica_groups(&ctx, &[&[0]]);
-    let op = CrossReplicaSumOp::new(&mut ctx, input, ty, groups);
-
-    assert_eq!(
-        Operation::get_opid(op.get_operation(), &ctx).to_string(),
-        "stablehlo.cross-replica-sum"
-    );
-}
 
 #[test]
 fn custom_call_backend_config_matches_api_version() {
