@@ -1,7 +1,9 @@
 use pliron::{
     attribute::AttrObj,
+    builtin::attributes::StringAttr,
     common_traits::Verify,
     context::Context,
+    identifier::Identifier,
     op::Op,
     r#type::{TypeHandle, Typed},
     value::Value,
@@ -16,6 +18,11 @@ fn constant(ctx: &mut Context, ty: TypeHandle, bit: u64) -> Value {
     let op = ConstantOp::new(ctx, ty, vec![bit], true);
     op.verify(ctx).unwrap();
     op.get_operation().deref(ctx).get_result(0)
+}
+
+#[test]
+fn context_registers_shared_result_accuracy_key() {
+    let _ctx = Context::new();
 }
 
 #[test]
@@ -92,12 +99,49 @@ fn exp2_and_log2_preserve_and_verify_result_accuracy() {
     );
     assert!(exp2.verify(&ctx).is_ok());
 
+    exp2.get_operation().deref_mut(&ctx).attributes.set(
+        Identifier::new("stablehlo_result_accuracy"),
+        StringAttr::new("malformed".into()),
+    );
+    assert!(exp2.verify(&ctx).is_err());
+
     let log2 = Log2Op::new_inferred(&mut ctx, input).unwrap();
     log2.set_attr_stablehlo_result_accuracy(
         &mut ctx,
         ResultAccuracyAttr::new(-1.0, 0.0, 0, ResultAccuracyMode::Tolerance),
     );
     assert!(log2.verify(&ctx).is_err());
+}
+
+#[test]
+fn unowned_elementwise_ops_ignore_result_accuracy_attributes() {
+    let mut ctx = Context::new();
+    let input = value(&mut ctx, &[2], ElementType::F32, 0);
+    let key = Identifier::new("stablehlo_result_accuracy");
+
+    let unary = AbsOp::new_inferred(&mut ctx, input).unwrap();
+    unary.get_operation().deref_mut(&ctx).attributes.set(
+        key.clone(),
+        StringAttr::new("malformed".into()),
+    );
+    assert!(unary.verify(&ctx).is_ok());
+    unary.get_operation().deref_mut(&ctx).attributes.set(
+        key.clone(),
+        ResultAccuracyAttr::new(-1.0, 0.0, 0, ResultAccuracyMode::Tolerance),
+    );
+    assert!(unary.verify(&ctx).is_ok());
+
+    let binary = AddOp::new_inferred(&mut ctx, input, input).unwrap();
+    binary.get_operation().deref_mut(&ctx).attributes.set(
+        key.clone(),
+        StringAttr::new("malformed".into()),
+    );
+    assert!(binary.verify(&ctx).is_ok());
+    binary.get_operation().deref_mut(&ctx).attributes.set(
+        key,
+        ResultAccuracyAttr::new(-1.0, 0.0, 0, ResultAccuracyMode::Tolerance),
+    );
+    assert!(binary.verify(&ctx).is_ok());
 }
 
 #[test]

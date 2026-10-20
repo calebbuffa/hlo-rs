@@ -14,20 +14,22 @@ pub(crate) fn verify_elementwise(
 ) -> Result<()> {
     crate::verification::verify_elementwise(op, ctx, mnemonic, arity)?;
     let ir = op.get_operation().deref(ctx);
-    if let Some(attribute) = ir
-        .attributes
-        .0
-        .get(&Identifier::new("stablehlo_result_accuracy"))
-    {
-        let Some(attribute) = attribute.downcast_ref::<crate::attributes::ResultAccuracyAttr>()
-        else {
-            return crate::verification::invalid(
-                op,
-                ctx,
-                "result_accuracy must use the StableHLO result_accuracy attribute",
-            );
-        };
-        attribute.verify(ctx)?;
+    if owns_result_accuracy(op, ctx) {
+        if let Some(attribute) = ir
+            .attributes
+            .0
+            .get(&Identifier::new("stablehlo_result_accuracy"))
+        {
+            let Some(attribute) = attribute.downcast_ref::<crate::attributes::ResultAccuracyAttr>()
+            else {
+                return crate::verification::invalid(
+                    op,
+                    ctx,
+                    "result_accuracy must use the StableHLO result_accuracy attribute",
+                );
+            };
+            attribute.verify(ctx)?;
+        }
     }
     let types = ir
         .operands()
@@ -42,6 +44,24 @@ pub(crate) fn verify_elementwise(
         );
     }
     Ok(())
+}
+
+fn owns_result_accuracy(op: &dyn Op, ctx: &Context) -> bool {
+    let operation = op.get_operation();
+    Operation::is_op::<crate::ops::CbrtOp>(operation, ctx)
+        || Operation::is_op::<crate::ops::CosineOp>(operation, ctx)
+        || Operation::is_op::<crate::ops::ExponentialOp>(operation, ctx)
+        || Operation::is_op::<crate::ops::ExponentialMinusOneOp>(operation, ctx)
+        || Operation::is_op::<crate::ops::Exp2Op>(operation, ctx)
+        || Operation::is_op::<crate::ops::LogOp>(operation, ctx)
+        || Operation::is_op::<crate::ops::LogPlusOneOp>(operation, ctx)
+        || Operation::is_op::<crate::ops::Log2Op>(operation, ctx)
+        || Operation::is_op::<crate::ops::LogisticOp>(operation, ctx)
+        || Operation::is_op::<crate::ops::RsqrtOp>(operation, ctx)
+        || Operation::is_op::<crate::ops::SineOp>(operation, ctx)
+        || Operation::is_op::<crate::ops::SqrtOp>(operation, ctx)
+        || Operation::is_op::<crate::ops::TanOp>(operation, ctx)
+        || Operation::is_op::<crate::ops::TanhOp>(operation, ctx)
 }
 
 fn compatible_witnesses(ctx: &Context, types: &[TypeHandle]) -> bool {
