@@ -15,7 +15,7 @@ use pliron::{
     value::Value,
 };
 
-#[pliron_op(name="stablehlo.broadcast_in_dim",format="$0 attr($stablehlo_broadcast_dimensions, $VecAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_broadcast_dimensions:VecAttr))]
+#[pliron_op(name="stablehlo.broadcast_in_dim",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_broadcast_dimensions:VecAttr))]
 pub struct BroadcastInDimOp;
 impl BroadcastInDimOp {
     pub fn new(
@@ -95,7 +95,7 @@ impl Verify for BroadcastInDimOp {
     }
 }
 
-#[pliron_op(name="stablehlo.reshape",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.reshape",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ReshapeOp;
 impl ReshapeOp {
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
@@ -163,7 +163,7 @@ impl Verify for ReshapeOp {
     }
 }
 
-#[pliron_op(name="stablehlo.transpose",format="$0 attr($stablehlo_transpose_permutation, $VecAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_transpose_permutation:VecAttr))]
+#[pliron_op(name="stablehlo.transpose",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_transpose_permutation:VecAttr))]
 pub struct TransposeOp;
 impl TransposeOp {
     pub fn new_inferred(ctx: &mut Context, input: Value, permutation: Vec<usize>) -> Result<Self> {
@@ -238,7 +238,7 @@ impl Verify for TransposeOp {
     }
 }
 
-#[pliron_op(name="stablehlo.broadcast",format="$0 attr($stablehlo_broadcast_sizes, $VecAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_broadcast_sizes:VecAttr))]
+#[pliron_op(name="stablehlo.broadcast",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_broadcast_sizes:VecAttr))]
 pub struct BroadcastOp;
 impl BroadcastOp {
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle, sizes: Vec<i64>) -> Self {
@@ -292,7 +292,7 @@ impl Verify for BroadcastOp {
     }
 }
 
-#[pliron_op(name="stablehlo.reverse",format="$0 attr($stablehlo_reverse_dimensions, $VecAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_reverse_dimensions:VecAttr))]
+#[pliron_op(name="stablehlo.reverse",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_reverse_dimensions:VecAttr))]
 pub struct ReverseOp;
 impl ReverseOp {
     pub fn new(
@@ -356,7 +356,7 @@ impl Verify for ReverseOp {
     }
 }
 
-#[pliron_op(name="stablehlo.dynamic_broadcast_in_dim",format="$0 `,` $1 attr($stablehlo_dynamic_broadcast_dimensions, $VecAttr) attr($stablehlo_dynamic_broadcast_known_expanding, $VecAttr) attr($stablehlo_dynamic_broadcast_known_nonexpanding, $VecAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dynamic_broadcast_dimensions:VecAttr,stablehlo_dynamic_broadcast_known_expanding:VecAttr,stablehlo_dynamic_broadcast_known_nonexpanding:VecAttr))]
+#[pliron_op(name="stablehlo.dynamic_broadcast_in_dim",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dynamic_broadcast_dimensions:VecAttr,stablehlo_dynamic_broadcast_known_expanding:VecAttr,stablehlo_dynamic_broadcast_known_nonexpanding:VecAttr))]
 pub struct DynamicBroadcastInDimOp;
 impl DynamicBroadcastInDimOp {
     pub fn new(
@@ -516,7 +516,7 @@ impl Verify for DynamicBroadcastInDimOp {
     }
 }
 
-#[pliron_op(name="stablehlo.dynamic_reshape",format="$0 `,` $1",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.dynamic_reshape",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct DynamicReshapeOp;
 impl DynamicReshapeOp {
     pub fn new(ctx: &mut Context, input: Value, output_shape: Value, result: TypeHandle) -> Self {
@@ -620,7 +620,7 @@ fn compatible_native_shape(ctx: &Context, a: TypeHandle, b: TypeHandle) -> bool 
     crate::verification::shape::compatible_shape(ctx, a, b)
 }
 
-#[pliron_op(name="stablehlo.get_dimension_size",format="$0 attr($stablehlo_get_dimension_size_dimension, $IntegerAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_get_dimension_size_dimension:IntegerAttr))]
+#[pliron_op(name="stablehlo.get_dimension_size",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_get_dimension_size_dimension:IntegerAttr))]
 pub struct GetDimensionSizeOp;
 impl GetDimensionSizeOp {
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle, dimension: usize) -> Self {
@@ -699,7 +699,7 @@ impl Verify for GetDimensionSizeOp {
     }
 }
 
-#[pliron_op(name="stablehlo.set_dimension_size",format="$0 `,` $1 attr($stablehlo_set_dimension_size_dimension, $IntegerAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_set_dimension_size_dimension:IntegerAttr))]
+#[pliron_op(name="stablehlo.set_dimension_size",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_set_dimension_size_dimension:IntegerAttr))]
 pub struct SetDimensionSizeOp;
 impl SetDimensionSizeOp {
     pub fn new(

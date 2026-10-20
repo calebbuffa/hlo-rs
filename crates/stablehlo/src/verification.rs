@@ -319,6 +319,19 @@ pub fn verify_module_fast(ctx: &Context, root: Ptr<Operation>) -> Result<()> {
                             return invalid(&*dynop, ctx, "call signature does not match callee");
                         }
                     }
+                    if let Some(call) = dynop.downcast_ref::<crate::ops::CustomCallOp>()
+                        && let Some(symbols) = symbols
+                    {
+                        for name in call.called_computations(ctx)? {
+                            if !symbols.contains_key(&name) {
+                                return invalid(
+                                    &*dynop,
+                                    ctx,
+                                    "custom_call references an unresolved function symbol",
+                                );
+                            }
+                        }
+                    }
                     pending.extend(op.regions());
                 }
             }

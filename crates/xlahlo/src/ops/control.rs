@@ -2,9 +2,14 @@
 //!
 //! Constructors retain the declared result type. Use the operation verifier for
 //! local checks and the module verifier for callee, ownership, and channel rules.
-use super::HloOpInterface;
+//! Random-operation shape checks are also available in
+//! [`crate::inference::control`]; backend generator capabilities are separate.
+use super::{HloOpInterface, numerical::NumericalInteger};
 use crate::{
-    attributes::{Axes, Callees, FusionKind, Index, RandomAlgorithm, RandomDistribution},
+    attributes::{
+        Axes, Callees, CustomCallApiVersion, CustomCallSchedule, FusionKind, Index, PaddingType,
+        RandomAlgorithm, RandomDistribution,
+    },
     literal::Literal,
     opcode::Opcode,
 };
@@ -14,6 +19,7 @@ use pliron::{
     common_traits::Verify,
     context::{Context, Ptr},
     derive::pliron_op,
+    identifier::Identifier,
     op::Op,
     operation::Operation,
     region::Region,
@@ -24,7 +30,7 @@ use pliron::{
 
 /// Declared operand layouts for a layout-constrained custom call.
 #[pliron::derive::pliron_attr(
-    name = "hlo.shape_list",
+    name = "xlahlo.shape_list",
     format = "`[` vec($0, CharSpace(`,`)) `]`",
     verifier = "succ"
 )]
@@ -33,70 +39,122 @@ pub struct ShapeList(pub Vec<TypeHandle>);
 
 /// Per-operand slice bounds for in-place collective-permute buffers.
 #[pliron::derive::pliron_attr(
-    name = "hlo.dynamic_slice_sizes",
+    name = "xlahlo.dynamic_slice_sizes",
     format = "`[` vec($0, CharSpace(`,`)) `]`",
     verifier = "succ"
 )]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct DynamicSliceSizes(pub Vec<Axes>);
 
-native_instruction!(ParameterOp, "hlo.parameter", Parameter, crate::verification::control::instruction, index: Index);
-native_instruction!(ConstantOp, "hlo.constant", Constant, crate::verification::control::instruction, literal: Literal);
+native_instruction!(ParameterOp, "xlahlo.parameter", Parameter, crate::verification::control::instruction, index: Index);
+native_instruction!(ConstantOp, "xlahlo.constant", Constant, crate::verification::control::instruction, literal: Literal);
 native_instruction!(
     TupleOp,
-    "hlo.tuple",
+    "xlahlo.tuple",
     Tuple,
     crate::verification::control::instruction,
 );
-native_instruction!(GetTupleElementOp, "hlo.get_tuple_element", GetTupleElement, crate::verification::control::instruction, index: Index);
-native_instruction!(CallOp, "hlo.call", Call, crate::verification::control::instruction, callees: Callees);
-native_instruction!(WhileOp, "hlo.while", While, crate::verification::control::instruction, callees: Callees);
-native_instruction!(ConditionalOp, "hlo.conditional", Conditional, crate::verification::control::instruction, callees: Callees);
-native_instruction!(CustomCallOp, "hlo.custom_call", CustomCall, crate::verification::control::instruction, target: StringAttr);
+native_instruction!(GetTupleElementOp, "xlahlo.get_tuple_element", GetTupleElement, crate::verification::control::instruction, index: Index);
+native_instruction!(CallOp, "xlahlo.call", Call, crate::verification::control::instruction, callees: Callees);
+native_instruction!(WhileOp, "xlahlo.while", While, crate::verification::control::instruction, callees: Callees);
+native_instruction!(ConditionalOp, "xlahlo.conditional", Conditional, crate::verification::control::instruction, callees: Callees);
+native_instruction!(CustomCallOp, "xlahlo.custom_call", CustomCall, crate::verification::control::instruction, target: StringAttr);
+
+impl CustomCallOp {
+    /// ABI version, using the proto's unspecified default when omitted.
+    pub fn api_version(&self, ctx: &Context) -> Result<CustomCallApiVersion> {
+        crate::verification::control::custom_call_api_version(ctx, self.op)
+    }
+
+    pub fn set_api_version(&self, ctx: &Context, version: CustomCallApiVersion) {
+        self.op
+            .deref_mut(ctx)
+            .attributes
+            .set(Identifier::new("hlo_api_version"), version);
+    }
+
+    pub fn schedule(&self, ctx: &Context) -> Result<CustomCallSchedule> {
+        crate::verification::control::custom_call_schedule(ctx, self.op)
+    }
+
+    pub fn set_schedule(&self, ctx: &Context, schedule: CustomCallSchedule) {
+        self.op
+            .deref_mut(ctx)
+            .attributes
+            .set(Identifier::new("hlo_schedule"), schedule);
+    }
+
+    /// Optional convolution padding mode; `Invalid` means no selected mode.
+    pub fn padding_type(&self, ctx: &Context) -> Result<PaddingType> {
+        crate::verification::control::custom_call_padding_type(ctx, self.op)
+    }
+
+    pub fn set_padding_type(&self, ctx: &Context, padding: PaddingType) {
+        self.op
+            .deref_mut(ctx)
+            .attributes
+            .set(Identifier::new("hlo_padding_type"), padding);
+    }
+}
+
 native_instruction!(
     DomainOp,
-    "hlo.domain",
+    "xlahlo.domain",
     Domain,
     crate::verification::control::instruction,
 );
 native_instruction!(
     OptimizationBarrierOp,
-    "hlo.optimization_barrier",
+    "xlahlo.optimization_barrier",
     OptimizationBarrier,
     crate::verification::control::instruction,
 );
 native_instruction!(
     AfterAllOp,
-    "hlo.after_all",
+    "xlahlo.after_all",
     AfterAll,
     crate::verification::control::instruction,
 );
 native_instruction!(
     AddDependencyOp,
-    "hlo.add_dependency",
+    "xlahlo.add_dependency",
     AddDependency,
     crate::verification::control::instruction,
 );
 native_instruction!(
     ReplicaIdOp,
-    "hlo.replica_id",
+    "xlahlo.replica_id",
     ReplicaId,
     crate::verification::control::instruction,
 );
 native_instruction!(
     PartitionIdOp,
-    "hlo.partition_id",
+    "xlahlo.partition_id",
     PartitionId,
     crate::verification::control::instruction,
 );
-native_instruction!(RngOp, "hlo.rng", Rng, crate::verification::control::instruction, distribution: RandomDistribution);
-native_instruction!(RngBitGeneratorOp, "hlo.rng_bit_generator", RngBitGenerator, crate::verification::control::instruction, algorithm: RandomAlgorithm);
+native_instruction!(RngOp, "xlahlo.rng", Rng, crate::verification::control::instruction, distribution: RandomDistribution);
+native_instruction!(RngBitGeneratorOp, "xlahlo.rng_bit_generator", RngBitGenerator, crate::verification::control::instruction, algorithm: RandomAlgorithm);
 native_instruction!(
     RngGetAndUpdateStateOp,
-    "hlo.rng_get_and_update_state",
+    "xlahlo.rng_get_and_update_state",
     RngGetAndUpdateState,
     crate::verification::control::instruction,
 );
+
+impl RngGetAndUpdateStateOp {
+    /// Signed RNG state increment, defaulting to the proto's zero value.
+    pub fn delta(&self, ctx: &Context) -> Result<i64> {
+        crate::verification::control::rng_delta(ctx, self.op)
+    }
+
+    pub fn set_delta(&self, ctx: &Context, delta: i64) {
+        self.op
+            .deref_mut(ctx)
+            .attributes
+            .set(Identifier::new("hlo_delta"), NumericalInteger(delta));
+    }
+}
 
 mod asynchronous;
 mod collective;
@@ -111,7 +169,7 @@ pub use collective::{
 };
 
 /// A fused computation represented by one isolated, single-block region.
-#[pliron_op(name = "hlo.fusion", format, interfaces = [pliron::builtin::op_interfaces::IsolatedFromAboveInterface], attributes = (hlo_fusion_kind: FusionKind))]
+#[pliron_op(name = "xlahlo.fusion", format, interfaces = [pliron::builtin::op_interfaces::IsolatedFromAboveInterface], attributes = (hlo_fusion_kind: FusionKind))]
 pub struct FusionOp;
 
 impl FusionOp {

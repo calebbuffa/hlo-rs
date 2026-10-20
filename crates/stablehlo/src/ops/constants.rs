@@ -13,7 +13,7 @@ use pliron::{
     value::Value,
 };
 
-#[pliron_op(name="stablehlo.constant",format="",interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<0>,pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_constant_bits:VecAttr,stablehlo_constant_splat:BoolAttr,stablehlo_constant_sparse:SparseElementsAttr))]
+#[pliron_op(name="stablehlo.constant",format,interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<0>,pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_constant_bits:VecAttr,stablehlo_constant_splat:BoolAttr,stablehlo_constant_sparse:SparseElementsAttr))]
 pub struct ConstantOp;
 impl ConstantOp {
     pub fn new(ctx: &mut Context, result: TypeHandle, bits: Vec<u64>, splat: bool) -> Self {
@@ -186,7 +186,7 @@ impl Verify for ConstantOp {
     }
 }
 
-#[pliron_op(name="stablehlo.dynamic_iota",format="$0 attr($stablehlo_dynamic_iota_dimension, $IntegerAttr)",interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<1>,pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dynamic_iota_dimension:IntegerAttr))]
+#[pliron_op(name="stablehlo.dynamic_iota",format,interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<1>,pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dynamic_iota_dimension:IntegerAttr))]
 pub struct DynamicIotaOp;
 impl DynamicIotaOp {
     pub fn dimension_size(&self, ctx: &Context) -> Value {

@@ -2,10 +2,13 @@
 //! indexing definitions once replaces pliron's pairwise dominance searches.
 use crate::{
     Diagnostic,
-    attributes::Callees,
+    attributes::{Callees, ResultAccuracy},
     inference::Signature,
     opcode::Opcode::{self, *},
-    ops::{ComputationOp, HloOpInterface, ReturnOp, control::ParameterOp},
+    ops::{
+        ComputationOp, HloOpInterface, ReturnOp,
+        control::{FusionOp, ParameterOp},
+    },
     types::{TupleType, is_hlo_type},
 };
 use pliron::{
@@ -30,6 +33,7 @@ use std::{
 
 mod buffers;
 pub(crate) mod control;
+pub use control::{async_chain_starts, async_wrapped_computations};
 pub(crate) mod elementwise;
 mod layout;
 mod metadata;
@@ -212,6 +216,20 @@ pub(crate) fn same(ctx: &Context, lhs: TypeHandle, rhs: TypeHandle) -> bool {
     lhs == rhs || crate::shape::Shape::compatible(ctx, lhs, rhs)
 }
 
+fn verify_result_accuracy(ctx: &Context, op: Ptr<Operation>, opcode: Opcode) -> Result<()> {
+    if let Some(accuracy) = optional_attr::<ResultAccuracy>(ctx, op, "hlo_result_accuracy")? {
+        accuracy.validate()?;
+        // These are precisely the pinned InstructionVerifier unary visitor paths.
+        let unary = elementwise::is_unary(opcode)
+            || matches!(opcode, Convert | Copy | Domain | ReducePrecision);
+        require(
+            !unary || *accuracy == ResultAccuracy::Default || opcode.supports_result_accuracy(),
+            "result accuracy is unsupported by this opcode",
+        )?;
+    }
+    Ok(())
+}
+
 pub(crate) fn instruction_types(
     ctx: &Context,
     op: Ptr<Operation>,
@@ -243,6 +261,7 @@ pub(crate) fn instruction_types(
         operands.iter().all(|&ty| is_hlo_type(ctx, ty)),
         "operands must be HLO types",
     )?;
+    verify_result_accuracy(ctx, op, opcode)?;
     Ok((operands, result))
 }
 
@@ -278,10 +297,10 @@ fn returned(ctx: &Context, block: Ptr<BasicBlock>) -> Result<TypeHandle> {
         .ok_or_else(|| error("missing return"))?;
     require(
         Operation::is_op::<ReturnOp>(term, ctx),
-        "HLO block must end with hlo.return",
+        "HLO block must end with xlahlo.return",
     )?;
     Operation::get_op::<ReturnOp>(term, ctx)
-        .ok_or_else(|| error("computation terminator must be hlo.return"))?
+        .ok_or_else(|| error("computation terminator must be xlahlo.return"))?
         .verify(ctx)?;
     Ok(term.deref(ctx).get_operand(0).get_type(ctx))
 }
@@ -336,21 +355,22 @@ pub fn verify_with_options(
 ) -> Result<()> {
     require(
         Operation::is_op::<ModuleOp>(root, ctx) || Operation::is_op::<ComputationOp>(root, ctx),
-        "verification root must be builtin.module or hlo.computation",
+        "verification root must be builtin.module or xlahlo.computation",
     )?;
-    if Operation::is_op::<ModuleOp>(root, ctx) {
-        let config = crate::ir::config(ctx, root)?;
-        if !options.ignore_module_config
-            && (config.replica_count != 1
-                || config.num_partitions != 1
-                || config.use_spmd_partitioning)
-        {
-            options.collective_context = CollectiveContext {
-                replica_count: config.replica_count,
-                partition_count: config.num_partitions,
-            };
-            options.sharding_context.use_spmd_partitioning = config.use_spmd_partitioning;
-        }
+    let module_config = if Operation::is_op::<ModuleOp>(root, ctx) {
+        Some(crate::ir::config(ctx, root)?)
+    } else {
+        None
+    };
+    if let Some(config) = module_config.as_ref()
+        && !options.ignore_module_config
+        && (config.replica_count != 1 || config.num_partitions != 1 || config.use_spmd_partitioning)
+    {
+        options.collective_context = CollectiveContext {
+            replica_count: config.replica_count,
+            partition_count: config.num_partitions,
+        };
+        options.sharding_context.use_spmd_partitioning = config.use_spmd_partitioning;
     }
     let mut computations = HashMap::new();
     let mut signatures = HashMap::new();
@@ -398,6 +418,26 @@ pub fn verify_with_options(
     } else {
         root
     };
+    if let Some(layout) = module_config
+        .as_ref()
+        .and_then(|config| config.entry_computation_layout.as_ref())
+    {
+        let (parameters, result) = &signatures[&entry];
+        require(
+            layout.parameter_shapes.len() == parameters.len(),
+            "entry computation layout parameter count mismatch",
+        )?;
+        for (&layout_shape, &parameter_shape) in layout.parameter_shapes.iter().zip(parameters) {
+            require(
+                crate::shape::Shape::equal_including_layout(ctx, layout_shape, parameter_shape),
+                "entry computation layout parameter shape mismatch",
+            )?;
+        }
+        require(
+            crate::shape::Shape::equal_including_layout(ctx, layout.result_shape, *result),
+            "entry computation layout result shape mismatch",
+        )?;
+    }
     let mut checked_types = HashSet::new();
     let mut instruction_names = HashSet::new();
     let mut has_buffers = false;
@@ -408,8 +448,17 @@ pub fn verify_with_options(
     let payload_count =
         optional_attr::<crate::ir::MetadataPayloads>(ctx, root, "hlo_metadata_payloads")?
             .map_or(0, |payloads| payloads.0.len());
+    let stack_frame_count =
+        optional_attr::<crate::ir::ModuleMetadata>(ctx, root, "hlo_module_metadata")?
+            .and_then(|metadata| {
+                metadata
+                    .stack_frame_index
+                    .as_ref()
+                    .map(|index| index.stack_frames.len())
+            })
+            .unwrap_or(0);
     let mut calls: HashMap<_, Vec<_>> = signatures.keys().map(|&op| (op, Vec::new())).collect();
-    let hlo_dialect = pliron::identifier::Identifier::new("hlo").into();
+    let hlo_dialect = pliron::identifier::Identifier::new("xlahlo").into();
     // Attribute-free arithmetic semantics depend only on opcode and immutable
     // interned types. Structural and instruction-specific policies still run.
     let mut arithmetic_last: [Option<[TypeHandle; 3]>; 3] = [None; 3];
@@ -527,7 +576,7 @@ pub fn verify_with_options(
         }
         // Interface verification is deliberately not generic recursive verify_op.
         dynamic.verify_interfaces(ctx)?;
-        metadata::verify_instruction(ctx, op, options, payload_count)?;
+        metadata::verify_instruction(ctx, op, options, payload_count, stack_frame_count)?;
         for region in data.regions() {
             for block in region.deref(ctx).iter(ctx) {
                 for argument in block.deref(ctx).arguments() {
@@ -611,6 +660,9 @@ pub fn verify_with_options(
                 .map_err(|error| instruction_error(ctx, op, error))?;
         }
     }
+    for &computation in computations.values() {
+        crate::ir::instruction_order::verify_order(ctx, computation)?;
+    }
     let mut indegree: HashMap<_, usize> = calls.keys().map(|&op| (op, 0)).collect();
     for targets in calls.values() {
         for target in targets {
@@ -677,7 +729,7 @@ pub fn verify_with_options(
         buffers::verify(ctx, root, &all, &computations, options)?;
     }
     if has_communication || has_collectives {
-        control::asynchronous::verify_graph(ctx, &all, &computations, &signatures, options)?;
+        control::asynchronous::verify_graph(ctx, root, &all, &computations, &signatures, options)?;
     }
     if has_collectives {
         control::collective::verify_module(
@@ -767,5 +819,13 @@ fn verify_block(ctx: &Context, block: Ptr<BasicBlock>) -> Result<()> {
             }
         }
     }
-    metadata::verify_control_dependencies(ctx, block)
+    if block
+        .deref(ctx)
+        .get_parent_op(ctx)
+        .is_some_and(|parent| Operation::is_op::<FusionOp>(parent, ctx))
+    {
+        crate::ir::verify_fusion_parameters(ctx, block)
+    } else {
+        metadata::verify_control_dependencies(ctx, block)
+    }
 }

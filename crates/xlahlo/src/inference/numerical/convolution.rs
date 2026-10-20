@@ -9,6 +9,9 @@ use crate::{
 use pliron::{context::Context, result::Result, r#type::TypeHandle};
 
 /// Infer a forward convolution with explicit feature and batch group counts.
+///
+/// Both group counts must be positive, and at most one may exceed one.
+/// Counts are validated as supplied, without substituting default values.
 #[allow(clippy::too_many_arguments)]
 pub fn infer_convolution(
     ctx: &Context,

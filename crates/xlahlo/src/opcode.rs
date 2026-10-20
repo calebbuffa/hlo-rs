@@ -4,7 +4,7 @@ use std::{fmt, str::FromStr};
 
 macro_rules! catalog {
     ($($variant:ident: $name:literal, $arity:expr;)+) => {
-        #[pliron_attr(name = "hlo.opcode", format, verifier = "succ")]
+        #[pliron_attr(name = "xlahlo.opcode", format, verifier = "succ")]
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         /// Instruction kinds in the OpenXLA HLO catalog.
         pub enum Opcode { $(#[doc = concat!("The `", $name, "` instruction.")] $variant,)+ }
@@ -177,6 +177,52 @@ impl fmt::Display for Opcode {
 }
 
 impl Opcode {
+    /// Whether this is a generic asynchronous start, update, or completion.
+    pub const fn is_async(self) -> bool {
+        matches!(self, Self::AsyncStart | Self::AsyncUpdate | Self::AsyncDone)
+    }
+
+    /// Upstream binary commutativity, independent of comparison attributes.
+    pub const fn is_binary_commutative(self) -> bool {
+        matches!(
+            self,
+            Self::Add
+                | Self::Multiply
+                | Self::Mulhi
+                | Self::Maximum
+                | Self::Minimum
+                | Self::And
+                | Self::Or
+                | Self::Xor
+        )
+    }
+
+    /// Calling context from pinned `GetInstructionCallContext`.
+    pub const fn call_context(self) -> CallContext {
+        match self {
+            Self::Call
+            | Self::Conditional
+            | Self::While
+            | Self::AsyncStart
+            | Self::AsyncUpdate
+            | Self::AsyncDone => CallContext::ControlFlow,
+            Self::AllReduce
+            | Self::ReduceScatter
+            | Self::CollectiveReduce
+            | Self::AllReduceStart
+            | Self::Map
+            | Self::Reduce
+            | Self::ReduceWindow
+            | Self::Scan
+            | Self::Scatter
+            | Self::SelectAndScatter
+            | Self::Sort
+            | Self::Fusion
+            | Self::CustomCall => CallContext::Embedded,
+            _ => CallContext::None,
+        }
+    }
+
     pub const fn supports_result_accuracy(self) -> bool {
         matches!(
             self,
@@ -203,5 +249,29 @@ impl Opcode {
                 | Self::Tan
                 | Self::Tanh
         )
+    }
+}
+
+/// Buffer-allocation calling context in OpenXLA's call graph lattice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CallContext {
+    /// The callee cannot allocate buffers.
+    Embedded,
+    /// The callee can allocate buffers.
+    ControlFlow,
+    /// The callee is used in both contexts.
+    Both,
+    /// The context has not been determined.
+    None,
+}
+
+impl fmt::Display for CallContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Embedded => "kEmbedded",
+            Self::ControlFlow => "kControlFlow",
+            Self::Both => "kBoth",
+            Self::None => "kNone",
+        })
     }
 }

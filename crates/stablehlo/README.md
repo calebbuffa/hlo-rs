@@ -66,18 +66,6 @@ function
 verify_module_fast(&context, module.get_operation()).expect("valid StableHLO module");
 ```
 
-## Public modules
-
-- `attributes`: typed StableHLO and builtin metadata, affine expressions, mesh and dimension-number attributes.
-- `inference`: checked output-type inference grouped by compute, control, elementwise, and shape operations.
-- `integer`: arbitrary-width integer values and conversions.
-- `ops`: all 118 StableHLO operation wrappers, including constants, control flow, collectives, indexing, reductions, tensor, shape, and compute operations.
-- `sparse`: sparse encodings and sparse element values.
-- `types`: StableHLO element and shaped types, function, tuple, token, buffer and quantized types.
-- `verification`: local operation checks and `verify_module_fast` for graph, symbol, region, SSA-dominance, and signature validation.
-
-The public fallible boundary uses `pliron::result::Result` and `pliron::result::Error`. StableHLO failures carry a downcastable `stablehlo::Diagnostic` payload with recovery category and structured context. Inference-based operation builders return this result rather than discarding errors.
-
 ## License
 
 See the workspace license file.

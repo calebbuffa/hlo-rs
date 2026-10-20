@@ -1,8 +1,9 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/clienthlo",
     "crates/stablehlo",
-    "crates/xlahlo",
+    "crates/xlahlo", "crates/xlahlo-cubecl",
 ]
 
 [workspace.package]

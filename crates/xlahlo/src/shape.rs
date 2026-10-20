@@ -23,7 +23,7 @@ pub const COMBINE_DIMENSION: i64 = i64::MIN;
 /// Tile marker matching the corresponding bound.
 pub const MATCH_DIMENSION: i64 = i64::MIN + 1;
 
-#[pliron_attr(name = "hlo.dimension", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.dimension", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Static extent, bounded runtime extent, or unbounded dynamic extent.
 pub enum Dimension {
@@ -33,7 +33,7 @@ pub enum Dimension {
 }
 
 #[pliron_attr(
-    name = "hlo.tile",
+    name = "xlahlo.tile",
     format = "`[` vec($dimensions, CharSpace(`,`)) `]`",
     verifier = "succ"
 )]
@@ -44,7 +44,7 @@ pub struct Tile {
 }
 
 #[pliron_attr(
-    name = "hlo.split_config",
+    name = "xlahlo.split_config",
     format = "`<` $dimension `,` `[` vec($split_indices, CharSpace(`,`)) `]` `>`",
     verifier = "succ"
 )]
@@ -55,7 +55,7 @@ pub struct SplitConfig {
     pub split_indices: Vec<i64>,
 }
 
-#[pliron_attr(name = "hlo.dim_level_type", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.dim_level_type", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Sparse level annotations retained independently from layout equality.
 pub enum DimLevelType {
@@ -66,7 +66,7 @@ pub enum DimLevelType {
 }
 
 #[pliron_attr(
-    name = "hlo.layout",
+    name = "xlahlo.layout",
     format = "`<` `[` vec($minor_to_major, CharSpace(`,`)) `]` `,` `[` vec($tiles, CharSpace(`,`)) `]` `,` $tail_padding_alignment_in_elements `,` $element_size_in_bits `,` $memory_space `,` `[` vec($index_primitive_type, CharSpace(`,`)) `]` `,` `[` vec($pointer_primitive_type, CharSpace(`,`)) `]` `,` `[` vec($physical_shape, CharSpace(`,`)) `]` `,` `[` vec($split_configs, CharSpace(`,`)) `]` `,` $dynamic_shape_metadata_prefix_bytes `,` `[` vec($dim_level_types, CharSpace(`,`)) `]` `,` `[` vec($dim_unique, CharSpace(`,`)) `]` `,` `[` vec($dim_ordered, CharSpace(`,`)) `]` `>`",
     verifier = "succ"
 )]
@@ -115,6 +115,52 @@ impl Layout {
             minor_to_major: (0..rank as i64).rev().collect(),
             ..Self::default()
         }
+    }
+    /// Delete a logical axis and renumber logical and physical split axes.
+    ///
+    /// Like OpenXLA `Layout::DeleteDimension`, this leaves tiles and obsolete
+    /// sparse annotations unchanged. Invalid axes or permutations are errors
+    /// and leave this layout unchanged.
+    pub fn delete_dimension(&mut self, dimension: i64) -> Result<()> {
+        let rank = self.minor_to_major.len();
+        let mut seen = vec![false; rank];
+        for &axis in &self.minor_to_major {
+            let valid = usize::try_from(axis)
+                .ok()
+                .and_then(|axis| seen.get_mut(axis))
+                .is_some_and(|slot| !std::mem::replace(slot, true));
+            if !valid {
+                return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                    message: "dimension deletion requires a valid layout permutation".into(),
+                }));
+            }
+        }
+        let position = self
+            .minor_to_major
+            .iter()
+            .position(|&axis| axis == dimension)
+            .ok_or_else(|| {
+                pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                    message: format!("layout dimension {dimension} out of range"),
+                })
+            })?;
+        let physical_dimension = (rank - 1 - position) as i64;
+        self.minor_to_major.remove(position);
+        for axis in &mut self.minor_to_major {
+            if *axis > dimension {
+                *axis -= 1;
+            }
+        }
+        self.split_configs.retain_mut(|split| {
+            if split.dimension == physical_dimension {
+                return false;
+            }
+            if split.dimension > physical_dimension {
+                split.dimension -= 1;
+            }
+            true
+        });
+        Ok(())
     }
     fn equal(&self, ctx: &Context, other: &Self) -> bool {
         self.minor_to_major == other.minor_to_major
@@ -168,9 +214,9 @@ pub fn validate_layout(layout: &Layout, dimensions: &[i64]) -> Result<()> {
             }));
         }
     }
-    if layout.tail_padding_alignment_in_elements < 0 || layout.element_size_in_bits < 0 {
+    if layout.tail_padding_alignment_in_elements <= 0 || layout.element_size_in_bits < 0 {
         return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
-            message: "negative layout alignment or element size".into(),
+            message: "nonpositive layout alignment or negative element size".into(),
         }));
     }
     if !layout.index_primitive_type.is_empty()
@@ -455,6 +501,137 @@ impl Shape {
             .map_or(shape, |ty| ty.array);
         tensor(ctx, array)?;
         Ok(array)
+    }
+    /// Replace an array or buffer dimension's bound, preserving its dynamic
+    /// flag and all layout metadata, as in `Shape::set_dimensions` with no
+    /// dynamic override. The original interned type is never modified.
+    pub fn set_dimension(
+        ctx: &Context,
+        shape: TypeHandle,
+        axis: usize,
+        bound: i64,
+    ) -> Result<TypeHandle> {
+        let array = Self::array_view(ctx, shape)?;
+        let mut result = tensor(ctx, array)?.clone();
+        result.verify(ctx)?;
+        let dimension = result.dimensions.get_mut(axis).ok_or_else(|| {
+            pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: format!("dimension axis {axis} out of range"),
+            })
+        })?;
+        *dimension = bound;
+        result.verify(ctx)?;
+        let result = TensorType::instantiate(result, ctx).into();
+        if array == shape {
+            Ok(result)
+        } else {
+            Self::buffer(ctx, result)
+        }
+    }
+    /// Change an array or buffer axis's dynamic flag without changing its
+    /// bound or layout. An unbounded dimension cannot be made static.
+    pub fn set_dynamic_dimension(
+        ctx: &Context,
+        shape: TypeHandle,
+        axis: usize,
+        dynamic: bool,
+    ) -> Result<TypeHandle> {
+        let array = Self::array_view(ctx, shape)?;
+        let mut result = tensor(ctx, array)?.clone();
+        result.verify(ctx)?;
+        let flag = result.dynamic_dimensions.get_mut(axis).ok_or_else(|| {
+            pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                message: format!("dimension axis {axis} out of range"),
+            })
+        })?;
+        *flag = dynamic;
+        result.verify(ctx)?;
+        let result = TensorType::instantiate(result, ctx).into();
+        if array == shape {
+            Ok(result)
+        } else {
+            Self::buffer(ctx, result)
+        }
+    }
+    /// Delete one array or buffer axis, preserving retained bounds, dynamic
+    /// flags and the layout's OpenXLA dimension-deletion semantics.
+    pub fn delete_dimension(
+        ctx: &Context,
+        shape: TypeHandle,
+        dimension: i64,
+    ) -> Result<TypeHandle> {
+        Self::delete_dimensions(ctx, shape, &[dimension])
+    }
+    /// Delete distinct logical axes, expressed in the original array's rank.
+    ///
+    /// Input order is immaterial. Negative, duplicate and out-of-range axes
+    /// are errors. The original interned type is never modified.
+    pub fn delete_dimensions(
+        ctx: &Context,
+        shape: TypeHandle,
+        dimensions: &[i64],
+    ) -> Result<TypeHandle> {
+        let array = Self::array_view(ctx, shape)?;
+        let mut result = tensor(ctx, array)?.clone();
+        result.verify(ctx)?;
+        let mut deleted = vec![false; result.dimensions.len()];
+        for &dimension in dimensions {
+            let valid = usize::try_from(dimension)
+                .ok()
+                .and_then(|axis| deleted.get_mut(axis))
+                .is_some_and(|slot| !std::mem::replace(slot, true));
+            if !valid {
+                return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                    message: format!("duplicate or out-of-range dimension {dimension}"),
+                }));
+            }
+        }
+        if dimensions.is_empty() {
+            return Ok(shape);
+        }
+        for layout in &mut result.layout {
+            for (axis, &delete) in deleted.iter().enumerate().rev() {
+                if delete {
+                    layout.delete_dimension(axis as i64)?;
+                }
+            }
+        }
+        result.dimensions = result
+            .dimensions
+            .into_iter()
+            .zip(&deleted)
+            .filter_map(|(extent, &delete)| (!delete).then_some(extent))
+            .collect();
+        result.dynamic_dimensions = result
+            .dynamic_dimensions
+            .into_iter()
+            .zip(&deleted)
+            .filter_map(|(dynamic, &delete)| (!delete).then_some(dynamic))
+            .collect();
+        result.verify(ctx)?;
+        let result = TensorType::instantiate(result, ctx).into();
+        if array == shape {
+            Ok(result)
+        } else {
+            Self::buffer(ctx, result)
+        }
+    }
+    /// Keep the axes selected by a predicate on original logical axis indices.
+    ///
+    /// The predicate is evaluated once per axis in ascending order. As in
+    /// `ShapeUtil::FilterDimensions`, only arrays are accepted, not buffers.
+    pub fn filter_dimensions(
+        ctx: &Context,
+        shape: TypeHandle,
+        mut keep: impl FnMut(i64) -> bool,
+    ) -> Result<TypeHandle> {
+        let source = tensor(ctx, shape)?;
+        source.verify(ctx)?;
+        let deleted = (0..source.dimensions.len())
+            .map(|axis| axis as i64)
+            .filter(|&axis| !keep(axis))
+            .collect::<Vec<_>>();
+        Self::delete_dimensions(ctx, shape, &deleted)
     }
     /// Borrow the optional array or buffer layout without copying its metadata.
     pub fn layout(ctx: &Context, shape: TypeHandle) -> Result<Option<Ref<'_, Layout>>> {

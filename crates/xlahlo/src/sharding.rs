@@ -15,7 +15,7 @@ pub use named::{
 };
 pub(crate) use named::{iota_value, product, validate_iota};
 
-#[pliron_attr(name = "hlo.sharding_type", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.sharding_type", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Replication, maximal, tuple, tiled, manual, unknown, or unreduced assignment.
 pub enum ShardingType {
@@ -28,7 +28,7 @@ pub enum ShardingType {
     Unreduced,
 }
 
-#[pliron_attr(name = "hlo.shard_group", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.shard_group", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Constraint identifying values that must shard together or share a sharding pattern.
 pub enum ShardGroup {
@@ -37,7 +37,7 @@ pub enum ShardGroup {
 }
 
 #[pliron_attr(
-    name = "hlo.sharding",
+    name = "xlahlo.sharding",
     format = "`<` $kind `,` `[` vec($tile_shape, CharSpace(`,`)) `]` `,` `[` vec($tile_assignment_dimensions, CharSpace(`,`)) `]` `,` `[` vec($tile_assignment_devices, CharSpace(`,`)) `]` `,` `[` vec($tuple_shardings, CharSpace(`,`)) `]` `,` $replicate_on_last_tile_dim `,` $metadata `,` `[` vec($last_tile_dims, CharSpace(`,`)) `]` `,` `[` vec($iota_reshape_dims, CharSpace(`,`)) `]` `,` `[` vec($iota_transpose_perm, CharSpace(`,`)) `]` `,` `[` vec($shard_group, CharSpace(`,`)) `]` `,` `[` vec($named_sharding, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

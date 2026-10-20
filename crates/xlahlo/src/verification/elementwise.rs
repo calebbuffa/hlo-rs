@@ -1,7 +1,7 @@
 //! Verification for native elementwise HLO operations.
 use crate::{
     Diagnostic,
-    attributes::{ComparisonOrder, Direction, ReducePrecision, ResultAccuracy},
+    attributes::{ComparisonOrder, Direction, ReducePrecision},
     inference::elementwise,
     opcode::Opcode,
     shape::Shape,
@@ -26,13 +26,6 @@ pub(crate) fn instruction(
     options: VerifyOptions,
 ) -> Result<()> {
     let (operands, declared) = instruction_types(ctx, op, opcode)?;
-    if let Some(accuracy) = optional_attr::<ResultAccuracy>(ctx, op, "hlo_result_accuracy")? {
-        verify_require(
-            opcode.supports_result_accuracy(),
-            "result accuracy is unsupported by this opcode",
-        )?;
-        accuracy.validate()?;
-    }
     if opcode != Opcode::ReducePrecision && !options.allow_mixed_precision {
         let mut floating_type = None;
         for &operand in &operands {
@@ -130,7 +123,7 @@ pub(crate) fn instruction(
     )
 }
 
-fn is_unary(opcode: Opcode) -> bool {
+pub(super) fn is_unary(opcode: Opcode) -> bool {
     matches!(
         opcode,
         Opcode::Abs

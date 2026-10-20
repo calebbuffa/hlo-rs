@@ -256,7 +256,7 @@ fn select_and_scatter_checks_both_callees_and_window_source_shape() {
 }
 
 #[test]
-fn associative_scan_relaxes_body_and_carry_precision_only_under_layout_sensitive_policy() {
+fn associative_scan_relaxes_body_and_carry_precision_independently_of_layout_policy() {
     let mut ctx = context();
     let input = a(&ctx, P::F16, &[4, 3]);
     let carry = a(&ctx, P::BF16, &[3]);
@@ -274,7 +274,8 @@ fn associative_scan_relaxes_body_and_carry_precision_only_under_layout_sensitive
         callees(1),
     );
     for (layout_sensitive, allow_mixed_precision, valid) in [
-        (false, true, false),
+        (false, false, false),
+        (false, true, true),
         (true, false, false),
         (true, true, true),
     ] {
@@ -312,4 +313,131 @@ fn associative_scan_relaxes_body_and_carry_precision_only_under_layout_sensitive
         .attributes
         .set(Identifier::new("hlo_is_associative"), TriState::False);
     assert!(instruction(&ctx, op.get_operation(), O::Scan, mixed_strict).is_err());
+    verify_callees(
+        &ctx,
+        op.get_operation(),
+        O::Scan,
+        VerifyOptions {
+            allow_mixed_precision: true,
+            ..Default::default()
+        },
+        &[&body],
+    )
+    .unwrap();
+}
+
+#[test]
+fn scan_graph_requires_exact_body_dynamic_shapes_in_every_verification_mode() {
+    let mut ctx = context();
+    let input = a(&ctx, P::F32, &[4, 3]);
+    let slice = a(&ctx, P::F32, &[3]);
+    let roots = Shape::tuple(&ctx, vec![slice, slice]).unwrap();
+    let result = Shape::tuple(&ctx, vec![input, slice]).unwrap();
+    let args = values(&mut ctx, &[input, slice]);
+    let op = ScanOp::new(
+        &mut ctx,
+        result,
+        args,
+        Axes(vec![0]),
+        NumericalInteger(1),
+        TriState::True,
+        callees(1),
+    );
+    for dimension in [D::Bounded(3), D::Unbounded] {
+        let different = dynamic(&ctx, P::F32, &[dimension]);
+        for (body, diagnostic) in [
+            (
+                (vec![different, slice], roots),
+                "scan operand slice/carry differs from body parameter",
+            ),
+            (
+                (vec![slice, different], roots),
+                "scan operand slice/carry differs from body parameter",
+            ),
+            (
+                (
+                    vec![slice, slice],
+                    Shape::tuple(&ctx, vec![different, slice]).unwrap(),
+                ),
+                "scan result slice/carry differs from body root",
+            ),
+            (
+                (
+                    vec![slice, slice],
+                    Shape::tuple(&ctx, vec![slice, different]).unwrap(),
+                ),
+                "scan body carry parameter and root differ",
+            ),
+        ] {
+            for layout_sensitive in [false, true] {
+                for allow_mixed_precision in [false, true] {
+                    error_contains(
+                        verify_callees(
+                            &ctx,
+                            op.get_operation(),
+                            O::Scan,
+                            VerifyOptions {
+                                layout_sensitive,
+                                allow_mixed_precision,
+                                supported_unbounded_dynamic_op: Some(|_, _| true),
+                                ..Default::default()
+                            },
+                            &[&body],
+                        ),
+                        diagnostic,
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn scan_graph_accepts_matching_dynamic_shapes_and_ignores_body_layouts() {
+    let mut ctx = context();
+    for dimension in [D::Static(3), D::Bounded(3), D::Unbounded] {
+        let input = default_layout(
+            &ctx,
+            dynamic(&ctx, P::F32, &[D::Static(4), D::Static(2), dimension]),
+        );
+        let carry = default_layout(&ctx, dynamic(&ctx, P::F32, &[D::Static(2), dimension]));
+        let body_slice = Shape::with_layout(
+            &ctx,
+            carry,
+            Layout {
+                minor_to_major: vec![0, 1],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let body = (
+            vec![body_slice, body_slice],
+            Shape::tuple(&ctx, vec![body_slice, body_slice]).unwrap(),
+        );
+        let result = Shape::tuple(&ctx, vec![input, carry]).unwrap();
+        let args = values(&mut ctx, &[input, carry]);
+        let op = ScanOp::new(
+            &mut ctx,
+            result,
+            args,
+            Axes(vec![0]),
+            NumericalInteger(1),
+            TriState::True,
+            callees(1),
+        );
+        for layout_sensitive in [false, true] {
+            verify_callees(
+                &ctx,
+                op.get_operation(),
+                O::Scan,
+                VerifyOptions {
+                    layout_sensitive,
+                    supported_unbounded_dynamic_op: Some(|_, _| true),
+                    ..Default::default()
+                },
+                &[&body],
+            )
+            .unwrap();
+        }
+    }
 }

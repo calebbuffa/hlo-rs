@@ -4,13 +4,18 @@ use super::{
 };
 use crate::Diagnostic;
 use crate::{
-    attributes::{Callees, FrontendAttributes, Index, OutputOperandAliases, ResultAccuracy},
+    attributes::{
+        Algorithm, BatchNormOptions, BlockScalingConfig, Bytes, Callees, FrontendAttributes, Index,
+        IndexFlags, OperandPrecision, OptionalInteger, OutputOperandAliases, PrecisionConfig,
+        ResultAccuracy, SparsityConfig,
+    },
     inference::{Signature, control as infer},
-    ir::ExecutionThread,
+    ir::{self, ExecutionThread, MetadataPayloads},
     literal::Literal,
     opcode::{Opcode, Opcode::*},
-    ops::{HloOpInterface, ReturnOp},
+    ops::{HloOpInterface, ReturnOp, numerical::NumericalInteger},
     shape::Shape,
+    sharding::Sharding,
     types::{BufferType, TokenType},
 };
 use pliron::result::Result;
@@ -25,12 +30,48 @@ use pliron::{
 };
 use std::{
     cell::{Ref, RefCell},
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
 };
 
 pub(crate) fn opcode(ctx: &Context, op: Ptr<Operation>) -> Option<Opcode> {
     let dynamic = Operation::get_op_dyn(op, ctx);
     op_cast::<dyn HloOpInterface>(dynamic.as_ref()).map(|hlo| hlo.opcode())
+}
+
+pub(crate) fn copy_prefetch_index(ctx: &Context, op: Ptr<Operation>) -> Result<Option<i32>> {
+    match optional_attr::<OptionalInteger>(ctx, op, "hlo_cross_program_prefetch_index")?.as_deref()
+    {
+        None | Some(OptionalInteger::Absent) => Ok(None),
+        Some(OptionalInteger::Value(index)) => i32::try_from(*index).map(Some).map_err(|_| {
+            pliron::verify_error_noloc!(Diagnostic::InvalidAttribute {
+                attribute: "hlo_cross_program_prefetch_index",
+                message: format!("prefetch index {index} is outside the signed int32 domain"),
+            })
+        }),
+    }
+}
+
+pub(crate) fn feed_config(ctx: &Context, op: Ptr<Operation>, key: &'static str) -> Result<String> {
+    Ok(optional_attr::<StringAttr>(ctx, op, key)?
+        .map(|config| config.as_str().to_owned())
+        .unwrap_or_default())
+}
+
+fn same_frontend_attributes(
+    ctx: &Context,
+    left: Ptr<Operation>,
+    right: Ptr<Operation>,
+) -> Result<bool> {
+    let left = optional_attr::<FrontendAttributes>(ctx, left, "hlo_frontend_attributes")?;
+    let right = optional_attr::<FrontendAttributes>(ctx, right, "hlo_frontend_attributes")?;
+    fn entries(attributes: Option<&FrontendAttributes>) -> BTreeMap<&str, &str> {
+        attributes
+            .into_iter()
+            .flat_map(|attributes| &attributes.0)
+            .map(|pair| (pair.key.as_str(), pair.value.as_str()))
+            .collect()
+    }
+    Ok(entries(left.as_deref()) == entries(right.as_deref()))
 }
 
 pub(super) fn infer(
@@ -42,7 +83,10 @@ pub(super) fn infer(
     options: VerifyOptions,
 ) -> Result<TypeHandle> {
     match kind {
-        CopyStart => infer::infer_copy_start(ctx, operands[0]),
+        CopyStart => {
+            copy_prefetch_index(ctx, op)?;
+            infer::infer_copy_start(ctx, operands[0])
+        }
         CopyDone => {
             let destination = infer::infer_copy_done(ctx, operands[0])?;
             if options.layout_sensitive {
@@ -79,6 +123,7 @@ pub(super) fn infer(
             infer::infer_recv_done(ctx, operands[0])
         }
         Infeed => {
+            feed_config(ctx, op, "hlo_infeed_config")?;
             require(
                 operands[0].deref(ctx).is::<TokenType>(),
                 "infeed requires a token operand",
@@ -92,6 +137,7 @@ pub(super) fn infer(
             )
         }
         Outfeed => {
+            feed_config(ctx, op, "hlo_outfeed_config")?;
             require(
                 operands[1].deref(ctx).is::<TokenType>(),
                 "outfeed requires a token second operand",
@@ -265,6 +311,7 @@ type ComputationPair = (Ptr<Operation>, Ptr<Operation>);
 
 struct Graph<'a> {
     ctx: &'a Context,
+    payloads: MetadataPayloads,
     signatures: &'a HashMap<Ptr<Operation>, Signature>,
     owners: HashMap<Ptr<Operation>, Ptr<Operation>>,
     roots: HashMap<Ptr<Operation>, Value>,
@@ -279,6 +326,15 @@ struct Graph<'a> {
 }
 
 impl Graph<'_> {
+    fn backend_config(&self, operation: Ptr<Operation>) -> Result<Bytes> {
+        let payload = ir::backend_config_payload(self.ctx, operation)?;
+        let legacy = optional_attr::<StringAttr>(self.ctx, operation, "hlo_backend_config")?
+            .map_or_else(Bytes::default, |value| {
+                Bytes(value.as_str().as_bytes().to_vec())
+            });
+        ir::resolve_backend_config(payload.as_ref(), &legacy, &self.payloads)
+    }
+
     fn computations_equal(&self, left: Ptr<Operation>, right: Ptr<Operation>) -> Result<bool> {
         if left == right {
             return Ok(true);
@@ -366,25 +422,39 @@ impl Graph<'_> {
                     return Ok(false);
                 }
                 let (a_data, b_data) = (a.deref(ctx), b.deref(ctx));
-                if a_data.get_num_operands() != b_data.get_num_operands()
-                    || channel(ctx, a)? != channel(ctx, b)?
+                if a_data.get_num_operands() != b_data.get_num_operands() {
+                    return Ok(false);
+                }
+                if matches!(
+                    kind,
+                    Opcode::Send
+                        | Opcode::SendDone
+                        | Opcode::Recv
+                        | Opcode::RecvDone
+                        | Opcode::AllGather
+                        | Opcode::AllGatherStart
+                        | Opcode::AllReduce
+                        | Opcode::AllReduceStart
+                        | Opcode::ReduceScatter
+                        | Opcode::CollectiveReduce
+                        | Opcode::AllToAll
+                        | Opcode::RaggedAllToAll
+                        | Opcode::CollectiveBroadcast
+                        | Opcode::CollectivePermute
+                        | Opcode::CollectivePermuteStart
+                ) && channel(ctx, a)? != channel(ctx, b)?
                 {
                     return Ok(false);
                 }
-                let a_backend = optional_attr::<StringAttr>(ctx, a, "hlo_backend_config")?;
-                let b_backend = optional_attr::<StringAttr>(ctx, b, "hlo_backend_config")?;
-                if a_backend.as_ref().map_or("", |s| s.as_str())
-                    != b_backend.as_ref().map_or("", |s| s.as_str())
-                {
+                if self.backend_config(a)? != self.backend_config(b)? {
                     return Ok(false);
                 }
                 let a_accuracy = optional_attr::<ResultAccuracy>(ctx, a, "hlo_result_accuracy")?;
                 let b_accuracy = optional_attr::<ResultAccuracy>(ctx, b, "hlo_result_accuracy")?;
-                if kind.supports_result_accuracy()
-                    && !a_accuracy
-                        .as_deref()
-                        .unwrap_or(&ResultAccuracy::Default)
-                        .equal(b_accuracy.as_deref().unwrap_or(&ResultAccuracy::Default))
+                if !a_accuracy
+                    .as_deref()
+                    .unwrap_or(&ResultAccuracy::Default)
+                    .equal(b_accuracy.as_deref().unwrap_or(&ResultAccuracy::Default))
                 {
                     return Ok(false);
                 }
@@ -396,6 +466,69 @@ impl Graph<'_> {
                         (Some(a), Some(b)) if a.equal_logical_bits(ctx, &b)? => {}
                         (None, None) => {}
                         _ => return Ok(false),
+                    }
+                }
+                if matches!(
+                    kind,
+                    Opcode::CustomCall | Opcode::Fusion | Opcode::AsyncStart | Opcode::AsyncUpdate
+                ) {
+                    let a_aliases = optional_attr::<OutputOperandAliases>(ctx, a, "hlo_aliases")?;
+                    let b_aliases = optional_attr::<OutputOperandAliases>(ctx, b, "hlo_aliases")?;
+                    if a_aliases
+                        .as_deref()
+                        .map(|aliases| aliases.0.as_slice())
+                        .unwrap_or_default()
+                        != b_aliases
+                            .as_deref()
+                            .map(|aliases| aliases.0.as_slice())
+                            .unwrap_or_default()
+                    {
+                        return Ok(false);
+                    }
+                }
+                if kind == Opcode::CustomCall {
+                    if super::custom_call_api_version(ctx, a)?
+                        != super::custom_call_api_version(ctx, b)?
+                        || super::custom_call_schedule(ctx, a)?
+                            != super::custom_call_schedule(ctx, b)?
+                        || super::custom_call_padding_type(ctx, a)?
+                            != super::custom_call_padding_type(ctx, b)?
+                    {
+                        return Ok(false);
+                    }
+                    let empty_precision = PrecisionConfig {
+                        operand_precision: OperandPrecision(vec![]),
+                        algorithm: Algorithm::Unset,
+                    };
+                    let a_precision = optional_attr::<PrecisionConfig>(ctx, a, "hlo_precision")?;
+                    let b_precision = optional_attr::<PrecisionConfig>(ctx, b, "hlo_precision")?;
+                    if a_precision.as_deref().unwrap_or(&empty_precision)
+                        != b_precision.as_deref().unwrap_or(&empty_precision)
+                    {
+                        return Ok(false);
+                    }
+                    for key in ["hlo_feature_groups", "hlo_batch_groups"] {
+                        let a = optional_attr::<NumericalInteger>(ctx, a, key)?;
+                        let b = optional_attr::<NumericalInteger>(ctx, b, key)?;
+                        if a.as_deref().map_or(1, |groups| groups.0)
+                            != b.as_deref().map_or(1, |groups| groups.0)
+                        {
+                            return Ok(false);
+                        }
+                    }
+                }
+                if kind == Opcode::Domain {
+                    for key in ["hlo_domain_entry_sharding", "hlo_domain_exit_sharding"] {
+                        let left = optional_attr::<Sharding>(ctx, a, key)?;
+                        let right = optional_attr::<Sharding>(ctx, b, key)?;
+                        let equal = match (left.as_deref(), right.as_deref()) {
+                            (None, None) => true,
+                            (Some(left), Some(right)) => left.equal_domain_semantics(right)?,
+                            _ => false,
+                        };
+                        if !equal {
+                            return Ok(false);
+                        }
                     }
                 }
                 let keys: &[&'static str] = match kind {
@@ -410,35 +543,16 @@ impl Graph<'_> {
                     Opcode::Broadcast
                     | Opcode::Transpose
                     | Opcode::Reverse
-                    | Opcode::DynamicReshape
-                    | Opcode::Reshape
                     | Opcode::Reduce
                     | Opcode::Sort => &["hlo_dimensions"],
                     Opcode::Slice => &["hlo_geometry"],
                     Opcode::DynamicSlice => &["hlo_slice_sizes"],
                     Opcode::Pad => &["hlo_config"],
-                    Opcode::Gather => &[
-                        "hlo_dimensions",
-                        "hlo_slice_sizes",
-                        "hlo_flags",
-                        "hlo_dimension_numbers",
-                    ],
-                    Opcode::Scatter => &["hlo_dimensions", "hlo_flags", "hlo_dimension_numbers"],
+                    Opcode::Gather => &["hlo_dimensions", "hlo_slice_sizes"],
+                    Opcode::Scatter => &["hlo_dimensions", "hlo_flags"],
                     Opcode::Shuffle => &["hlo_dimensions", "hlo_mode"],
-                    Opcode::Dot => &[
-                        "hlo_dimensions",
-                        "hlo_lhs_precision",
-                        "hlo_rhs_precision",
-                        "hlo_precision",
-                        "hlo_sparsity",
-                        "hlo_block_scaling",
-                    ],
-                    Opcode::RaggedDot | Opcode::ScaledDot => &[
-                        "hlo_dimensions",
-                        "hlo_precision",
-                        "hlo_sparsity",
-                        "hlo_block_scaling",
-                    ],
+                    Opcode::Dot => &["hlo_dimensions", "hlo_precision"],
+                    Opcode::RaggedDot | Opcode::ScaledDot => &["hlo_dimensions", "hlo_precision"],
                     Opcode::Convolution => &[
                         "hlo_dimensions",
                         "hlo_window",
@@ -448,60 +562,22 @@ impl Graph<'_> {
                         "hlo_precision",
                     ],
                     Opcode::ReduceWindow | Opcode::SelectAndScatter => &["hlo_window"],
-                    Opcode::Scan => &[
-                        "hlo_dimensions",
-                        "hlo_num_carries",
-                        "hlo_is_associative",
-                        "hlo_is_reverse",
-                        "hlo_cub_scan",
-                    ],
+                    Opcode::Scan => &["hlo_dimensions", "hlo_num_carries", "hlo_is_associative"],
                     Opcode::Fft => &["hlo_kind", "hlo_lengths"],
                     Opcode::TopK => &["hlo_k", "hlo_options"],
-                    Opcode::TriangularSolve
-                    | Opcode::Cholesky
-                    | Opcode::BatchNormTraining
-                    | Opcode::BatchNormInference
-                    | Opcode::BatchNormGrad => &["hlo_options"],
+                    Opcode::TriangularSolve | Opcode::Cholesky => &["hlo_options"],
                     Opcode::Rng => &["hlo_distribution"],
                     Opcode::RngBitGenerator => &["hlo_algorithm"],
-                    Opcode::RngGetAndUpdateState => &["hlo_delta"],
-                    Opcode::CopyStart => &["hlo_cross_program_prefetch_index"],
-                    Opcode::Infeed => &["hlo_infeed_config"],
-                    Opcode::Outfeed => &["hlo_outfeed_config", "hlo_outfeed_shape"],
-                    Opcode::Send | Opcode::SendDone | Opcode::Recv | Opcode::RecvDone => {
-                        &["hlo_frontend_attributes", "hlo_source_target_pairs"]
-                    }
-                    Opcode::Domain => &["hlo_domain_entry_sharding", "hlo_domain_exit_sharding"],
-                    Opcode::CustomCall => &[
-                        "hlo_target",
-                        "hlo_api_version",
-                        "hlo_schedule",
-                        "hlo_aliases",
-                        "hlo_operand_layouts",
-                        "hlo_window",
-                        "hlo_dimensions",
-                        "hlo_precision",
-                        "hlo_padding_type",
-                    ],
-                    Opcode::Fusion => &["hlo_fusion_kind", "hlo_aliases"],
+                    Opcode::Outfeed => &["hlo_outfeed_shape"],
+                    Opcode::CustomCall => &["hlo_target", "hlo_window", "hlo_dimensions"],
+                    Opcode::Fusion => &["hlo_fusion_kind"],
                     Opcode::AllGather
                     | Opcode::AllGatherStart
-                    | Opcode::AllReduce
-                    | Opcode::AllReduceStart
                     | Opcode::AllToAll
-                    | Opcode::ReduceScatter
-                    | Opcode::RaggedAllToAll
-                    | Opcode::CollectiveBroadcast
-                    | Opcode::CollectiveReduce
-                    | Opcode::CollectivePermute
-                    | Opcode::CollectivePermuteStart => &[
-                        "hlo_dimensions",
-                        "hlo_groups",
-                        "hlo_iota_groups",
-                        "hlo_mesh_groups",
-                        "hlo_pairs",
-                        "hlo_dynamic_slice_sizes",
-                    ],
+                    | Opcode::ReduceScatter => &["hlo_dimensions"],
+                    Opcode::CollectivePermute | Opcode::CollectivePermuteStart => {
+                        &["hlo_pairs", "hlo_dynamic_slice_sizes"]
+                    }
                     _ => &[],
                 };
                 for &key in keys {
@@ -509,6 +585,89 @@ impl Graph<'_> {
                     if a_data.attributes.0.get(&key) != b_data.attributes.0.get(&key) {
                         return Ok(false);
                     }
+                    if kind == Opcode::CustomCall && flag(ctx, a, "hlo_constrain_layout")? {
+                        let key = Identifier::new("hlo_operand_layouts");
+                        if a_data.attributes.0.get(&key) != b_data.attributes.0.get(&key) {
+                            return Ok(false);
+                        }
+                    }
+                }
+                if kind == Opcode::Gather
+                    && required::<IndexFlags>(ctx, a, "hlo_flags")?.sorted
+                        != required::<IndexFlags>(ctx, b, "hlo_flags")?.sorted
+                {
+                    return Ok(false);
+                }
+                let feed_key = match kind {
+                    Opcode::Infeed => Some("hlo_infeed_config"),
+                    Opcode::Outfeed => Some("hlo_outfeed_config"),
+                    _ => None,
+                };
+                if let Some(key) = feed_key
+                    && feed_config(ctx, a, key)? != feed_config(ctx, b, key)?
+                {
+                    return Ok(false);
+                }
+                if matches!(kind, Opcode::Dot | Opcode::Convolution) {
+                    let empty_sparsity = SparsityConfig::default();
+                    let a_sparsity = optional_attr::<SparsityConfig>(ctx, a, "hlo_sparsity")?;
+                    let b_sparsity = optional_attr::<SparsityConfig>(ctx, b, "hlo_sparsity")?;
+                    if a_sparsity.as_deref().unwrap_or(&empty_sparsity)
+                        != b_sparsity.as_deref().unwrap_or(&empty_sparsity)
+                    {
+                        return Ok(false);
+                    }
+                    let empty_scaling = BlockScalingConfig::default();
+                    let a_scaling =
+                        optional_attr::<BlockScalingConfig>(ctx, a, "hlo_block_scaling")?;
+                    let b_scaling =
+                        optional_attr::<BlockScalingConfig>(ctx, b, "hlo_block_scaling")?;
+                    if a_scaling.as_deref().unwrap_or(&empty_scaling)
+                        != b_scaling.as_deref().unwrap_or(&empty_scaling)
+                    {
+                        return Ok(false);
+                    }
+                }
+                if matches!(
+                    kind,
+                    Opcode::BatchNormTraining | Opcode::BatchNormInference | Opcode::BatchNormGrad
+                ) {
+                    let a_options = required::<BatchNormOptions>(ctx, a, "hlo_options")?;
+                    let b_options = required::<BatchNormOptions>(ctx, b, "hlo_options")?;
+                    if a_options.feature_index != b_options.feature_index
+                        || f32::from_bits(a_options.epsilon_bits)
+                            != f32::from_bits(b_options.epsilon_bits)
+                    {
+                        return Ok(false);
+                    }
+                }
+                if matches!(kind, Opcode::Sort | Opcode::TopK)
+                    && crate::verification::numerical::sort_stability(ctx, a)?
+                        != crate::verification::numerical::sort_stability(ctx, b)?
+                {
+                    return Ok(false);
+                }
+                if kind == Opcode::Scan
+                    && crate::verification::numerical::scan_direction(ctx, a)?
+                        != crate::verification::numerical::scan_direction(ctx, b)?
+                {
+                    return Ok(false);
+                }
+                if kind == Opcode::Reshape
+                    && crate::verification::movement::reshape_inferred_dimension(ctx, a)?
+                        != crate::verification::movement::reshape_inferred_dimension(ctx, b)?
+                {
+                    return Ok(false);
+                }
+                if kind == Opcode::CopyStart
+                    && copy_prefetch_index(ctx, a)? != copy_prefetch_index(ctx, b)?
+                {
+                    return Ok(false);
+                }
+                if kind == Opcode::RngGetAndUpdateState
+                    && super::rng_delta(ctx, a)? != super::rng_delta(ctx, b)?
+                {
+                    return Ok(false);
                 }
                 let flags: &[&'static str] = match kind {
                     Opcode::CustomCall => &["hlo_has_side_effect", "hlo_constrain_layout"],
@@ -519,18 +678,43 @@ impl Graph<'_> {
                     | Opcode::AllGatherStart
                     | Opcode::AllReduce
                     | Opcode::AllReduceStart
-                    | Opcode::ReduceScatter
-                    | Opcode::CollectiveReduce => &[
+                    | Opcode::ReduceScatter => {
+                        &["hlo_use_global_device_ids", "hlo_constrain_layout"]
+                    }
+                    Opcode::CollectiveReduce => &[
                         "hlo_use_global_device_ids",
                         "hlo_constrain_layout",
                         "hlo_has_dynamic_root",
                     ],
+                    Opcode::AllToAll | Opcode::CollectiveBroadcast => &["hlo_constrain_layout"],
                     _ => &[],
                 };
                 for &key in flags {
                     if flag(ctx, a, key)? != flag(ctx, b, key)? {
                         return Ok(false);
                     }
+                }
+                if matches!(
+                    kind,
+                    Opcode::Send | Opcode::SendDone | Opcode::Recv | Opcode::RecvDone
+                ) && !same_frontend_attributes(ctx, a, b)?
+                {
+                    return Ok(false);
+                }
+                if matches!(
+                    kind,
+                    Opcode::AllGather
+                        | Opcode::AllGatherStart
+                        | Opcode::AllReduce
+                        | Opcode::AllReduceStart
+                        | Opcode::AllToAll
+                        | Opcode::ReduceScatter
+                        | Opcode::RaggedAllToAll
+                        | Opcode::CollectiveBroadcast
+                        | Opcode::CollectiveReduce
+                ) && !super::collective::same_groups(ctx, a, b)?
+                {
+                    return Ok(false);
                 }
                 let a_callees = self.callees.get(&a).map(Vec::as_slice).unwrap_or_default();
                 let b_callees = self.callees.get(&b).map(Vec::as_slice).unwrap_or_default();
@@ -834,13 +1018,83 @@ fn execution_thread<'a>(
 /// symbols and signatures must already be resolved and local shapes verified.
 pub(crate) fn verify_graph(
     ctx: &Context,
+    root: Ptr<Operation>,
     all: &[(Ptr<Operation>, Option<Ptr<Operation>>)],
     computations: &HashMap<Identifier, Ptr<Operation>>,
     signatures: &HashMap<Ptr<Operation>, Signature>,
     options: VerifyOptions,
 ) -> Result<()> {
+    let mut graph = build_graph(ctx, all, computations, signatures)?;
+    graph.payloads = optional_attr::<MetadataPayloads>(ctx, root, "hlo_metadata_payloads")?
+        .map_or_else(MetadataPayloads::default, |payloads| payloads.clone());
+    let mut wrapped = HashSet::new();
+    for &(op, _) in all {
+        if matches!(
+            opcode(ctx, op),
+            Some(Opcode::AsyncStart | Opcode::AsyncUpdate | Opcode::AsyncDone)
+        ) {
+            wrapped.insert(graph.wrapped(op)?);
+        }
+    }
+    verify_pairs(&graph, all, &wrapped)?;
+    verify_channels(&graph, all, &wrapped)?;
+    verify_generic(&graph, all, &wrapped, signatures, options)?;
+    if options.check_for_collective_deadlocks {
+        super::deadlocks::verify(ctx, all)?;
+    }
+    Ok(())
+}
+
+/// Resolve generic async callees through the same dataflow used by verification.
+///
+/// This only resolves the snapshot; it does not verify signatures or pairing.
+pub(crate) fn wrapped_computations(
+    ctx: &Context,
+    all: &[(Ptr<Operation>, Option<Ptr<Operation>>)],
+    computations: &HashMap<Identifier, Ptr<Operation>>,
+) -> Result<HashMap<Ptr<Operation>, Ptr<Operation>>> {
+    let signatures = HashMap::new();
+    let graph = build_graph(ctx, all, computations, &signatures)?;
+    let mut wrapped = HashMap::new();
+    for &(op, _) in all {
+        if matches!(
+            opcode(ctx, op),
+            Some(Opcode::AsyncStart | Opcode::AsyncUpdate | Opcode::AsyncDone)
+        ) {
+            wrapped.insert(op, graph.wrapped(op)?);
+        }
+    }
+    Ok(wrapped)
+}
+
+pub(crate) fn chain_starts(
+    ctx: &Context,
+    all: &[(Ptr<Operation>, Option<Ptr<Operation>>)],
+    computations: &HashMap<Identifier, Ptr<Operation>>,
+) -> Result<HashMap<Ptr<Operation>, Ptr<Operation>>> {
+    let signatures = HashMap::new();
+    let graph = build_graph(ctx, all, computations, &signatures)?;
+    let mut starts = HashMap::new();
+    for &(op, _) in all {
+        if matches!(
+            opcode(ctx, op),
+            Some(Opcode::AsyncStart | Opcode::AsyncUpdate | Opcode::AsyncDone)
+        ) {
+            starts.insert(op, graph.chain_start(op)?);
+        }
+    }
+    Ok(starts)
+}
+
+fn build_graph<'a>(
+    ctx: &'a Context,
+    all: &[(Ptr<Operation>, Option<Ptr<Operation>>)],
+    computations: &HashMap<Identifier, Ptr<Operation>>,
+    signatures: &'a HashMap<Ptr<Operation>, Signature>,
+) -> Result<Graph<'a>> {
     let mut graph = Graph {
         ctx,
+        payloads: MetadataPayloads::default(),
         signatures,
         owners: HashMap::new(),
         roots: HashMap::new(),
@@ -888,22 +1142,7 @@ pub(crate) fn verify_graph(
             graph.callees.insert(op, callees);
         }
     }
-    let mut wrapped = HashSet::new();
-    for &(op, _) in all {
-        if matches!(
-            opcode(ctx, op),
-            Some(Opcode::AsyncStart | Opcode::AsyncUpdate | Opcode::AsyncDone)
-        ) {
-            wrapped.insert(graph.wrapped(op)?);
-        }
-    }
-    verify_pairs(&graph, all, &wrapped)?;
-    verify_channels(&graph, all, &wrapped)?;
-    verify_generic(&graph, all, &wrapped, signatures, options)?;
-    if options.check_for_collective_deadlocks {
-        super::deadlocks::verify(ctx, all)?;
-    }
-    Ok(())
+    Ok(graph)
 }
 
 fn verify_pairs(
@@ -1023,18 +1262,16 @@ fn verify_channels(
                     )?;
                 }
                 require(
-                    optional_attr::<FrontendAttributes>(ctx, reference, "hlo_frontend_attributes")?
-                        .as_deref()
-                        == optional_attr::<FrontendAttributes>(ctx, op, "hlo_frontend_attributes")?
-                            .as_deref()
-                        && optional_attr::<StringAttr>(ctx, reference, "hlo_backend_config")?
-                            .as_deref()
-                            == optional_attr::<StringAttr>(ctx, op, "hlo_backend_config")?
-                                .as_deref()
+                    same_frontend_attributes(ctx, reference, op)?
+                        && graph.backend_config(reference)? == graph.backend_config(op)?
                         && optional_attr::<ResultAccuracy>(ctx, reference, "hlo_result_accuracy")?
                             .as_deref()
-                            == optional_attr::<ResultAccuracy>(ctx, op, "hlo_result_accuracy")?
-                                .as_deref(),
+                            .unwrap_or(&ResultAccuracy::Default)
+                            .equal(
+                                optional_attr::<ResultAccuracy>(ctx, op, "hlo_result_accuracy")?
+                                    .as_deref()
+                                    .unwrap_or(&ResultAccuracy::Default),
+                            ),
                     "host transfer attributes differ",
                 )?;
             } else {
@@ -1391,6 +1628,7 @@ mod tests {
         let signatures = HashMap::new();
         let graph = Graph {
             ctx: &ctx,
+            payloads: MetadataPayloads::default(),
             signatures: &signatures,
             owners: HashMap::new(),
             roots: HashMap::new(),

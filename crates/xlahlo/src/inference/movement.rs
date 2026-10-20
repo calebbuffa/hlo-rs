@@ -281,6 +281,10 @@ pub fn infer_reshape_with_dimension(
         )?;
     }
     let input = tensor(ctx, input)?;
+    require(
+        !dimensions.contains(&UNBOUNDED_SIZE),
+        "reshaping with an unbounded result shape is not supported",
+    )?;
     let output = TensorType::get(ctx, input.element, dimensions.to_vec())?;
     let mut result = tensor(ctx, output)?.clone();
     if input.dimensions.contains(&UNBOUNDED_SIZE) {
@@ -349,9 +353,11 @@ pub fn infer_reshape_with_dimension(
         if dimension == 1 && !result.dimensions.is_empty() {
             if axis == 0 {
                 target = Some(0);
-            } else if axis + 1 == input.dimensions.len() {
+            }
+            if axis + 1 == input.dimensions.len() {
                 target = Some(result.dimensions.len() - 1);
-            } else {
+            }
+            if target.is_none() {
                 return pliron::verify_err_noloc!(Diagnostic::Inference {
                     message: format!(
                         "interior dynamic unit reshape dimension at input axis {axis}"
@@ -392,7 +398,10 @@ pub fn infer_reshape_with_dimension(
     Shape::with_default_layout(ctx, TensorType::instantiate(result, ctx).into())
 }
 
-/// Infer a reshape whose runtime sizes correspond to dynamic output dimensions.
+/// Infer reshape bounds without imposing instruction-level size-operand arity.
+///
+/// Size shapes must be scalar or S32 arrays. Instruction verification separately
+/// requires one S32 size operand per result dimension, including static ones.
 pub fn infer_dynamic_reshape(
     ctx: &Context,
     input: TypeHandle,
@@ -415,16 +424,6 @@ pub fn infer_dynamic_reshape(
             )?;
         }
     }
-    require(
-        sizes.len()
-            == bounds
-                .iter()
-                .filter(|dimension| {
-                    matches!(dimension, Dimension::Bounded(_) | Dimension::Unbounded)
-                })
-                .count(),
-        "dynamic reshape requires one size operand per dynamic result dimension",
-    )?;
     let output = Shape::dynamic_array(ctx, input_ty.element, bounds)?;
     require(
         element_count(ctx, input)? == element_count(ctx, output)?,
@@ -504,6 +503,8 @@ pub fn infer_reverse(ctx: &Context, input: TypeHandle, dimensions: &Axes) -> Res
 }
 
 /// Infer the shape of a strided slice.
+///
+/// Only bounded input dynamism propagates, and unit output extents are static.
 pub fn infer_slice(ctx: &Context, input: TypeHandle, geometry: &Slice) -> Result<TypeHandle> {
     let input_ty = tensor(ctx, input)?;
     let rank = input_ty.dimensions.len();
@@ -539,7 +540,11 @@ pub fn infer_slice(ctx: &Context, input: TypeHandle, geometry: &Slice) -> Result
         })?;
         let size = extent / stride + i64::from(extent % stride != 0);
         dimensions.push(size);
-        dynamic.push(input_ty.dynamic_dimensions[axis] && size != 1);
+        dynamic.push(
+            input_ty.dynamic_dimensions[axis]
+                && input_ty.dimensions[axis] != UNBOUNDED_SIZE
+                && size != 1,
+        );
     }
     let mut output = input_ty.clone();
     output.dimensions = dimensions;
@@ -626,6 +631,9 @@ pub fn infer_dynamic_update_slice(
 }
 
 /// Infer the merged dimensions of arrays concatenated along one axis.
+///
+/// Each later operand's precision is compared with the first operand; the last
+/// such comparison determines the result element type.
 pub fn infer_concatenate(ctx: &Context, inputs: &[TypeHandle], axis: usize) -> Result<TypeHandle> {
     require(!inputs.is_empty(), "concatenate needs an operand")?;
     let first = tensor(ctx, inputs[0])?;
@@ -648,7 +656,7 @@ pub fn infer_concatenate(ctx: &Context, inputs: &[TypeHandle], axis: usize) -> R
             input.element.same_ignoring_fp_precision(first.element),
             "incompatible concatenate element types",
         )?;
-        element = element.higher_precision(first.element)?;
+        element = input.element.higher_precision(first.element)?;
         for (dimension, current) in dimensions.iter_mut().enumerate() {
             let next = if input.dimensions[dimension] == UNBOUNDED_SIZE {
                 Dimension::Unbounded
@@ -819,8 +827,8 @@ pub fn infer_gather(
     let offsets = super::axes(output_rank, &dims.offset_dims.0, true)?;
     let collapsed = super::axes(rank, &dims.collapsed_slice_dims.0, true)?;
     let batching = super::axes(rank, &dims.operand_batching_dims.0, true)?;
-    let index_batching = super::axes(expanded.len(), &dims.start_indices_batching_dims.0, false)?;
-    let start_map = super::axes(rank, &dims.start_index_map.0, false)?;
+    super::axes(expanded.len(), &dims.start_indices_batching_dims.0, false)?;
+    super::axes(rank, &dims.start_index_map.0, false)?;
     let vector_size = bound(expanded[vector]);
     require(
         vector_size == UNBOUNDED_SIZE || vector_size == dims.start_index_map.0.len() as i64,
@@ -837,27 +845,12 @@ pub fn infer_gather(
         "gather input partition mismatch",
     )?;
     require(
-        dims.operand_batching_dims.0.len() == dims.start_indices_batching_dims.0.len()
-            && !index_batching[vector],
-        "gather batching cardinality or vector overlap",
+        dims.operand_batching_dims.0.len() == dims.start_indices_batching_dims.0.len(),
+        "gather operand and index batching cardinalities differ",
     )?;
-    for (&operand_axis, &index_axis) in dims
-        .operand_batching_dims
-        .0
-        .iter()
-        .zip(&dims.start_indices_batching_dims.0)
-    {
-        require(
-            compatible_size(
-                input_ty.dimensions[operand_axis as usize],
-                bound(expanded[index_axis as usize]),
-            ),
-            "gather batching sizes differ",
-        )?;
-    }
     for axis in 0..rank {
         require(
-            !(batching[axis] && (collapsed[axis] || start_map[axis])),
+            !(batching[axis] && collapsed[axis]),
             "gather dimensions overlap",
         )?;
         let size = sizes.0[axis];
@@ -960,9 +953,8 @@ pub fn infer_variadic_scatter(
         let update_windows = super::axes(update_rank, &dims.update_window_dims.0, true)?;
         let inserted = super::axes(rank, &dims.inserted_window_dims.0, true)?;
         let batching = super::axes(rank, &dims.input_batching_dims.0, true)?;
-        let index_batching =
-            super::axes(expanded.len(), &dims.scatter_indices_batching_dims.0, false)?;
-        let scatter_map = super::axes(rank, &dims.scatter_dims_to_operand_dims.0, false)?;
+        super::axes(expanded.len(), &dims.scatter_indices_batching_dims.0, false)?;
+        super::axes(rank, &dims.scatter_dims_to_operand_dims.0, false)?;
         require(
             update_rank == expanded.len() - 1 + dims.update_window_dims.0.len(),
             "scatter update rank differs from index and window dimensions",
@@ -980,20 +972,8 @@ pub fn infer_variadic_scatter(
             "scatter index vector and map cardinalities differ",
         )?;
         require(
-            dims.input_batching_dims.0.len() == dims.scatter_indices_batching_dims.0.len()
-                && !index_batching[vector],
-            "scatter batching cardinality or vector overlap",
-        )?;
-        require(
-            dims.scatter_dims_to_operand_dims
-                .0
-                .iter()
-                .all(|&axis| !batching[axis as usize])
-                && scatter_map
-                    .iter()
-                    .enumerate()
-                    .all(|(axis, &mapped)| !mapped || !batching[axis]),
-            "scatter batching and map dimensions overlap",
+            dims.input_batching_dims.0.len() == dims.scatter_indices_batching_dims.0.len(),
+            "scatter input and index batching cardinalities differ",
         )?;
         require(
             dims.inserted_window_dims
@@ -1002,20 +982,6 @@ pub fn infer_variadic_scatter(
                 .all(|&axis| !batching[axis as usize]),
             "scatter batching and inserted dimensions overlap",
         )?;
-        for (&operand_axis, &indices_axis) in dims
-            .input_batching_dims
-            .0
-            .iter()
-            .zip(&dims.scatter_indices_batching_dims.0)
-        {
-            require(
-                compatible_size(
-                    input_ty.dimensions[operand_axis as usize],
-                    bound(expanded[indices_axis as usize]),
-                ),
-                "scatter batching sizes differ",
-            )?;
-        }
         let mut input_windows = (0..rank).filter(|&axis| !inserted[axis] && !batching[axis]);
         let mut index_dimensions = expanded
             .iter()
@@ -1129,15 +1095,7 @@ pub fn infer_set_dimension_size(
         size_ty.dimensions.is_empty() && size_ty.element == ElementType::S32,
         "dimension size must be S32 scalar",
     )?;
-    let mut output = input_ty.clone();
-    output.dynamic_dimensions[axis] = true;
-    output.verify(ctx)?;
-    let output = TensorType::instantiate(output, ctx).into();
-    if input.deref(ctx).is::<types::BufferType>() {
-        Shape::buffer(ctx, output)
-    } else {
-        Ok(output)
-    }
+    Shape::set_dynamic_dimension(ctx, input, axis, true)
 }
 
 /// Validate shuffle axes and shifts, preserving the input type.

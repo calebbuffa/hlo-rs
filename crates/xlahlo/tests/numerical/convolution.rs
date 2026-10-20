@@ -1,7 +1,7 @@
 use super::super::*;
 use super::windows::window;
 
-fn standard() -> ConvolutionDimensionNumbers {
+pub(super) fn standard() -> ConvolutionDimensionNumbers {
     ConvolutionDimensionNumbers {
         input_batch_dimension: 0,
         input_feature_dimension: 1,
@@ -12,6 +12,134 @@ fn standard() -> ConvolutionDimensionNumbers {
         output_batch_dimension: 0,
         output_feature_dimension: 1,
         output_spatial_dimensions: Axes(vec![2]),
+    }
+}
+
+#[test]
+fn convolution_verification_rejects_nonpositive_group_counts_without_normalizing_them() {
+    let mut ctx = context();
+    let lhs = a(&ctx, P::F32, &[2, 3, 8]);
+    let rhs = a(&ctx, P::F32, &[4, 3, 3]);
+    let result = a(&ctx, P::F32, &[2, 4, 6]);
+    for kind in [
+        ConvolutionKind::Unset,
+        ConvolutionKind::Fprop,
+        ConvolutionKind::Dgrad,
+        ConvolutionKind::Wgrad,
+    ] {
+        for (feature_groups, batch_groups, invalid_count, group) in [
+            (0, 1, 0, "feature"),
+            (-1, 1, -1, "feature"),
+            (i64::MIN, 1, i64::MIN, "feature"),
+            (1, 0, 0, "batch"),
+            (1, -1, -1, "batch"),
+            (1, i64::MIN, i64::MIN, "batch"),
+        ] {
+            let args = values(&mut ctx, &[lhs, rhs]);
+            let op = ConvolutionOp::new(
+                &mut ctx,
+                result,
+                args,
+                standard(),
+                window(3, 1, 0, 0, 1, 1),
+                NumericalInteger(feature_groups),
+                NumericalInteger(batch_groups),
+                kind,
+                precision(),
+            );
+            let error = op.verify(&ctx).unwrap_err();
+            let Some(xlahlo::Diagnostic::Inference { message }) =
+                error.err.downcast_ref::<xlahlo::Diagnostic>()
+            else {
+                panic!("expected typed convolution inference error, got {error:?}");
+            };
+            assert!(message.contains(&format!("{group} group count must be positive")));
+            assert!(message.contains(&format!("got {invalid_count}")));
+            assert_eq!(
+                op.get_operation()
+                    .deref(&ctx)
+                    .attributes
+                    .get::<NumericalInteger>(&Identifier::new("hlo_feature_groups"))
+                    .unwrap()
+                    .0,
+                feature_groups,
+            );
+            assert_eq!(
+                op.get_operation()
+                    .deref(&ctx)
+                    .attributes
+                    .get::<NumericalInteger>(&Identifier::new("hlo_batch_groups"))
+                    .unwrap()
+                    .0,
+                batch_groups,
+            );
+        }
+    }
+}
+
+#[test]
+fn grouped_convolution_inference_and_verification_agree_on_output_bounds() {
+    let mut ctx = context();
+    for groups in 1..=4 {
+        for feature_grouped in [false, true] {
+            for bounded_batch in [false, true] {
+                let (feature_groups, batch_groups, input_batch, input_features, output_batch) =
+                    if feature_grouped {
+                        (groups, 1, 2, 3 * groups, 2)
+                    } else {
+                        (1, groups, 2 * groups, 3, 2)
+                    };
+                let lhs = dynamic(
+                    &ctx,
+                    P::F32,
+                    &[
+                        if bounded_batch {
+                            D::Bounded(input_batch)
+                        } else {
+                            D::Static(input_batch)
+                        },
+                        D::Static(input_features),
+                        D::Static(8),
+                    ],
+                );
+                let rhs = a(&ctx, P::F32, &[4 * groups, 3, 3]);
+                let config = window(3, 1, 0, 0, 1, 1);
+                let result = inference::infer_convolution(
+                    &ctx,
+                    lhs,
+                    rhs,
+                    feature_groups,
+                    batch_groups,
+                    &config,
+                    &standard(),
+                    None,
+                )
+                .unwrap();
+                assert_eq!(dims(&ctx, result), [output_batch, 4 * groups, 6]);
+                assert_eq!(
+                    Shape::dimension(&ctx, result, 0).unwrap(),
+                    if bounded_batch {
+                        D::Bounded(output_batch)
+                    } else {
+                        D::Static(output_batch)
+                    },
+                );
+                let args = values(&mut ctx, &[lhs, rhs]);
+                ConvolutionOp::new(
+                    &mut ctx,
+                    result,
+                    args,
+                    standard(),
+                    config,
+                    NumericalInteger(feature_groups),
+                    NumericalInteger(batch_groups),
+                    ConvolutionKind::Fprop,
+                    precision(),
+                )
+                .verify(&ctx)
+                .unwrap();
+            }
+        }
     }
 }
 

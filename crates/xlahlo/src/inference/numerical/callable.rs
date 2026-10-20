@@ -282,7 +282,8 @@ fn remove_axis(ctx: &Context, shape: TypeHandle, axis: usize) -> Result<TypeHand
 /// Check scan body slices and trailing carries against declared input and output types.
 ///
 /// `strict_dynamic` requires exact dynamic flags; mixed floating precision is
-/// relaxed only under that policy.
+/// relaxed only under that policy. Complete computation verification always
+/// uses this strict shape policy, independently of layout sensitivity.
 #[allow(clippy::too_many_arguments)]
 pub fn verify_scan(
     ctx: &Context,
@@ -379,7 +380,9 @@ pub fn verify_scan(
 
 /// Infer scanned outputs followed by carries from the body result.
 ///
-/// A scan with no scanned inputs must supply `scan_size`.
+/// A scan with no scanned inputs must supply `scan_size`. Inference allows
+/// compatible dynamic dimensions; complete computation verification additionally
+/// requires exact body slice and carry shapes, ignoring layouts.
 pub fn infer_scan(
     ctx: &Context,
     operands: &[TypeHandle],

@@ -9,7 +9,7 @@ use pliron::{
 use std::collections::{BTreeMap, BTreeSet};
 
 #[pliron_attr(
-    name = "hlo.original_array",
+    name = "xlahlo.original_array",
     format = "`<` $instruction_name `,` `[` vec($shape_index, CharSpace(`,`)) `]` `>`",
     verifier = "succ"
 )]
@@ -20,7 +20,7 @@ pub struct OriginalArray {
     pub shape_index: Vec<i64>,
 }
 #[pliron_attr(
-    name = "hlo.original_value_element",
+    name = "xlahlo.original_value_element",
     format = "`<` `[` vec($shape_index, CharSpace(`,`)) `]` `,` `[` vec($original_array, CharSpace(`,`)) `]` `>`",
     verifier = "succ"
 )]
@@ -31,7 +31,7 @@ pub struct OriginalValueElement {
     pub original_array: Vec<OriginalArray>,
 }
 #[pliron_attr(
-    name = "hlo.original_value",
+    name = "xlahlo.original_value",
     format = "`<` `[` vec($elements, CharSpace(`,`)) `]` `,` $is_synthetic_call `,` `[` vec($call_hierarchy, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -91,17 +91,23 @@ impl OriginalValue {
         Ok(leaves)
     }
     /// Compare call hierarchy and normalized provenance without copying array records.
+    ///
+    /// Both records are validated even when their hierarchies differ or identify
+    /// synthetic calls, so malformed raw attributes never compare successfully.
     pub fn equal(&self, other: &Self) -> Result<bool> {
+        let leaves = self.leaf_refs()?;
+        let other_leaves = other.leaf_refs()?;
         Ok(self.call_hierarchy == other.call_hierarchy
-            && (self.is_synthetic_call() || self.leaf_refs()? == other.leaf_refs()?))
+            && (self.is_synthetic_call() || leaves == other_leaves))
     }
     /// Construct a canonical owned record containing only effective tree leaves.
     pub fn normalized(&self) -> Result<Self> {
+        let leaves = self.leaves()?;
         Ok(Self {
             elements: if self.is_synthetic_call() {
                 Vec::new()
             } else {
-                self.leaves()?
+                leaves
                     .into_iter()
                     .map(|(shape_index, original_array)| OriginalValueElement {
                         shape_index,
@@ -115,6 +121,7 @@ impl OriginalValue {
     }
     /// Require one provenance entry for every non-tuple leaf of a result shape.
     pub fn verify_shape(&self, ctx: &Context, shape: TypeHandle) -> Result<()> {
+        let leaves = self.leaf_refs()?;
         if self.is_synthetic_call() {
             return Ok(());
         }
@@ -131,7 +138,6 @@ impl OriginalValue {
                 expected.insert(index);
             }
         }
-        let leaves = self.leaf_refs()?;
         if expected.len() != leaves.len()
             || expected
                 .iter()

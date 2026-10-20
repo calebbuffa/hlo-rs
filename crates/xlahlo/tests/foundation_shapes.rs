@@ -297,6 +297,66 @@ fn layout_validation_checks_permutation_tiles_and_physical_splits() {
 }
 
 #[test]
+fn layout_alignment_must_be_positive_except_for_auto_memory_layouts() {
+    let ctx = Context::new();
+    let shape = Shape::array(&ctx, P::F32, vec![4]).unwrap();
+    for alignment in [i64::MIN, -1, 0, 1, 2, i64::MAX] {
+        let layout = Layout {
+            tail_padding_alignment_in_elements: alignment,
+            ..Layout::descending(1)
+        };
+        let result = Shape::with_layout(&ctx, shape, layout.clone());
+        assert_eq!(result.is_ok(), alignment >= 0);
+        if alignment == 0 {
+            assert_eq!(
+                Shape::layout(&ctx, result.unwrap())
+                    .unwrap()
+                    .unwrap()
+                    .tail_padding_alignment_in_elements,
+                1
+            );
+        }
+        let validation = xlahlo::shape::validate_layout(&layout, &[4]);
+        assert_eq!(validation.is_ok(), alignment > 0);
+        assert_eq!(
+            TensorType {
+                element: P::F32,
+                dimensions: vec![4],
+                dynamic_dimensions: vec![false],
+                layout: vec![layout],
+            }
+            .verify(&ctx)
+            .is_ok(),
+            alignment > 0
+        );
+        if alignment <= 0 {
+            let error = validation.unwrap_err();
+            assert!(matches!(
+                error.err.downcast_ref::<Diagnostic>(),
+                Some(Diagnostic::InvalidShape { .. })
+            ));
+        }
+    }
+    let auto = Layout {
+        memory_space: 5,
+        tail_padding_alignment_in_elements: 0,
+        ..Layout::default()
+    };
+    assert!(xlahlo::shape::validate_layout(&auto, &[4]).is_ok());
+    assert!(
+        TensorType {
+            element: P::F32,
+            dimensions: vec![4],
+            dynamic_dimensions: vec![false],
+            layout: vec![auto.clone()],
+        }
+        .verify(&ctx)
+        .is_ok()
+    );
+    assert!(Shape::with_layout(&ctx, shape, auto).is_ok());
+}
+
+#[test]
 fn layout_presence_and_exact_comparison_follow_pinned_semantics() {
     let ctx = Context::new();
     let a = Shape::scalar(&ctx, P::F32).unwrap();

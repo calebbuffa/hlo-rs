@@ -29,6 +29,7 @@ use xlahlo::{
 
 mod numerical {
     mod convolution;
+    mod datatypes;
     mod dot_families;
     mod errors;
     pub(super) mod native_graph;

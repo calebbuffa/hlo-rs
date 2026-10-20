@@ -47,6 +47,8 @@ pub use affine::*;
 pub use builtin::*;
 pub use stablehlo::*;
 mod mesh;
+mod mlir;
+pub use mlir::mlir_dictionary;
 
 /// Checks native attribute containers and builtin type attributes recursively.
 pub fn verify_attribute(ctx: &Context, attribute: &AttrObj) -> Result<()> {

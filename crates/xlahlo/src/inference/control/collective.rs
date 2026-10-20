@@ -213,29 +213,30 @@ fn dynamic_root<'a>(
                 message: "dynamic-root collective requires data and root operands".into()
             })
         })?;
-    let expected = Shape::with_default_layout(
-        ctx,
-        Shape::array(
-            ctx,
-            ElementType::S32,
-            vec![i64::try_from(data.len()).map_err(|_| {
-                pliron::verify_error_noloc!(Diagnostic::Inference {
-                    message: "too many operands".into()
-                })
-            })?],
-        )?,
-    )?;
+    let count = i64::try_from(data.len()).map_err(|_| {
+        pliron::verify_error_noloc!(Diagnostic::Inference {
+            message: "too many operands".into()
+        })
+    })?;
+    let valid = if exact {
+        let expected =
+            Shape::with_default_layout(ctx, Shape::array(ctx, ElementType::S32, vec![count])?)?;
+        Shape::equal_including_layout(ctx, *root, expected)
+    } else {
+        let root = tensor(ctx, *root)?;
+        root.element == ElementType::S32 && root.dimensions == [count]
+    };
     require(
-        if exact {
-            Shape::equal_including_layout(ctx, *root, expected)
-        } else {
-            Shape::compatible(ctx, *root, expected)
-        },
+        valid,
         "dynamic-root collective requires S32 vector with one root per data operand",
     )?;
     Ok(data)
 }
 /// Infer broadcast data, optionally removing the trailing dynamic-root vector.
+///
+/// The root must be an S32 vector with a bound equal to the number of data
+/// operands. Bounded-dynamic roots and arbitrary layouts are accepted, but an
+/// unbounded root cannot establish the required number of indices.
 pub fn infer_collective_broadcast(
     ctx: &Context,
     operands: &[TypeHandle],

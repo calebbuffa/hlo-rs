@@ -6,13 +6,131 @@ use xlahlo::{
     attributes::*,
     inference::control::collective as i,
     ops::{HloOpInterface, control::*, elementwise::AddOp},
-    pliron::{common_traits::Verify, op::Op, r#type::Type},
+    pliron::{
+        common_traits::Verify, op::Op, operation::Operation, printable::Printable, r#type::Type,
+    },
     replica_groups::{IotaReplicaGroupList, MeshAxesReplicaGroupList},
     shape::{Dimension as D, Shape},
     sharding::{AxisRef, Mesh, MeshAxis},
-    types::{ElementType::*, TensorType},
+    types::{ElementType, ElementType::*, TensorType},
     verification::{self, CollectiveContext, VerifyOptions},
 };
+
+#[test]
+fn ragged_offsets_preserve_native_rank_type_and_memory_space_rules() {
+    for &element in ElementType::ALL {
+        for dimensions in [vec![2], vec![2, 3]] {
+            let mut ctx = context();
+            let array = shape(&ctx, F32, &[4]);
+            let offsets = shape(&ctx, element, &dimensions);
+            let mut layout = Shape::layout(&ctx, offsets).unwrap().unwrap().clone();
+            layout.memory_space = 7;
+            let alternate = Shape::with_layout(&ctx, offsets, layout).unwrap();
+            let input = param(&mut ctx, array, 0);
+            let offsets = param(&mut ctx, offsets, 1);
+            let alternate = param(&mut ctx, alternate, 2);
+            let values = vec![
+                input.result(&ctx),
+                input.result(&ctx),
+                offsets.result(&ctx),
+                alternate.result(&ctx),
+                offsets.result(&ctx),
+                alternate.result(&ctx),
+            ];
+            let instruction = RaggedAllToAllOp::new(&mut ctx, array, values, groups(1));
+            instruction.verify(&ctx).unwrap();
+            Operation::erase(instruction.get_operation(), &mut ctx);
+            for parameter in [input, offsets, alternate] {
+                Operation::erase(parameter.get_operation(), &mut ctx);
+            }
+            assert!(ctx.is_ir_empty());
+        }
+    }
+}
+
+#[test]
+fn ragged_offsets_reject_non_memory_shape_differences_without_mutation() {
+    let mut ctx = context();
+    let array = shape(&ctx, F32, &[4]);
+    let offsets = shape(&ctx, S64, &[2, 3]);
+    let mut layout = Shape::layout(&ctx, offsets).unwrap().unwrap().clone();
+    layout.minor_to_major.reverse();
+    let transposed_layout = Shape::with_layout(&ctx, offsets, layout).unwrap();
+    let invalid = [
+        shape(&ctx, S64, &[]),
+        shape(&ctx, S64, &[2, 3, 1]),
+        shape(&ctx, S64, &[2, 4]),
+        shape(&ctx, F64, &[2, 3]),
+        transposed_layout,
+    ];
+    let input = param(&mut ctx, array, 0);
+    let offsets = param(&mut ctx, offsets, 1);
+    let input_value = input.result(&ctx);
+    let offset_value = offsets.result(&ctx);
+    let instruction = RaggedAllToAllOp::new(
+        &mut ctx,
+        array,
+        vec![
+            input_value,
+            input_value,
+            offset_value,
+            offset_value,
+            offset_value,
+            offset_value,
+        ],
+        groups(1),
+    );
+    instruction.verify(&ctx).unwrap();
+    for ty in invalid {
+        let invalid = param(&mut ctx, ty, 2);
+        for index in 2..6 {
+            Operation::replace_operand(
+                instruction.get_operation(),
+                &ctx,
+                index,
+                invalid.result(&ctx),
+            );
+            let before = instruction.get_operation().disp(&ctx).to_string();
+            assert!(instruction.verify(&ctx).is_err(), "operand {index}");
+            assert_eq!(instruction.get_operation().disp(&ctx).to_string(), before);
+            Operation::replace_operand(instruction.get_operation(), &ctx, index, offset_value);
+            instruction.verify(&ctx).unwrap();
+        }
+        Operation::erase(invalid.get_operation(), &mut ctx);
+    }
+    Operation::erase(instruction.get_operation(), &mut ctx);
+    Operation::erase(input.get_operation(), &mut ctx);
+    Operation::erase(offsets.get_operation(), &mut ctx);
+    assert!(ctx.is_ir_empty());
+}
+
+#[test]
+fn ragged_result_tracks_output_operand_without_restricting_input_to_its_shape() {
+    let mut ctx = context();
+    let output = shape(&ctx, F32, &[4]);
+    let offsets = shape(&ctx, S64, &[1]);
+    let token = Shape::token(&ctx);
+    let input = param(&mut ctx, token, 0);
+    let output_parameter = param(&mut ctx, output, 1);
+    let offsets = param(&mut ctx, offsets, 2);
+    let values = vec![
+        input.result(&ctx),
+        output_parameter.result(&ctx),
+        offsets.result(&ctx),
+        offsets.result(&ctx),
+        offsets.result(&ctx),
+        offsets.result(&ctx),
+    ];
+    for result in [output, shape(&ctx, F32, &[5]), shape(&ctx, F64, &[4])] {
+        let instruction = RaggedAllToAllOp::new(&mut ctx, result, values.clone(), groups(1));
+        assert_eq!(instruction.verify(&ctx).is_ok(), result == output);
+        Operation::erase(instruction.get_operation(), &mut ctx);
+    }
+    for parameter in [input, output_parameter, offsets] {
+        Operation::erase(parameter.get_operation(), &mut ctx);
+    }
+    assert!(ctx.is_ir_empty());
+}
 
 #[test]
 fn malformed_collective_shapes_and_overflows_return_typed_errors() {

@@ -356,7 +356,7 @@ pub fn infer_stochastic_convert(
         "stochastic-convert requires floating-point operand data",
     )?;
     require(
-        input.element.storage_bit_width() == random_type.element.storage_bit_width(),
+        input.element.bit_width() == random_type.element.bit_width(),
         "stochastic-convert operand and random values must have equal bit widths",
     )?;
     require(

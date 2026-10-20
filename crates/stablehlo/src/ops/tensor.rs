@@ -15,7 +15,7 @@ use pliron::{
     value::Value,
 };
 
-#[pliron_op(name="stablehlo.slice",format="$0 attr($stablehlo_slice_starts, $VecAttr) attr($stablehlo_slice_limits, $VecAttr) attr($stablehlo_slice_strides, $VecAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_slice_starts:VecAttr,stablehlo_slice_limits:VecAttr,stablehlo_slice_strides:VecAttr))]
+#[pliron_op(name="stablehlo.slice",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_slice_starts:VecAttr,stablehlo_slice_limits:VecAttr,stablehlo_slice_strides:VecAttr))]
 pub struct SliceOp;
 impl SliceOp {
     pub fn new(
@@ -87,6 +87,24 @@ impl SliceOp {
         let result = TensorType::get(ctx, output, element).into();
         Ok(Self::new(ctx, input, result, starts, limits, strides))
     }
+    /// Return the inclusive start index of each dimension.
+    pub fn starts(&self, ctx: &Context) -> Option<Vec<u64>> {
+        self.get_attr_stablehlo_slice_starts(ctx)
+            .as_deref()
+            .and_then(read_integer_list)
+    }
+    /// Return the exclusive limit index of each dimension.
+    pub fn limits(&self, ctx: &Context) -> Option<Vec<u64>> {
+        self.get_attr_stablehlo_slice_limits(ctx)
+            .as_deref()
+            .and_then(read_integer_list)
+    }
+    /// Return the stride of each dimension.
+    pub fn strides(&self, ctx: &Context) -> Option<Vec<u64>> {
+        self.get_attr_stablehlo_slice_strides(ctx)
+            .as_deref()
+            .and_then(read_integer_list)
+    }
 }
 impl Verify for SliceOp {
     fn verify(&self, ctx: &Context) -> Result<()> {
@@ -148,7 +166,7 @@ impl Verify for SliceOp {
     }
 }
 
-#[pliron_op(name="stablehlo.concatenate",format="operands(CharSpace(`,`)) attr($stablehlo_concatenate_dimension, $IntegerAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_concatenate_dimension:IntegerAttr))]
+#[pliron_op(name="stablehlo.concatenate",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_concatenate_dimension:IntegerAttr))]
 pub struct ConcatenateOp;
 impl ConcatenateOp {
     pub fn new(
@@ -212,6 +230,11 @@ impl Verify for ConcatenateOp {
 }
 
 impl ConcatenateOp {
+    /// Return the concatenation dimension.
+    pub fn dimension(&self, ctx: &Context) -> Option<usize> {
+        self.get_attr_stablehlo_concatenate_dimension(ctx)
+            .and_then(|a| a.value().to_string_decimal(false).parse::<usize>().ok())
+    }
     pub fn new_inferred(ctx: &mut Context, inputs: Vec<Value>, dimension: usize) -> Result<Self> {
         let tys = inputs.iter().map(|v| v.get_type(ctx)).collect::<Vec<_>>();
         let out = crate::ops::builder_result(
@@ -222,7 +245,7 @@ impl ConcatenateOp {
     }
 }
 
-#[pliron_op(name="stablehlo.dynamic_slice",format="operands(CharSpace(`,`)) attr($stablehlo_dynamic_slice_sizes, $VecAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dynamic_slice_sizes:VecAttr))]
+#[pliron_op(name="stablehlo.dynamic_slice",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dynamic_slice_sizes:VecAttr))]
 pub struct DynamicSliceOp;
 impl DynamicSliceOp {
     pub fn new(
@@ -306,7 +329,7 @@ impl Verify for DynamicSliceOp {
     }
 }
 
-#[pliron_op(name="stablehlo.dynamic_update_slice",format="operands(CharSpace(`,`))",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.dynamic_update_slice",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct DynamicUpdateSliceOp;
 impl DynamicUpdateSliceOp {
     pub fn new(
@@ -391,7 +414,7 @@ impl Verify for DynamicUpdateSliceOp {
     }
 }
 
-#[pliron_op(name="stablehlo.real_dynamic_slice",format="$0 `,` $1 `,` $2 `,` $3",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.real_dynamic_slice",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct RealDynamicSliceOp;
 impl RealDynamicSliceOp {
     pub fn new(
@@ -471,7 +494,7 @@ impl Verify for RealDynamicSliceOp {
     }
 }
 
-#[pliron_op(name="stablehlo.pad",format="$0 `,` $1 attr($stablehlo_pad_low, $VecAttr) attr($stablehlo_pad_high, $VecAttr) attr($stablehlo_pad_interior, $VecAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_pad_low:VecAttr,stablehlo_pad_high:VecAttr,stablehlo_pad_interior:VecAttr))]
+#[pliron_op(name="stablehlo.pad",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_pad_low:VecAttr,stablehlo_pad_high:VecAttr,stablehlo_pad_interior:VecAttr))]
 pub struct PadOp;
 impl PadOp {
     pub fn new(
@@ -575,7 +598,7 @@ impl Verify for PadOp {
     }
 }
 
-#[pliron_op(name="stablehlo.dynamic_pad",format="$0 `,` $1 `,` $2 `,` $3",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.dynamic_pad",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct DynamicPadOp;
 impl DynamicPadOp {
     pub fn new(

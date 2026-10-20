@@ -10,11 +10,15 @@ use pliron::{
 };
 
 #[pliron_attr(
-    name = "hlo.typed_literal",
+    name = "xlahlo.typed_literal",
     format = "`<` $shape `,` `[` vec($storage, CharSpace(`,`)) `]` `,` `[` vec($tuple_literals, CharSpace(`,`)) `]` `,` `[` vec($dynamic_sizes, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 /// Exact physical storage and runtime bounds for an array, tuple, or token literal.
+///
+/// Arrays carry bytes and, for dynamic shapes, one runtime size per axis.
+/// Tuples carry only children, and tokens have no payload. Public fields permit
+/// direct construction; `Verify::verify` checks these invariants before use.
 pub struct Literal {
     pub shape: TypeHandle,
     /// Little-endian exact encoding; sub-byte elements occupy one byte and
@@ -131,7 +135,11 @@ impl Literal {
         Ok(current)
     }
     /// Materialize physical-order element encodings, masking unused sub-byte bits.
+    ///
+    /// Rejects malformed literals before decoding; tuple and token literals
+    /// have no array element encodings.
     pub fn bits(&self, ctx: &Context) -> Result<Vec<u128>> {
+        self.verify(ctx)?;
         let width = Shape::element_type(ctx, self.shape)?.bit_width();
         let byte_width = width.div_ceil(8) as usize;
         if !self.storage.len().is_multiple_of(byte_width) {
@@ -265,6 +273,11 @@ impl Verify for Literal {
             }
             literal.shape.deref(ctx).verify(ctx)?;
             if Shape::is_tuple(ctx, literal.shape) {
+                if !literal.storage.is_empty() || !literal.dynamic_sizes.is_empty() {
+                    return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                        message: "tuple literal has array payload".into(),
+                    }));
+                }
                 let children = Shape::children(ctx, literal.shape);
                 if children.len() != literal.tuple_literals.len() {
                     return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
@@ -280,7 +293,16 @@ impl Verify for Literal {
                     }
                     pending.push((child, depth + 1));
                 }
-            } else if !literal.shape.deref(ctx).is::<TokenType>() {
+            } else if literal.shape.deref(ctx).is::<TokenType>() {
+                if !literal.storage.is_empty()
+                    || !literal.dynamic_sizes.is_empty()
+                    || !literal.tuple_literals.is_empty()
+                {
+                    return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                        message: "token literal has payload".into(),
+                    }));
+                }
+            } else {
                 let element = Shape::element_type(ctx, literal.shape)?;
                 let layout = Shape::layout(ctx, literal.shape)?.ok_or_else(|| {
                     pliron::verify_error_noloc!(Diagnostic::InvalidShape {
@@ -308,6 +330,10 @@ impl Verify for Literal {
                             }));
                         }
                     }
+                } else if !literal.dynamic_sizes.is_empty() {
+                    return Err(pliron::verify_error_noloc!(Diagnostic::InvalidShape {
+                        message: "static literal has dynamic sizes".into(),
+                    }));
                 }
                 let count =
                     usize::try_from(Shape::element_count(ctx, literal.shape)?).map_err(|_| {

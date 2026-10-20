@@ -285,6 +285,68 @@ fn einsum_builders_retain_equation_attributes_and_ranked_types() {
 }
 
 #[test]
+fn convolutions_enforce_specification_nonquantized_element_constraints() {
+    use ElementType::{F8E4M3Fn, F8E5M2, F32, F64, I8, I32};
+    let mut ctx = Context::new();
+    let dims = ConvDimensionNumbersAttr {
+        input_batch_dimension: 0,
+        input_feature_dimension: 3,
+        input_spatial_dimensions: vec![1, 2],
+        kernel_input_feature_dimension: 2,
+        kernel_output_feature_dimension: 3,
+        kernel_spatial_dimensions: vec![0, 1],
+        output_batch_dimension: 0,
+        output_feature_dimension: 3,
+        output_spatial_dimensions: vec![1, 2],
+    };
+    for (left, right, output, valid) in [
+        (I8, I8, I32, false),
+        (I32, I32, I8, false),
+        (F32, F32, F64, false),
+        (F32, F32, I32, false),
+        (I8, I32, I32, false),
+        (I32, I32, I32, true),
+        (F32, F32, F32, true),
+        (F8E4M3Fn, F8E5M2, F8E4M3Fn, true),
+        (F8E5M2, F8E4M3Fn, F8E5M2, true),
+        (F8E4M3Fn, F8E5M2, F8E5M2, false),
+        (F8E4M3Fn, F32, F8E4M3Fn, false),
+    ] {
+        let lhs = value(&mut ctx, &[1, 5, 5, 3], left);
+        let rhs = value(&mut ctx, &[3, 3, 3, 4], right);
+        let result = tensor(&ctx, &[1, 3, 3, 4], output);
+        let convolution = ConvolutionOp::new(
+            &mut ctx,
+            lhs,
+            rhs,
+            result,
+            dims.clone(),
+            vec![1, 1],
+            vec![0, 0, 0, 0],
+            vec![1, 1],
+            vec![1, 1],
+            1,
+            1,
+            vec![false, false],
+            vec![0, 0],
+        );
+        assert_eq!(
+            convolution.verify(&ctx).is_ok(),
+            valid,
+            "convolution {left:?}, {right:?} -> {output:?}",
+        );
+        let padding = value(&mut ctx, &[2, 2], ElementType::I32);
+        let dynamic_result = tensor(&ctx, &[1, -1, -1, 4], output);
+        let dynamic = DynamicConvOp::new(&mut ctx, lhs, rhs, padding, dynamic_result, dims.clone());
+        assert_eq!(
+            dynamic.verify(&ctx).is_ok(),
+            valid,
+            "dynamic_conv {left:?}, {right:?} -> {output:?}",
+        );
+    }
+}
+
+#[test]
 fn dynamic_convolution_checks_padding_tensor_rank_and_dimensions() {
     let mut ctx = Context::new();
     let lhs = value(&mut ctx, &[1, 5, 5, 3], ElementType::F32);

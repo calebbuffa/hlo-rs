@@ -62,26 +62,26 @@ macro_rules! optional {
 
 list!(
     Strings,
-    "hlo.strings",
+    "xlahlo.strings",
     String,
     "Ordered string values in native attribute assembly."
 );
 list!(
     Bytes,
-    "hlo.bytes",
+    "xlahlo.bytes",
     u8,
     "Exact uninterpreted bytes for instruction payloads."
 );
 list!(
     Bools,
-    "hlo.bools",
+    "xlahlo.bools",
     bool,
     "Ordered boolean values in native attribute assembly."
 );
-record!(StringPair, "hlo.string_pair", "One frontend attribute key and string value.", { key: String, value: String });
+record!(StringPair, "xlahlo.string_pair", "One frontend attribute key and string value.", { key: String, value: String });
 list!(
     FrontendAttributes,
-    "hlo.frontend_attributes",
+    "xlahlo.frontend_attributes",
     StringPair,
     "Frontend key/value annotations with last-write-wins lookup."
 );
@@ -106,63 +106,63 @@ impl FrontendAttributes {
     }
 }
 
-record!(WindowDimension, "hlo.window_dimension", "Window size, traversal, padding, dilation, and reversal for one axis.", {
+record!(WindowDimension, "xlahlo.window_dimension", "Window size, traversal, padding, dilation, and reversal for one axis.", {
     size: i64, stride: i64, padding_low: i64, padding_high: i64,
     window_dilation: i64, base_dilation: i64, window_reversal: bool,
 });
 list!(
     Window,
-    "hlo.window",
+    "xlahlo.window",
     WindowDimension,
     "Per-axis dimensions of a convolution or reduction window."
 );
-record!(PaddingConfigDimension, "hlo.padding_dimension", "Low, high, and interior padding for one logical axis.", {
+record!(PaddingConfigDimension, "xlahlo.padding_dimension", "Low, high, and interior padding for one logical axis.", {
     edge_padding_low: i64, edge_padding_high: i64, interior_padding: i64,
 });
 list!(
     PaddingConfig,
-    "hlo.padding_config",
+    "xlahlo.padding_config",
     PaddingConfigDimension,
     "Per-axis low, high, and interior padding."
 );
-record!(ConvolutionDimensionNumbers, "hlo.convolution_dimensions", "Input, kernel, and output axis roles for convolution.", {
+record!(ConvolutionDimensionNumbers, "xlahlo.convolution_dimensions", "Input, kernel, and output axis roles for convolution.", {
     input_batch_dimension: i64, input_feature_dimension: i64, input_spatial_dimensions: Axes,
     kernel_input_feature_dimension: i64, kernel_output_feature_dimension: i64, kernel_spatial_dimensions: Axes,
     output_batch_dimension: i64, output_feature_dimension: i64, output_spatial_dimensions: Axes,
 });
-record!(RaggedDotDimensionNumbers, "hlo.ragged_dot_dimensions", "Dot axis roles plus ragged and group dimensions.", {
+record!(RaggedDotDimensionNumbers, "xlahlo.ragged_dot_dimensions", "Dot axis roles plus ragged and group dimensions.", {
     dot_dimension_numbers: DotDimensionNumbers, lhs_ragged_dimensions: Axes, rhs_group_dimensions: Axes,
 });
-record!(DotDimensionNumbers, "hlo.dot_dimension_numbers", "Contracting and batch axes of both dot operands.", {
+record!(DotDimensionNumbers, "xlahlo.dot_dimension_numbers", "Contracting and batch axes of both dot operands.", {
     lhs_contracting_dimensions: Axes, rhs_contracting_dimensions: Axes,
     lhs_batch_dimensions: Axes, rhs_batch_dimensions: Axes,
 });
-record!(GatherDimensionNumbers, "hlo.gather_dimension_numbers", "Gather output offsets, collapsed axes, batching, and index mapping.", {
+record!(GatherDimensionNumbers, "xlahlo.gather_dimension_numbers", "Gather output offsets, collapsed axes, batching, and index mapping.", {
     offset_dims: Axes, collapsed_slice_dims: Axes, start_index_map: Axes,
     index_vector_dim: i64, operand_batching_dims: Axes, start_indices_batching_dims: Axes,
 });
-record!(ScatterDimensionNumbers, "hlo.scatter_dimension_numbers", "Scatter update windows, inserted axes, batching, and operand mapping.", {
+record!(ScatterDimensionNumbers, "xlahlo.scatter_dimension_numbers", "Scatter update windows, inserted axes, batching, and operand mapping.", {
     update_window_dims: Axes, inserted_window_dims: Axes, scatter_dims_to_operand_dims: Axes,
     index_vector_dim: i64, input_batching_dims: Axes, scatter_indices_batching_dims: Axes,
 });
-record!(TensorSparsityConfig, "hlo.tensor_sparsity", "Structured sparsity pattern and metadata operand index for one tensor.", {
+record!(TensorSparsityConfig, "xlahlo.tensor_sparsity", "Structured sparsity pattern and metadata operand index for one tensor.", {
     num_non_zero: i64, block_size: i64, dimension: i64, stride: i64, idx: i32,
 });
 optional!(
     OptionalTensorSparsityConfig,
-    "hlo.optional_tensor_sparsity",
+    "xlahlo.optional_tensor_sparsity",
     TensorSparsityConfig
 );
-record!(SparsityConfig, "hlo.sparsity", "Independent optional sparsity configurations for both dot operands.", { lhs: OptionalTensorSparsityConfig, rhs: OptionalTensorSparsityConfig });
-record!(TensorBlockScalingConfig, "hlo.tensor_block_scaling", "Scale and optional zero operands with block traversal strides and steps.", {
+record!(SparsityConfig, "xlahlo.sparsity", "Independent optional sparsity configurations for both dot operands.", { lhs: OptionalTensorSparsityConfig, rhs: OptionalTensorSparsityConfig });
+record!(TensorBlockScalingConfig, "xlahlo.tensor_block_scaling", "Scale and optional zero operands with block traversal strides and steps.", {
     scale_idx: i32, zero_idx: OptionalInteger, strides: Axes, steps: Axes,
 });
 optional!(
     OptionalTensorBlockScalingConfig,
-    "hlo.optional_tensor_block_scaling",
+    "xlahlo.optional_tensor_block_scaling",
     TensorBlockScalingConfig
 );
-record!(BlockScalingConfig, "hlo.block_scaling", "Independent optional block-scaling configurations for both dot operands.", { lhs: OptionalTensorBlockScalingConfig, rhs: OptionalTensorBlockScalingConfig });
+record!(BlockScalingConfig, "xlahlo.block_scaling", "Independent optional block-scaling configurations for both dot operands.", { lhs: OptionalTensorBlockScalingConfig, rhs: OptionalTensorBlockScalingConfig });
 impl Default for SparsityConfig {
     fn default() -> Self {
         Self {
@@ -180,7 +180,7 @@ impl Default for BlockScalingConfig {
     }
 }
 
-#[pliron_attr(name = "hlo.fft_type", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.fft_type", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Forward, inverse, real-input, and real-output Fourier transform modes.
 pub enum FftType {
@@ -189,14 +189,15 @@ pub enum FftType {
     RFFT,
     IRFFT,
 }
-#[pliron_attr(name = "hlo.padding_type", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.padding_type", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Automatic window padding policy.
 pub enum PaddingType {
+    Invalid,
     Valid,
     Same,
 }
-#[pliron_attr(name = "hlo.tri_state", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.tri_state", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Boolean option with an explicit unspecified state.
 pub enum TriState {
@@ -204,7 +205,7 @@ pub enum TriState {
     True,
     False,
 }
-#[pliron_attr(name = "hlo.convolution_kind", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.convolution_kind", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Forward, input-gradient, weight-gradient, or unselected convolution role.
 pub enum ConvolutionKind {
@@ -213,7 +214,7 @@ pub enum ConvolutionKind {
     Dgrad,
     Wgrad,
 }
-#[pliron_attr(name = "hlo.custom_call_schedule", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.custom_call_schedule", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Scheduling constraint applied to a custom call.
 pub enum CustomCallSchedule {
@@ -221,7 +222,7 @@ pub enum CustomCallSchedule {
     Latest,
     Earliest,
 }
-#[pliron_attr(name = "hlo.custom_call_api_version", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.custom_call_api_version", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// ABI version used to invoke a custom-call target.
 pub enum CustomCallApiVersion {
@@ -231,7 +232,7 @@ pub enum CustomCallApiVersion {
     StatusReturningUnified,
     TypedFfi,
 }
-#[pliron_attr(name = "hlo.collective_op_group_mode", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.collective_op_group_mode", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Interpretation of device IDs in collective replica groups.
 pub enum CollectiveOpGroupMode {
@@ -240,14 +241,14 @@ pub enum CollectiveOpGroupMode {
     CrossReplicaAndPartition,
     FlattenedID,
 }
-#[pliron_attr(name = "hlo.channel_handle", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.channel_handle", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Communication channel identity and channel kind.
 pub struct ChannelHandle {
     pub handle: i64,
     pub kind: i64,
 }
-#[pliron_attr(name = "hlo.payload", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.payload", format, verifier = "succ")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 /// Absent metadata, inline exact bytes, or an index into module metadata payloads.
 pub enum Payload {
@@ -255,11 +256,11 @@ pub enum Payload {
     Value(Bytes),
     Id(i64),
 }
-record!(SliceDimensions, "hlo.slice_dimensions", "Start, exclusive limit, and stride along one slice axis.", { start: i64, limit: i64, stride: i64 });
-record!(ReducePrecision, "hlo.reduce_precision", "Exponent and mantissa widths retained by reduce-precision.", { exponent_bits: i32, mantissa_bits: i32 });
-record!(BatchNormOptions, "hlo.batch_norm_options", "Batch normalization feature axis and exact f32 epsilon encoding.", { epsilon_bits: u32, feature_index: i64 });
-record!(KnownInitStep, "hlo.known_init_step", "Known initial value and increment of a loop induction variable.", { init: i64, step: i64 });
-#[pliron_attr(name = "hlo.optional_integer", format, verifier = "succ")]
+record!(SliceDimensions, "xlahlo.slice_dimensions", "Start, exclusive limit, and stride along one slice axis.", { start: i64, limit: i64, stride: i64 });
+record!(ReducePrecision, "xlahlo.reduce_precision", "Exponent and mantissa widths retained by reduce-precision.", { exponent_bits: i32, mantissa_bits: i32 });
+record!(BatchNormOptions, "xlahlo.batch_norm_options", "Batch normalization feature axis and exact f32 epsilon encoding.", { epsilon_bits: u32, feature_index: i64 });
+record!(KnownInitStep, "xlahlo.known_init_step", "Known initial value and increment of a loop induction variable.", { init: i64, step: i64 });
+#[pliron_attr(name = "xlahlo.optional_integer", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// An integer whose absence is distinct from every numeric value.
 pub enum OptionalInteger {
@@ -283,33 +284,33 @@ impl OptionalInteger {
         self.as_ref().is_none()
     }
 }
-record!(DynamicVariable, "hlo.dynamic_variable", "A loop-carried tuple member with optional known initial value and step.", {
+record!(DynamicVariable, "xlahlo.dynamic_variable", "A loop-carried tuple member with optional known initial value and step.", {
     tuple_index: i64, init: OptionalInteger, step: OptionalInteger,
 });
 list!(
     DynamicVariables,
-    "hlo.dynamic_variables",
+    "xlahlo.dynamic_variables",
     DynamicVariable,
     "Loop-carried variables described by a while-loop backend configuration."
 );
 list!(
     KnownInitSteps,
-    "hlo.known_init_steps",
+    "xlahlo.known_init_steps",
     KnownInitStep,
     "Optional singleton initial-value and step record for a loop."
 );
-record!(WhileLoopBackendConfig, "hlo.while_loop_backend_config", "Known trip-count and induction-variable information for a while loop.", {
+record!(WhileLoopBackendConfig, "xlahlo.while_loop_backend_config", "Known trip-count and induction-variable information for a while loop.", {
     known_trip_count: OptionalInteger, known_init_step: KnownInitSteps,
     known_induction_variable: OptionalInteger, dynamic_variables: DynamicVariables,
 });
-#[pliron_attr(name = "hlo.random_distribution", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.random_distribution", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Distribution sampled by the random-number operation.
 pub enum RandomDistribution {
     Uniform,
     Normal,
 }
-#[pliron_attr(name = "hlo.random_algorithm", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.random_algorithm", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Counter-based random-number generator selection.
 pub enum RandomAlgorithm {
@@ -317,7 +318,7 @@ pub enum RandomAlgorithm {
     ThreeFry,
     Philox,
 }
-#[pliron_attr(name = "hlo.transpose_mode", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.transpose_mode", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Matrix transform used by triangular solve.
 pub enum Transpose {
@@ -325,58 +326,58 @@ pub enum Transpose {
     Transpose,
     Adjoint,
 }
-record!(TriangularSolveOptions, "hlo.triangular_solve_options", "Triangular-system side, triangle, diagonal, and transpose policy.", {
+record!(TriangularSolveOptions, "xlahlo.triangular_solve_options", "Triangular-system side, triangle, diagonal, and transpose policy.", {
     left_side: bool, lower: bool, unit_diagonal: bool, transpose_a: Transpose,
 });
-record!(CholeskyOptions, "hlo.cholesky_options", "Whether Cholesky returns the lower rather than upper triangle.", { lower: bool });
-record!(ShuffleMode, "hlo.shuffle_mode", "Per-axis cyclic shifts applied by shuffle.", { shifts: Axes });
-record!(CubScanOptions, "hlo.cub_scan_options", "Scan tile geometry, reduction kind, and traversal direction.", {
+record!(CholeskyOptions, "xlahlo.cholesky_options", "Whether Cholesky returns the lower rather than upper triangle.", { lower: bool });
+record!(ShuffleMode, "xlahlo.shuffle_mode", "Per-axis cyclic shifts applied by shuffle.", { shifts: Axes });
+record!(CubScanOptions, "xlahlo.cub_scan_options", "Scan tile geometry, reduction kind, and traversal direction.", {
     vector_length: i64, row_length: i64, column_length: i64, kind: CubScanKind, is_reverse: bool,
 });
-#[pliron_attr(name = "hlo.cub_scan_kind", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.cub_scan_kind", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Reduction kind of the specialized scan backend.
 pub enum CubScanKind {
     Invalid,
     Sum,
 }
-record!(SortOptions, "hlo.sort_options", "Whether sort orders values in descending order.", { descending: bool });
-record!(SourceTarget, "hlo.source_target", "One directed device edge of a collective permute.", { source: i64, target: i64 });
+record!(SortOptions, "xlahlo.sort_options", "Whether sort orders values in descending order.", { descending: bool });
+record!(SourceTarget, "xlahlo.source_target", "One directed device edge of a collective permute.", { source: i64, target: i64 });
 list!(
     SourceTargetPairs,
-    "hlo.source_target_pairs",
+    "xlahlo.source_target_pairs",
     SourceTarget,
     "Directed device edges of a collective permute."
 );
 list!(
     ReplicaGroup,
-    "hlo.replica_group",
+    "xlahlo.replica_group",
     i64,
     "Device identifiers participating in one collective group."
 );
 list!(
     ReplicaGroups,
-    "hlo.replica_groups",
+    "xlahlo.replica_groups",
     ReplicaGroup,
     "Explicit collective groups, preserving device order."
 );
 list!(
     ParameterReplication,
-    "hlo.parameter_replication",
+    "xlahlo.parameter_replication",
     bool,
     "Replication flags for parameter shape leaves."
 );
-record!(OutputOperandAliasing, "hlo.output_operand_aliasing", "An output subshape aliasing a particular operand subshape.", {
+record!(OutputOperandAliasing, "xlahlo.output_operand_aliasing", "An output subshape aliasing a particular operand subshape.", {
     output_shape_index: Axes, operand_index: i64, operand_shape_index: Axes,
 });
 list!(
     OutputOperandAliases,
-    "hlo.output_operand_aliases",
+    "xlahlo.output_operand_aliases",
     OutputOperandAliasing,
     "Declared output-to-operand buffer aliases."
 );
 
-#[pliron_attr(name = "hlo.precision_algorithm", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.precision_algorithm", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Explicit numerical dot algorithm, including operand formats and accumulation modes.
 pub enum Algorithm {
@@ -399,14 +400,14 @@ pub enum Algorithm {
 }
 list!(
     OperandPrecision,
-    "hlo.operand_precision",
+    "xlahlo.operand_precision",
     Precision,
     "Requested precision for each numerical operand."
 );
-record!(PrecisionConfig, "hlo.precision_config", "Per-operand precision and an optional explicit dot algorithm.", {
+record!(PrecisionConfig, "xlahlo.precision_config", "Per-operand precision and an optional explicit dot algorithm.", {
     operand_precision: OperandPrecision, algorithm: Algorithm,
 });
-#[pliron_attr(name = "hlo.comparison_type", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.comparison_type", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Signed, unsigned, partial floating-point, or total floating-point interpretation.
 pub enum ComparisonType {
@@ -415,7 +416,7 @@ pub enum ComparisonType {
     Signed,
     Unsigned,
 }
-record!(Comparison, "hlo.comparison", "Comparison direction and numeric interpretation.", { direction: Direction, comparison_type: ComparisonType });
+record!(Comparison, "xlahlo.comparison", "Comparison direction and numeric interpretation.", { direction: Direction, comparison_type: ComparisonType });
 
 impl Direction {
     /// Negate the comparison predicate.
@@ -442,17 +443,17 @@ impl Direction {
 }
 
 // Floating metadata uses exact encodings for pliron's Eq/Hash contract.
-record!(ProfileInfo, "hlo.profile_info", "Instruction profile provenance and exact f64 relative-speedup encoding.", {
+record!(ProfileInfo, "xlahlo.profile_info", "Instruction profile provenance and exact f64 relative-speedup encoding.", {
     profile_type: Axes, relative_speedup_bits: u64, profile_source: i32,
     compilation_event: i32, profile_generation_strategy: i32,
 });
 list!(
     ProfileInfos,
-    "hlo.profile_infos",
+    "xlahlo.profile_infos",
     ProfileInfo,
     "Optional singleton instruction profile record."
 );
-#[pliron_attr(name = "hlo.op_metadata", format)]
+#[pliron_attr(name = "xlahlo.op_metadata", format)]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 /// Instruction identity, source location, profiling, scheduling, and payload metadata.
 pub struct OpMetadata {
@@ -485,7 +486,7 @@ impl Verify for OpMetadata {
 }
 list!(
     Metadata,
-    "hlo.metadata",
+    "xlahlo.metadata",
     OpMetadata,
     "Instruction metadata records associated with a sharding annotation."
 );
@@ -520,16 +521,16 @@ impl OpMetadata {
         }
     }
 }
-record!(Statistic, "hlo.statistic", "Named visualization statistic with an exact f64 value encoding.", { stat_name: String, stat_val_bits: u64 });
+record!(Statistic, "xlahlo.statistic", "Named visualization statistic with an exact f64 value encoding.", { stat_name: String, stat_val_bits: u64 });
 list!(
     Statistics,
-    "hlo.statistics",
+    "xlahlo.statistics",
     Statistic,
     "Named visualization statistics."
 );
-record!(StatisticsViz, "hlo.statistics_viz", "Visualization statistics and the selected statistic index.", { stat_index_to_visualize: i64, statistics: Statistics });
+record!(StatisticsViz, "xlahlo.statistics_viz", "Visualization statistics and the selected statistic index.", { stat_index_to_visualize: i64, statistics: Statistics });
 
-#[pliron_attr(name = "hlo.result_accuracy", format)]
+#[pliron_attr(name = "xlahlo.result_accuracy", format)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Default, highest, or explicit numerical tolerances for an instruction result.
 pub enum ResultAccuracy {
@@ -682,7 +683,7 @@ pub(crate) fn register(ctx: &mut Context) {
 }
 
 #[pliron_attr(
-    name = "hlo.axes",
+    name = "xlahlo.axes",
     format = "`[` vec($0, CharSpace(`,`)) `]`",
     verifier = "succ"
 )]
@@ -690,12 +691,12 @@ pub(crate) fn register(ctx: &mut Context) {
 /// Ordered dimension indices or shape-index components.
 pub struct Axes(pub Vec<i64>);
 
-#[pliron_attr(name = "hlo.index", format = "$0", verifier = "succ")]
+#[pliron_attr(name = "xlahlo.index", format = "$0", verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Nonnegative instruction index, such as a parameter number or tuple element.
 pub struct Index(pub u32);
 
-#[pliron_attr(name = "hlo.direction", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.direction", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Relational predicate applied by a comparison.
 pub enum Direction {
@@ -707,7 +708,7 @@ pub enum Direction {
     Ge,
 }
 
-#[pliron_attr(name = "hlo.order", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.order", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Partial, total, or weak ordering policy.
 pub enum ComparisonOrder {
@@ -716,7 +717,7 @@ pub enum ComparisonOrder {
     Weak,
 }
 
-#[pliron_attr(name = "hlo.precision", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.precision", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Requested operand precision level.
 pub enum Precision {
@@ -725,7 +726,7 @@ pub enum Precision {
     Highest,
 }
 
-#[pliron_attr(name = "hlo.fusion_kind", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.fusion_kind", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Execution organization of a fused computation.
 pub enum FusionKind {
@@ -736,7 +737,7 @@ pub enum FusionKind {
 }
 
 #[pliron_attr(
-    name = "hlo.slice",
+    name = "xlahlo.slice",
     format = "`<` $starts `,` $limits `,` $strides `>`",
     verifier = "succ"
 )]
@@ -749,7 +750,7 @@ pub struct Slice {
 }
 
 #[pliron_attr(
-    name = "hlo.callees",
+    name = "xlahlo.callees",
     format = "`[` vec($0, CharSpace(`,`)) `]`",
     verifier = "succ"
 )]
@@ -758,7 +759,7 @@ pub struct Slice {
 pub struct Callees(pub Vec<Identifier>);
 
 #[pliron_attr(
-    name = "hlo.flags",
+    name = "xlahlo.flags",
     format = "`<` $sorted `,` $unique `>`",
     verifier = "succ"
 )]

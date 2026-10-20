@@ -109,7 +109,7 @@ pub mod elementwise;
 pub mod movement;
 pub mod numerical;
 
-#[pliron_op(name = "hlo.computation", format, interfaces = [pliron::builtin::op_interfaces::IsolatedFromAboveInterface], attributes = (hlo_computation_name: IdentifierAttr, hlo_computation_signature: TypeAttr))]
+#[pliron_op(name = "xlahlo.computation", format, interfaces = [pliron::builtin::op_interfaces::IsolatedFromAboveInterface], attributes = (hlo_computation_name: IdentifierAttr, hlo_computation_signature: TypeAttr))]
 /// A named, isolated HLO computation with one block and a function signature.
 pub struct ComputationOp;
 
@@ -140,7 +140,7 @@ impl Verify for ComputationOp {
     }
 }
 
-#[pliron_op(name = "hlo.return", format, interfaces = [pliron::builtin::op_interfaces::IsTerminatorInterface])]
+#[pliron_op(name = "xlahlo.return", format, interfaces = [pliron::builtin::op_interfaces::IsTerminatorInterface])]
 /// Terminator yielding the single result of a computation or fusion body.
 pub struct ReturnOp;
 

@@ -7,7 +7,7 @@ use pliron::result::Result;
 
 macro_rules! primitives {
     ($($name:ident => $element:ident),* $(,)?) => {
-        #[pliron_attr(name = "hlo.primitive", format, verifier = "succ")]
+        #[pliron_attr(name = "xlahlo.primitive", format, verifier = "succ")]
         #[allow(non_camel_case_types)]
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         /// HLO primitive names and pinned numeric identifiers, including structural kinds.

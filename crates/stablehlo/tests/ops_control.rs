@@ -7,9 +7,14 @@ use pliron::{
     },
     common_traits::Verify,
     context::{Context, Ptr},
+    irfmt::parsers::spaced,
+    linked_list::ContainsLinkedList,
     op::Op,
+    operation::Operation,
+    parsable::parse_from_str,
+    printable::Printable,
     region::Region,
-    r#type::{TypeHandle, Typed},
+    r#type::{Type as PlironType, TypeHandle, Typed},
     utils::apint::APInt,
 };
 use stablehlo::{attributes::*, ops::*, types::*, verification::verify_module_fast};
@@ -55,7 +60,9 @@ fn tuple_build_and_projection_use_native_types() {
     let tv = tuple.get_operation().deref(&ctx).get_result(0);
     let get = GetTupleElementOp::new(&mut ctx, tv, 0, ty);
     assert!(get.verify(&ctx).is_ok());
+    assert_eq!(get.index(&ctx), Some(0));
     let bad = GetTupleElementOp::new(&mut ctx, tv, 1, ty);
+    assert_eq!(bad.index(&ctx), Some(1));
     assert!(bad.verify(&ctx).is_err());
 }
 
@@ -213,6 +220,356 @@ fn module_fast_resolves_function_symbols_and_call_signatures() {
 }
 
 #[test]
+fn module_and_function_native_assembly_roundtrip_preserves_signature_and_body() {
+    let mut ctx = Context::new();
+    let module = ModuleOp::new(&mut ctx);
+    let body = module.body_block(&ctx).expect("module body block");
+    let ty = tensor(&ctx, &[2], ElementType::F32);
+    let result_ty = tensor(&ctx, &[2], ElementType::F64);
+    let signature = FunctionType::intern(&ctx, vec![ty], vec![result_ty]);
+    let function = FuncOp::new(&mut ctx, "entry".into(), signature).expect("valid function");
+    let function_block = function.entry_block(&ctx).expect("function entry block");
+    let argument = function.argument(&ctx, 0).expect("function argument");
+    let constant = ConstantOp::new(&mut ctx, ty, vec![0x8000_0000], true);
+    let constant_value = constant.get_operation().deref(&ctx).get_result(0);
+    constant
+        .get_operation()
+        .insert_at_back(function_block, &ctx);
+    let add = AddOp::new_inferred(&mut ctx, argument, constant_value).unwrap();
+    let result = add.get_operation().deref(&ctx).get_result(0);
+    add.get_operation().insert_at_back(function_block, &ctx);
+    let convert = ConvertOp::new(&mut ctx, result, result_ty);
+    let result = convert.get_operation().deref(&ctx).get_result(0);
+    convert.get_operation().insert_at_back(function_block, &ctx);
+    ReturnOp::new(&mut ctx, result)
+        .get_operation()
+        .insert_at_back(function_block, &ctx);
+    function.get_operation().insert_at_back(body, &ctx);
+    assert!(verify_module_fast(&ctx, module.get_operation()).is_ok());
+
+    let assembly = module.get_operation().disp(&ctx).to_string();
+    assert!(assembly.contains("stablehlo.module"), "{assembly}");
+    assert!(assembly.contains("stablehlo.func"), "{assembly}");
+    assert!(assembly.contains("entry"), "{assembly}");
+    assert!(assembly.contains("stablehlo.return"), "{assembly}");
+
+    let mut parsed_ctx = Context::new();
+    TensorType::register(&mut parsed_ctx);
+    FunctionType::register(&mut parsed_ctx);
+    ModuleOp::register(&mut parsed_ctx);
+    FuncOp::register(&mut parsed_ctx);
+    ReturnOp::register(&mut parsed_ctx);
+    ConstantOp::register(&mut parsed_ctx);
+    AddOp::register(&mut parsed_ctx);
+    ConvertOp::register(&mut parsed_ctx);
+    let parsed = parse_from_str(
+        spaced(Operation::top_level_parser()),
+        &mut parsed_ctx,
+        &assembly,
+    )
+    .unwrap_or_else(|error| panic!("StableHLO module failed to parse:\n{assembly}\n{error}"));
+    let parsed_module = Operation::get_op_dyn(parsed, &parsed_ctx);
+    verify_module_fast(&parsed_ctx, parsed)
+        .unwrap_or_else(|error| panic!("reparsed StableHLO module failed verification:\n{error}"));
+    let parsed_module = parsed_module
+        .as_ref()
+        .downcast_ref::<ModuleOp>()
+        .expect("parsed StableHLO module");
+    let parsed_body = parsed_module
+        .body_block(&parsed_ctx)
+        .expect("parsed body block");
+    let parsed_function = Operation::get_op_dyn(
+        parsed_body
+            .deref(&parsed_ctx)
+            .iter(&parsed_ctx)
+            .next()
+            .unwrap(),
+        &parsed_ctx,
+    );
+    let parsed_function = parsed_function
+        .as_ref()
+        .downcast_ref::<FuncOp>()
+        .expect("parsed StableHLO function");
+    assert_eq!(parsed_function.name(&parsed_ctx).as_deref(), Some("entry"));
+    let parsed_signature = parsed_function.signature(&parsed_ctx).unwrap();
+    let parsed_signature = parsed_signature.deref(&parsed_ctx);
+    let parsed_signature = parsed_signature.downcast_ref::<FunctionType>().unwrap();
+    assert_eq!(parsed_signature.inputs().len(), 1);
+    assert_eq!(parsed_signature.outputs().len(), 1);
+    assert_eq!(
+        tensor_parts(&parsed_ctx, parsed_signature.inputs()[0]),
+        Some((vec![2], ElementType::F32))
+    );
+    assert_eq!(
+        tensor_parts(&parsed_ctx, parsed_signature.outputs()[0]),
+        Some((vec![2], ElementType::F64))
+    );
+    let parsed_entry = parsed_function.entry_block(&parsed_ctx).unwrap();
+    let parsed_ops: Vec<_> = parsed_entry.deref(&parsed_ctx).iter(&parsed_ctx).collect();
+    assert_eq!(parsed_ops.len(), 4);
+    let parsed_constant = Operation::get_op::<ConstantOp>(parsed_ops[0], &parsed_ctx).unwrap();
+    assert_eq!(parsed_constant.bits(&parsed_ctx), Some(vec![0x8000_0000]));
+    assert_eq!(parsed_constant.is_splat(&parsed_ctx), Some(true));
+    assert!(Operation::is_op::<AddOp>(parsed_ops[1], &parsed_ctx));
+    assert!(Operation::is_op::<ConvertOp>(parsed_ops[2], &parsed_ctx));
+    let reparsed_assembly = parsed.disp(&parsed_ctx).to_string();
+    let mut second_ctx = Context::new();
+    TensorType::register(&mut second_ctx);
+    FunctionType::register(&mut second_ctx);
+    ModuleOp::register(&mut second_ctx);
+    FuncOp::register(&mut second_ctx);
+    ReturnOp::register(&mut second_ctx);
+    ConstantOp::register(&mut second_ctx);
+    AddOp::register(&mut second_ctx);
+    ConvertOp::register(&mut second_ctx);
+    let second = parse_from_str(
+        spaced(Operation::top_level_parser()),
+        &mut second_ctx,
+        &reparsed_assembly,
+    )
+    .unwrap_or_else(|error| {
+        panic!("reprinted StableHLO module failed to parse:\n{reparsed_assembly}\n{error}")
+    });
+    verify_module_fast(&second_ctx, second)
+        .unwrap_or_else(|error| panic!("reprinted StableHLO module failed verification:\n{error}"));
+}
+
+#[test]
+fn native_assembly_preserves_calls_nested_regions_and_backend_attributes() {
+    use pliron::builtin::attributes::{BoolAttr, DictAttr};
+
+    let mut ctx = Context::new();
+    let module = ModuleOp::new(&mut ctx);
+    let module_body = module.body_block(&ctx).unwrap();
+    let ty = tensor(&ctx, &[], ElementType::F32);
+    let signature = FunctionType::intern(&ctx, vec![ty], vec![ty]);
+    let helper = FuncOp::new(&mut ctx, "helper".into(), signature).unwrap();
+    let argument = helper.argument(&ctx, 0).unwrap();
+    ReturnOp::new(&mut ctx, argument)
+        .get_operation()
+        .insert_at_back(helper.entry_block(&ctx).unwrap(), &ctx);
+    helper.get_operation().insert_at_back(module_body, &ctx);
+
+    let main = FuncOp::new(&mut ctx, "main".into(), signature).unwrap();
+    let main_body = main.entry_block(&ctx).unwrap();
+    let argument = main.argument(&ctx, 0).unwrap();
+    let call = CallOp::new(&mut ctx, "helper".into(), vec![argument], vec![ty]);
+    let called_value = call.get_operation().deref(&ctx).get_result(0);
+    call.get_operation().insert_at_back(main_body, &ctx);
+    let while_op = WhileOp::new(&mut ctx, vec![called_value], vec![ty]);
+    let condition_region = while_op.condition_region(&ctx);
+    let condition = add_block(&mut ctx, condition_region, vec![ty]);
+    let pred_ty = tensor(&ctx, &[], ElementType::I1);
+    let pred = ConstantOp::new(&mut ctx, pred_ty, vec![0], true);
+    let pred_value = pred.get_operation().deref(&ctx).get_result(0);
+    pred.get_operation().insert_at_back(condition, &ctx);
+    ReturnOp::new(&mut ctx, pred_value)
+        .get_operation()
+        .insert_at_back(condition, &ctx);
+    let body_region = while_op.body_region(&ctx);
+    let body = add_block(&mut ctx, body_region, vec![ty]);
+    let carried = body.deref(&ctx).get_argument(0);
+    ReturnOp::new(&mut ctx, carried)
+        .get_operation()
+        .insert_at_back(body, &ctx);
+    let loop_value = while_op.get_operation().deref(&ctx).get_result(0);
+    while_op.get_operation().insert_at_back(main_body, &ctx);
+    let custom = CustomCallOp::new(
+        &mut ctx,
+        "native_target".into(),
+        vec![loop_value],
+        vec![ty],
+        4,
+    );
+    custom.set_backend_config(
+        &mut ctx,
+        Box::new(DictAttr::new(vec![(
+            "enabled".try_into().unwrap(),
+            Box::new(BoolAttr::new(true)) as AttrObj,
+        )])),
+    );
+    let output = custom.get_operation().deref(&ctx).get_result(0);
+    custom.get_operation().insert_at_back(main_body, &ctx);
+    ReturnOp::new(&mut ctx, output)
+        .get_operation()
+        .insert_at_back(main_body, &ctx);
+    main.get_operation().insert_at_back(module_body, &ctx);
+    verify_module_fast(&ctx, module.get_operation()).unwrap();
+
+    let assembly = module.get_operation().disp(&ctx).to_string();
+    let mut parsed_ctx = Context::new();
+    TensorType::register(&mut parsed_ctx);
+    FunctionType::register(&mut parsed_ctx);
+    for register in [
+        ModuleOp::register,
+        FuncOp::register,
+        ReturnOp::register,
+        ConstantOp::register,
+        CallOp::register,
+        WhileOp::register,
+        CustomCallOp::register,
+    ] {
+        register(&mut parsed_ctx);
+    }
+    let parsed = parse_from_str(
+        spaced(Operation::top_level_parser()),
+        &mut parsed_ctx,
+        &assembly,
+    )
+    .unwrap_or_else(|error| panic!("nested module failed to parse:\n{assembly}\n{error}"));
+    verify_module_fast(&parsed_ctx, parsed).unwrap();
+    let parsed_module = Operation::get_op::<ModuleOp>(parsed, &parsed_ctx).unwrap();
+    let parsed_body = parsed_module.body_block(&parsed_ctx).unwrap();
+    let functions: Vec<_> = parsed_body.deref(&parsed_ctx).iter(&parsed_ctx).collect();
+    assert_eq!(functions.len(), 2);
+    let parsed_main = Operation::get_op::<FuncOp>(functions[1], &parsed_ctx).unwrap();
+    let parsed_entry = parsed_main.entry_block(&parsed_ctx).unwrap();
+    let operations: Vec<_> = parsed_entry.deref(&parsed_ctx).iter(&parsed_ctx).collect();
+    assert_eq!(operations.len(), 4);
+    let parsed_call = Operation::get_op::<CallOp>(operations[0], &parsed_ctx).unwrap();
+    assert_eq!(
+        parsed_call
+            .get_attr_stablehlo_call_callee(&parsed_ctx)
+            .unwrap()
+            .as_str(),
+        "helper"
+    );
+    let parsed_while = Operation::get_op::<WhileOp>(operations[1], &parsed_ctx).unwrap();
+    assert_eq!(
+        parsed_while
+            .condition_region(&parsed_ctx)
+            .deref(&parsed_ctx)
+            .iter(&parsed_ctx)
+            .count(),
+        1
+    );
+    let parsed_custom = Operation::get_op::<CustomCallOp>(operations[2], &parsed_ctx).unwrap();
+    let config = parsed_custom.backend_config(&parsed_ctx).unwrap();
+    let config = config.downcast_ref::<DictAttr>().unwrap();
+    assert_eq!(
+        config,
+        &DictAttr::new(vec![(
+            "enabled".try_into().unwrap(),
+            Box::new(BoolAttr::new(true)) as AttrObj,
+        )])
+    );
+}
+
+#[test]
+fn native_assembly_preserves_movement_gather_reduction_and_compute_metadata() {
+    fn append(
+        ctx: &Context,
+        block: Ptr<BasicBlock>,
+        operation: Ptr<Operation>,
+    ) -> pliron::value::Value {
+        operation.insert_at_back(block, ctx);
+        operation.deref(ctx).get_result(0)
+    }
+
+    let mut ctx = Context::new();
+    let module = ModuleOp::new(&mut ctx);
+    let input_ty = tensor(&ctx, &[2, 3], ElementType::F32);
+    let scalar_ty = tensor(&ctx, &[], ElementType::F32);
+    let signature = FunctionType::intern(&ctx, vec![input_ty], vec![scalar_ty]);
+    let function = FuncOp::new(&mut ctx, "main".into(), signature).unwrap();
+    let entry = function.entry_block(&ctx).unwrap();
+    let input = function.argument(&ctx, 0).unwrap();
+    let slice = SliceOp::new_inferred(&mut ctx, input, vec![0, 1], vec![2, 3], vec![1, 1]).unwrap();
+    let sliced = append(&ctx, entry, slice.get_operation());
+    let reshape = ReshapeOp::new_inferred(&mut ctx, sliced, &[4]).unwrap();
+    let reshaped = append(&ctx, entry, reshape.get_operation());
+    let broadcast = BroadcastInDimOp::new_inferred(&mut ctx, reshaped, &[2, 4], vec![1]).unwrap();
+    let broadcasted = append(&ctx, entry, broadcast.get_operation());
+    let initial = ConstantOp::new(&mut ctx, scalar_ty, vec![0], true);
+    let initial = append(&ctx, entry, initial.get_operation());
+    let vector_ty = tensor(&ctx, &[2], ElementType::F32);
+    let reduce = ReduceOp::new(
+        &mut ctx,
+        vec![broadcasted],
+        vec![initial],
+        vec![vector_ty],
+        vec![1],
+    );
+    let reducer_region = reduce.reducer_region(&ctx);
+    let reducer = add_block(&mut ctx, reducer_region, vec![scalar_ty, scalar_ty]);
+    let lhs = reducer.deref(&ctx).get_argument(0);
+    let rhs = reducer.deref(&ctx).get_argument(1);
+    let sum = AddOp::new_inferred(&mut ctx, lhs, rhs).unwrap();
+    let sum = append(&ctx, reducer, sum.get_operation());
+    ReturnOp::new(&mut ctx, sum)
+        .get_operation()
+        .insert_at_back(reducer, &ctx);
+    let reduced = append(&ctx, entry, reduce.get_operation());
+    let indices_ty = tensor(&ctx, &[1], ElementType::I32);
+    let indices = ConstantOp::new(&mut ctx, indices_ty, vec![1], true);
+    let indices = append(&ctx, entry, indices.get_operation());
+    let dimensions = GatherDimensionNumbersAttr {
+        offset_dims: vec![],
+        collapsed_slice_dims: vec![0],
+        operand_batching_dims: vec![],
+        start_indices_batching_dims: vec![],
+        start_index_map: vec![0],
+        index_vector_dim: 1,
+    };
+    let gather =
+        GatherOp::new_inferred(&mut ctx, reduced, indices, dimensions.clone(), vec![1]).unwrap();
+    let gathered = append(&ctx, entry, gather.get_operation());
+    let dot = DotOp::new(&mut ctx, gathered, gathered, scalar_ty, vec![0, 1]);
+    let dot_result = append(&ctx, entry, dot.get_operation());
+    ReturnOp::new(&mut ctx, dot_result)
+        .get_operation()
+        .insert_at_back(entry, &ctx);
+    function
+        .get_operation()
+        .insert_at_back(module.body_block(&ctx).unwrap(), &ctx);
+    verify_module_fast(&ctx, module.get_operation()).unwrap();
+
+    let assembly = module.get_operation().disp(&ctx).to_string();
+    let mut parsed_ctx = Context::new();
+    TensorType::register(&mut parsed_ctx);
+    FunctionType::register(&mut parsed_ctx);
+    for register in [
+        ModuleOp::register,
+        FuncOp::register,
+        ReturnOp::register,
+        ConstantOp::register,
+        SliceOp::register,
+        ReshapeOp::register,
+        BroadcastInDimOp::register,
+        ReduceOp::register,
+        AddOp::register,
+        GatherOp::register,
+        DotOp::register,
+    ] {
+        register(&mut parsed_ctx);
+    }
+    let parsed = parse_from_str(
+        spaced(Operation::top_level_parser()),
+        &mut parsed_ctx,
+        &assembly,
+    )
+    .unwrap_or_else(|error| panic!("structured module failed to parse:\n{assembly}\n{error}"));
+    verify_module_fast(&parsed_ctx, parsed).unwrap();
+    let module = Operation::get_op::<ModuleOp>(parsed, &parsed_ctx).unwrap();
+    let entry = module.body_block(&parsed_ctx).unwrap();
+    let function = entry.deref(&parsed_ctx).iter(&parsed_ctx).next().unwrap();
+    let function = Operation::get_op::<FuncOp>(function, &parsed_ctx).unwrap();
+    let entry = function.entry_block(&parsed_ctx).unwrap();
+    let operations: Vec<_> = entry.deref(&parsed_ctx).iter(&parsed_ctx).collect();
+    let gather = operations
+        .iter()
+        .find_map(|&ptr| Operation::get_op::<GatherOp>(ptr, &parsed_ctx))
+        .unwrap();
+    assert_eq!(gather.dimensions(&parsed_ctx), Some(dimensions));
+    assert_eq!(gather.slice_sizes(&parsed_ctx), Some(vec![1]));
+    let broadcast = operations
+        .iter()
+        .find_map(|&ptr| Operation::get_op::<BroadcastInDimOp>(ptr, &parsed_ctx))
+        .unwrap();
+    assert_eq!(broadcast.dimensions(&parsed_ctx), Some(vec![1]));
+}
+
+#[test]
 fn async_start_and_done_preserve_future_signature() {
     let mut ctx = Context::new();
     let ty = tensor(&ctx, &[2], ElementType::F32);
@@ -357,6 +714,23 @@ fn all_to_all_and_reduce_scatter_match_replica_geometry() {
         .get_operation()
         .insert_at_back(block, &ctx);
     assert!(scatter.verify(&ctx).is_ok());
+}
+
+#[test]
+fn cross_replica_sum_uses_upstream_operation_name() {
+    let mut ctx = Context::new();
+    let ty = tensor(&ctx, &[2], ElementType::F32);
+    let input = ConstantOp::new(&mut ctx, ty, vec![0], true)
+        .get_operation()
+        .deref(&ctx)
+        .get_result(0);
+    let groups = replica_groups(&ctx, &[&[0]]);
+    let op = CrossReplicaSumOp::new(&mut ctx, input, ty, groups);
+
+    assert_eq!(
+        Operation::get_opid(op.get_operation(), &ctx).to_string(),
+        "stablehlo.cross-replica-sum"
+    );
 }
 
 #[test]

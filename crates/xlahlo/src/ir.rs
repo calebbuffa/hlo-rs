@@ -1,23 +1,44 @@
 //! Module-owned HLO configuration on native pliron operations.
 use crate::{
     Diagnostic,
-    attributes::{Axes, Bytes},
+    attributes::{Axes, Bytes, StringPair},
     verification::require,
 };
 use pliron::{
     attribute::Attribute,
     builtin::{attributes::IdentifierAttr, ops::ModuleOp},
+    combine::Parser,
     common_traits::Verify,
     context::{Context, Ptr},
     derive::pliron_attr,
     identifier::Identifier,
+    irfmt::parsers::delimited_list_parser,
+    location::Located,
     operation::Operation,
+    parsable::{IntoParseResult, Parsable, ParseResult, StateStream},
+    printable::{self, ListSeparator, Printable},
     result::Result,
+    r#type::TypeHandle,
 };
+use std::collections::BTreeMap;
+
+#[cfg(test)]
+mod clone_with_replacements;
+mod control;
+mod fusion_parameter;
+pub mod instruction_order;
+#[cfg(test)]
+mod instruction_replacement;
+mod metadata;
+#[cfg(test)]
+mod schedule_update;
+pub use control::*;
+pub use fusion_parameter::*;
+pub use metadata::*;
 
 #[pliron_attr(
-    name = "hlo.module_config",
-    format = "`<` $replica_count `,` $num_partitions `,` $use_spmd_partitioning `,` $alias_passthrough_params `,` `[` vec($allow_spmd_sharding_propagation_to_parameters, CharSpace(`,`)) `]` `,` `[` vec($allow_spmd_sharding_propagation_to_output, CharSpace(`,`)) `]` `>`",
+    name = "xlahlo.module_config",
+    format = "`<` $replica_count `,` $num_partitions `,` $use_spmd_partitioning `,` $alias_passthrough_params `,` `[` vec($allow_spmd_sharding_propagation_to_parameters, CharSpace(`,`)) `]` `,` `[` vec($allow_spmd_sharding_propagation_to_output, CharSpace(`,`)) `]` `,` $debug_options `,` opt($entry_computation_layout) `>`",
     verifier = "succ"
 )]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -35,6 +56,10 @@ pub struct ModuleConfig {
     pub allow_spmd_sharding_propagation_to_parameters: Vec<bool>,
     /// Per-output permission to propagate SPMD sharding.
     pub allow_spmd_sharding_propagation_to_output: Vec<bool>,
+    /// Backend-specific string options read by XLA passes.
+    pub debug_options: DebugOptions,
+    /// Explicit entry parameter and result shapes, including physical layouts.
+    pub entry_computation_layout: Option<EntryComputationLayout>,
 }
 
 impl Default for ModuleConfig {
@@ -46,11 +71,109 @@ impl Default for ModuleConfig {
             alias_passthrough_params: false,
             allow_spmd_sharding_propagation_to_parameters: vec![false],
             allow_spmd_sharding_propagation_to_output: vec![false],
+            debug_options: DebugOptions::default(),
+            entry_computation_layout: None,
         }
     }
 }
 
-#[pliron_attr(name = "hlo.alias_kind", format, verifier = "succ")]
+impl ModuleConfig {
+    /// Whether channel IDs carry semantic information in this module.
+    ///
+    /// This mirrors `HloModuleConfig::ChannelIdSensitive()` in pinned OpenXLA.
+    pub fn channel_id_sensitive(&self) -> bool {
+        !self.use_spmd_partitioning
+    }
+}
+
+#[pliron_attr(name = "xlahlo.debug_options", verifier = "succ")]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+/// Debug options supported by xlahlo's native module configuration.
+pub struct DebugOptions {
+    /// Backend extra options, keyed and ordered lexicographically.
+    pub xla_backend_extra_options: BTreeMap<String, String>,
+}
+
+impl Printable for DebugOptions {
+    fn fmt(
+        &self,
+        ctx: &Context,
+        state: &printable::State,
+        f: &mut core::fmt::Formatter<'_>,
+    ) -> core::fmt::Result {
+        let pairs: Vec<_> = self
+            .xla_backend_extra_options
+            .iter()
+            .map(|(key, value)| StringPair {
+                key: key.clone(),
+                value: value.clone(),
+            })
+            .collect();
+        pliron::irfmt::printers::enclosed(
+            "[",
+            "]",
+            pliron::irfmt::printers::list_with_sep(&pairs, ListSeparator::CharSpace(',')),
+        )
+        .fmt(ctx, state, f)
+    }
+}
+
+impl Parsable for DebugOptions {
+    type Arg = ();
+    type Parsed = Self;
+
+    fn parse<'a>(
+        state_stream: &mut StateStream<'a>,
+        _arg: Self::Arg,
+    ) -> ParseResult<'a, Self::Parsed> {
+        let (pairs, _) = delimited_list_parser('[', ']', ',', StringPair::parser(()))
+            .parse_stream(state_stream)
+            .into_result()?;
+        let mut xla_backend_extra_options = BTreeMap::new();
+        for pair in pairs {
+            if xla_backend_extra_options
+                .insert(pair.key, pair.value)
+                .is_some()
+            {
+                return pliron::input_err!(
+                    state_stream.loc(),
+                    "duplicate xla_backend_extra_options key"
+                )
+                .into_parse_result();
+            }
+        }
+        Ok(Self {
+            xla_backend_extra_options,
+        })
+        .into_parse_result()
+    }
+}
+
+#[pliron_attr(
+    name = "xlahlo.entry_computation_layout",
+    format = "`<` `[` vec($parameter_shapes, CharSpace(`,`)) `]` `,` $result_shape `>`",
+    verifier = "succ"
+)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Explicit entry computation parameter/result shapes with their native layouts.
+pub struct EntryComputationLayout {
+    /// Parameter shapes in entry parameter-number order.
+    pub parameter_shapes: Vec<TypeHandle>,
+    /// Entry result shape.
+    pub result_shape: TypeHandle,
+}
+
+impl EntryComputationLayout {
+    /// Construct an entry layout from its parameter and result shapes.
+    pub fn new(parameter_shapes: Vec<TypeHandle>, result_shape: TypeHandle) -> Self {
+        Self {
+            parameter_shapes,
+            result_shape,
+        }
+    }
+}
+
+#[pliron_attr(name = "xlahlo.alias_kind", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Strength of an entry parameter/output buffer alias.
 pub enum AliasKind {
@@ -61,7 +184,7 @@ pub enum AliasKind {
 }
 
 #[pliron_attr(
-    name = "hlo.input_output_alias",
+    name = "xlahlo.input_output_alias",
     format = "`<` $output_shape_index `,` $parameter_number `,` $parameter_shape_index `,` $kind `>`",
     verifier = "succ"
 )]
@@ -79,7 +202,7 @@ pub struct AliasEntry {
 }
 
 #[pliron_attr(
-    name = "hlo.input_output_aliases",
+    name = "xlahlo.input_output_aliases",
     format = "`[` vec($0, CharSpace(`,`)) `]`",
     verifier = "succ"
 )]
@@ -88,7 +211,7 @@ pub struct AliasEntry {
 pub struct InputOutputAliases(pub Vec<AliasEntry>);
 
 #[pliron_attr(
-    name = "hlo.buffer_donor",
+    name = "xlahlo.buffer_donor",
     format = "`<` $parameter_number `,` $parameter_shape_index `>`",
     verifier = "succ"
 )]
@@ -102,7 +225,7 @@ pub struct BufferDonorEntry {
 }
 
 #[pliron_attr(
-    name = "hlo.buffer_donors",
+    name = "xlahlo.buffer_donors",
     format = "`[` vec($0, CharSpace(`,`)) `]`",
     verifier = "succ"
 )]
@@ -111,7 +234,7 @@ pub struct BufferDonorEntry {
 pub struct BufferDonors(pub Vec<BufferDonorEntry>);
 
 #[pliron_attr(
-    name = "hlo.schedule_sequence",
+    name = "xlahlo.schedule_sequence",
     format = "`<` $computation `,` `[` vec($instructions, CharSpace(`,`)) `]` `>`",
     verifier = "succ"
 )]
@@ -125,7 +248,7 @@ pub struct InstructionSequence {
 }
 
 #[pliron_attr(
-    name = "hlo.schedule",
+    name = "xlahlo.schedule",
     format = "`[` vec($0, CharSpace(`,`)) `]`",
     verifier = "succ"
 )]
@@ -133,13 +256,13 @@ pub struct InstructionSequence {
 /// Module execution schedule, attached under `hlo_schedule`.
 pub struct Schedule(pub Vec<InstructionSequence>);
 
-#[pliron_attr(name = "hlo.instruction_name", format = "$0", verifier = "succ")]
+#[pliron_attr(name = "xlahlo.instruction_name", format = "$0", verifier = "succ")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 /// Globally unique instruction name, attached under `hlo_name`.
 pub struct InstructionName(pub String);
 
 #[pliron_attr(
-    name = "hlo.control_predecessors",
+    name = "xlahlo.control_predecessors",
     format = "`[` vec($0, CharSpace(`,`)) `]`",
     verifier = "succ"
 )]
@@ -147,18 +270,18 @@ pub struct InstructionName(pub String);
 /// Named control dependencies, attached under `hlo_control_predecessors`.
 pub struct ControlPredecessors(pub Vec<String>);
 
-#[pliron_attr(name = "hlo.execution_thread", format = "$0", verifier = "succ")]
+#[pliron_attr(name = "xlahlo.execution_thread", format = "$0", verifier = "succ")]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 /// Computation execution thread; an empty string denotes `main`.
 pub struct ExecutionThread(pub String);
 
 #[pliron_attr(
-    name = "hlo.metadata_payloads",
+    name = "xlahlo.metadata_payloads",
     format = "`[` vec($0, CharSpace(`,`)) `]`",
     verifier = "succ"
 )]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-/// Module-owned payload bytes referenced by instruction metadata IDs.
+/// Module-owned payload bytes referenced by metadata and backend-config IDs.
 pub struct MetadataPayloads(pub Vec<Bytes>);
 
 /// Attach typed configuration to a builtin module.
@@ -234,9 +357,14 @@ pub fn entry(ctx: &Context, module: Ptr<Operation>) -> Result<Identifier> {
 }
 
 pub(crate) fn register(ctx: &mut Context) {
+    metadata::register(ctx);
+    fusion_parameter::register(ctx);
+    instruction_order::register(ctx);
     macro_rules! attrs {($($ty:ty),+)=>{$(<$ty>::register::<$ty>(ctx);)+};}
     attrs!(
         ModuleConfig,
+        DebugOptions,
+        EntryComputationLayout,
         AliasKind,
         AliasEntry,
         InputOutputAliases,

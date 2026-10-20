@@ -8,7 +8,7 @@ use crate::{
 use pliron::{common_traits::Verify, context::Context, derive::pliron_attr, result::Result};
 
 #[pliron_attr(
-    name = "hlo.iota_replica_group_list",
+    name = "xlahlo.iota_replica_group_list",
     format = "`<` $num_replica_groups `,` $num_devices_per_group `,` `[` vec($iota_reshape_dims, CharSpace(`,`)) `]` `,` `[` vec($iota_transpose_perm, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -49,7 +49,7 @@ impl IotaReplicaGroupList {
 }
 
 #[pliron_attr(
-    name = "hlo.mesh_axes_replica_group_list",
+    name = "xlahlo.mesh_axes_replica_group_list",
     format = "`<` $mesh `,` `[` vec($axes, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -168,24 +168,35 @@ impl MeshAxesReplicaGroupList {
         })
     }
     /// Materialize groups only when total entries do not exceed the caller's limit.
+    ///
+    /// Mesh validation and group geometry are computed once, not per device.
     pub fn replica_groups(&self, max_entries: usize) -> Result<ReplicaGroups> {
-        self.geometry()?;
-        if usize::try_from(self.mesh.device_count()?).map_or(true, |count| count > max_entries) {
+        let (size, reshape, permutation) = self.geometry()?;
+        let count = self.mesh.device_count()?;
+        if usize::try_from(count).map_or(true, |count| count > max_entries) {
             return Err(pliron::verify_error_noloc!(Diagnostic::InvalidAttribute {
                 attribute: "replica_groups",
                 message: "mesh groups exceed materialization limit".into(),
             }));
         }
         Ok(ReplicaGroups(
-            (0..self.num_replica_groups()?)
+            (0..count / size)
                 .map(|group| {
-                    Ok(ReplicaGroup(
-                        (0..self.num_devices_per_group()?)
-                            .map(|member| self.device_at(group, member))
-                            .collect::<Result<_>>()?,
-                    ))
+                    ReplicaGroup(
+                        (0..size)
+                            .map(|member| {
+                                let linear = group * size + member;
+                                let index = if reshape.is_empty() {
+                                    linear
+                                } else {
+                                    iota_value(&reshape, &permutation, linear)
+                                };
+                                self.mesh.device_at_validated(index)
+                            })
+                            .collect(),
+                    )
                 })
-                .collect::<Result<_>>()?,
+                .collect(),
         ))
     }
 }

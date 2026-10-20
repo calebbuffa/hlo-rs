@@ -12,7 +12,7 @@ use pliron::{
 };
 use std::{cell::Ref, cmp::Ordering};
 
-#[pliron_attr(name = "hlo.element", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.element", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Numeric formats accepted as tensor elements; structural kinds use separate types.
 pub enum ElementType {
@@ -226,7 +226,7 @@ impl ElementType {
 }
 
 #[pliron_type(
-    name = "hlo.tensor",
+    name = "xlahlo.tensor",
     format = "`<` $element `,` `[` vec($dimensions, CharSpace(`,`)) `]` `,` `[` vec($layout, CharSpace(`,`)) `]` `,` `[` vec($dynamic_dimensions, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -355,7 +355,10 @@ impl TensorType {
     }
 }
 
-#[pliron_type(name = "hlo.tuple", format = "`<` vec($elements, CharSpace(`,`)) `>`")]
+#[pliron_type(
+    name = "xlahlo.tuple",
+    format = "`<` vec($elements, CharSpace(`,`)) `>`"
+)]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 /// Ordered native HLO element types, including nested tuples.
 pub struct TupleType {
@@ -415,7 +418,7 @@ pub fn is_hlo_type(ctx: &Context, ty: TypeHandle) -> bool {
         || ty.is::<BufferType>()
 }
 
-#[pliron_type(name = "hlo.token", format = "`<` `>`", verifier = "succ")]
+#[pliron_type(name = "xlahlo.token", format = "`<` `>`", verifier = "succ")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 /// Sequencing dependency without an array payload.
 pub struct TokenType;
@@ -427,7 +430,7 @@ impl TokenType {
     }
 }
 
-#[pliron_type(name = "hlo.opaque", format = "`<` `>`", verifier = "succ")]
+#[pliron_type(name = "xlahlo.opaque", format = "`<` `>`", verifier = "succ")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 /// Opaque non-array value with no inspectable element structure.
 pub struct OpaqueType;
@@ -439,7 +442,7 @@ impl OpaqueType {
     }
 }
 
-#[pliron_type(name = "hlo.buffer", format = "`<` $array `>`")]
+#[pliron_type(name = "xlahlo.buffer", format = "`<` $array `>`")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 /// Mutable storage whose underlying shape must be a native array.
 pub struct BufferType {

@@ -34,8 +34,18 @@ pub(super) fn verify_instruction(
     op: Ptr<Operation>,
     options: VerifyOptions,
     payload_count: usize,
+    stack_frame_count: usize,
 ) -> Result<()> {
     let data = op.deref(ctx);
+    if let Some(payload) =
+        optional_attr::<ir::BackendConfigPayload>(ctx, op, "hlo_backend_config_payload")?
+        && let Payload::Id(id) = payload.0
+    {
+        require(
+            usize::try_from(id).is_ok_and(|id| id < payload_count),
+            "backend config payload ID is out of range",
+        )?;
+    }
     if data.get_num_results() != 1 {
         return Ok(());
     }
@@ -70,6 +80,10 @@ pub(super) fn verify_instruction(
         }
     }
     if let Some(metadata) = optional_attr::<OpMetadata>(ctx, op, "hlo_metadata")? {
+        require(
+            usize::try_from(metadata.stack_frame_id).is_ok_and(|id| id <= stack_frame_count),
+            "instruction stack frame ID is out of range",
+        )?;
         if let Payload::Id(id) = metadata.metadata_payload {
             require(
                 usize::try_from(id).is_ok_and(|id| id < payload_count),
@@ -276,6 +290,7 @@ pub(super) fn verify_aliases_and_donors(
 ) -> Result<()> {
     let entry = ir::entry(ctx, module)?;
     let actual = &signatures[&computations[&entry]];
+    verify_module_metadata(ctx, module, actual, options)?;
     let mut declared = None;
     if let Some(program) = optional_attr::<TypeAttr>(ctx, module, "hlo_host_program_shape")? {
         let ty = program.get_type(ctx);
@@ -361,6 +376,46 @@ pub(super) fn verify_aliases_and_donors(
                 )),
                 "an aliased parameter cannot also be a buffer donor",
             )?;
+        }
+    }
+    Ok(())
+}
+
+fn verify_module_metadata(
+    ctx: &Context,
+    module: Ptr<Operation>,
+    entry: &Signature,
+    options: VerifyOptions,
+) -> Result<()> {
+    let Some(metadata) = optional_attr::<ir::ModuleMetadata>(ctx, module, "hlo_module_metadata")?
+    else {
+        return Ok(());
+    };
+    for prefetch in &metadata.cross_program_prefetches {
+        let parameter = usize::try_from(prefetch.parameter)
+            .ok()
+            .and_then(|i| entry.0.get(i))
+            .ok_or_else(|| error("cross-program prefetch parameter out of range"))?;
+        let shape = Shape::subshape(ctx, *parameter, &index(&prefetch.index)?)?;
+        require(
+            Shape::is_array_or_buffer(ctx, shape),
+            "cross-program prefetch must reference an array",
+        )?;
+    }
+    let devices = (options.sharding_context.use_spmd_partitioning
+        && options.sharding_context.verify_device_numbers
+        && options.collective_context.partition_count > 1)
+        .then_some(options.collective_context.partition_count);
+    if let Some(sharding) = &metadata.spmd_output_sharding {
+        sharding.validate(ctx, entry.1, devices)?;
+    }
+    if !metadata.spmd_parameters_shardings.is_empty() {
+        require(
+            metadata.spmd_parameters_shardings.len() == entry.0.len(),
+            "SPMD parameter sharding count differs from entry parameters",
+        )?;
+        for (sharding, &shape) in metadata.spmd_parameters_shardings.iter().zip(&entry.0) {
+            sharding.validate(ctx, shape, devices)?;
         }
     }
     Ok(())

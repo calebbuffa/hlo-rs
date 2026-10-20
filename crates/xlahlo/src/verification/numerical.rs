@@ -17,6 +17,7 @@ use crate::{
 };
 use pliron::{
     attribute::Attribute,
+    builtin::attributes::BoolAttr,
     context::{Context, Ptr},
     operation::Operation,
     result::Result,
@@ -38,6 +39,15 @@ fn required<'a, T: Attribute>(
 }
 fn integer(ctx: &Context, op: Ptr<Operation>, name: &'static str) -> Result<i64> {
     Ok(required::<NumericalInteger>(ctx, op, name)?.0)
+}
+pub(crate) fn sort_stability(ctx: &Context, op: Ptr<Operation>) -> Result<bool> {
+    boolean(ctx, op, "hlo_is_stable")
+}
+pub(crate) fn scan_direction(ctx: &Context, op: Ptr<Operation>) -> Result<bool> {
+    boolean(ctx, op, "hlo_is_reverse")
+}
+fn boolean(ctx: &Context, op: Ptr<Operation>, name: &'static str) -> Result<bool> {
+    Ok(optional_attr::<BoolAttr>(ctx, op, name)?.is_some_and(|value| bool::from((*value).clone())))
 }
 fn dimension(ctx: &Context, op: Ptr<Operation>) -> Result<i64> {
     let dims = required::<Axes>(ctx, op, "hlo_dimensions")?;
@@ -254,8 +264,8 @@ pub(crate) fn instruction(
                 ctx,
                 operands[0],
                 operands[1],
-                integer(ctx, op, "hlo_feature_groups")?.max(1),
-                integer(ctx, op, "hlo_batch_groups")?.max(1),
+                integer(ctx, op, "hlo_feature_groups")?,
+                integer(ctx, op, "hlo_batch_groups")?,
                 &*required::<Window>(ctx, op, "hlo_window")?,
                 &*required::<ConvolutionDimensionNumbers>(ctx, op, "hlo_dimensions")?,
                 Some(Shape::element_type(ctx, result)?),
@@ -273,6 +283,7 @@ pub(crate) fn instruction(
             &*required::<TriangularSolveOptions>(ctx, op, "hlo_options")?,
         )?,
         TopK => {
+            sort_stability(ctx, op)?;
             required::<SortOptions>(ctx, op, "hlo_options")?;
             infer::infer_top_k(ctx, operands[0], integer(ctx, op, "hlo_k")?)?
         }
@@ -287,6 +298,7 @@ pub(crate) fn instruction(
             infer::infer_batch_norm(ctx, opcode, &operands, config.feature_index)?
         }
         Sort => {
+            sort_stability(ctx, op)?;
             let output = infer::infer_sort_result(ctx, &operands)?;
             require(
                 dimension(ctx, op)?
@@ -352,6 +364,7 @@ pub(crate) fn instruction(
             )?
         }
         Scan => {
+            scan_direction(ctx, op)?;
             let axis = dimension(ctx, op)?;
             let carries = integer(ctx, op, "hlo_num_carries")?;
             let carries = usize::try_from(carries).map_err(|_| {
@@ -476,7 +489,7 @@ pub(crate) fn verify_callees(
                 signatures[0],
                 integer(ctx, op, "hlo_num_carries")?,
                 dimension(ctx, op)?,
-                options.layout_sensitive,
+                true,
                 options.allow_mixed_precision,
             )?;
             result

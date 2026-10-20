@@ -16,7 +16,7 @@ use pliron::{
     value::Value,
 };
 
-#[pliron_op(name="stablehlo.gather",format="$0 `,` $1 attr($stablehlo_gather_dimension_numbers, $GatherDimensionNumbersAttr) attr($stablehlo_gather_slice_sizes, $VecAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_gather_dimension_numbers:GatherDimensionNumbersAttr,stablehlo_gather_slice_sizes:VecAttr))]
+#[pliron_op(name="stablehlo.gather",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_gather_dimension_numbers:GatherDimensionNumbersAttr,stablehlo_gather_slice_sizes:VecAttr))]
 pub struct GatherOp;
 impl GatherOp {
     pub fn new(
@@ -117,7 +117,7 @@ impl Verify for GatherOp {
     }
 }
 
-#[pliron_op(name="stablehlo.dynamic_gather",format="$0 `,` $1 `,` $2 attr($stablehlo_dynamic_gather_dimension_numbers, $GatherDimensionNumbersAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dynamic_gather_dimension_numbers:GatherDimensionNumbersAttr))]
+#[pliron_op(name="stablehlo.dynamic_gather",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dynamic_gather_dimension_numbers:GatherDimensionNumbersAttr))]
 pub struct DynamicGatherOp;
 impl DynamicGatherOp {
     pub fn new(
@@ -237,7 +237,7 @@ impl Verify for DynamicGatherOp {
     }
 }
 
-#[pliron_op(name="stablehlo.scatter",format="operands(CharSpace(`,`)) regions(CharSpace(`,`)) attr($stablehlo_scatter_dimension_numbers, $ScatterDimensionNumbersAttr)",attributes=(stablehlo_scatter_dimension_numbers:ScatterDimensionNumbersAttr))]
+#[pliron_op(name="stablehlo.scatter",format,attributes=(stablehlo_scatter_dimension_numbers:ScatterDimensionNumbersAttr))]
 pub struct ScatterOp;
 impl ScatterOp {
     pub fn new(
@@ -370,7 +370,7 @@ impl Verify for ScatterOp {
     }
 }
 
-#[pliron_op(name="stablehlo.torch_index_select",format="$0 `,` $1 attr($stablehlo_torch_index_select_dimension, $IntegerAttr) attr($stablehlo_torch_index_select_batch_dims, $IntegerAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_torch_index_select_dimension:IntegerAttr,stablehlo_torch_index_select_batch_dims:IntegerAttr))]
+#[pliron_op(name="stablehlo.torch_index_select",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_torch_index_select_dimension:IntegerAttr,stablehlo_torch_index_select_batch_dims:IntegerAttr))]
 pub struct TorchIndexSelectOp;
 impl TorchIndexSelectOp {
     pub fn new(

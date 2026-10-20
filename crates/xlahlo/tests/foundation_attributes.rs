@@ -466,6 +466,122 @@ fn original_values_use_last_write_wins_tree_semantics_and_verify_leaf_indices() 
 }
 
 #[test]
+fn provenance_queries_validate_before_semantic_shortcuts() {
+    let ctx = Context::new();
+    let shape = Shape::scalar(&ctx, ElementType::F32).unwrap();
+    let ordinary = OriginalValue::default();
+    let synthetic = OriginalValue {
+        call_hierarchy: vec![String::new()],
+        ..OriginalValue::default()
+    };
+    let mut malformed = vec![
+        OriginalValue {
+            call_hierarchy: vec!["caller".into(), "callee".into()],
+            ..OriginalValue::default()
+        },
+        OriginalValue {
+            call_hierarchy: vec![String::new(), "callee".into()],
+            ..OriginalValue::default()
+        },
+    ];
+    for element in [
+        OriginalValueElement {
+            shape_index: vec![-1],
+            original_array: vec![],
+        },
+        OriginalValueElement {
+            shape_index: vec![],
+            original_array: vec![OriginalArray {
+                instruction_name: "arg".into(),
+                shape_index: vec![-1],
+            }],
+        },
+        OriginalValueElement {
+            shape_index: vec![],
+            original_array: vec![
+                OriginalArray {
+                    instruction_name: "a".into(),
+                    shape_index: vec![],
+                },
+                OriginalArray {
+                    instruction_name: "b".into(),
+                    shape_index: vec![],
+                },
+            ],
+        },
+    ] {
+        malformed.push(OriginalValue {
+            elements: vec![element],
+            ..OriginalValue::default()
+        });
+    }
+    for bad in malformed {
+        let mut errors = vec![
+            bad.verify(&ctx).unwrap_err(),
+            bad.leaves().unwrap_err(),
+            bad.normalized().unwrap_err(),
+            bad.verify_shape(&ctx, shape).unwrap_err(),
+        ];
+        for good in [&ordinary, &synthetic] {
+            errors.push(bad.equal(good).unwrap_err());
+            errors.push(good.equal(&bad).unwrap_err());
+        }
+        for error in errors {
+            assert!(matches!(
+                error.err.downcast_ref::<Diagnostic>(),
+                Some(Diagnostic::InvalidAttribute {
+                    attribute: "original_value",
+                    ..
+                })
+            ));
+        }
+    }
+}
+
+#[test]
+fn provenance_normalization_is_idempotent_and_semantic_equality_is_symmetric() {
+    let mut values = vec![
+        OriginalValue::default(),
+        OriginalValue {
+            call_hierarchy: vec![String::new()],
+            ..OriginalValue::default()
+        },
+    ];
+    for indices in [
+        vec![vec![], vec![0], vec![1]],
+        vec![vec![0], vec![1], vec![]],
+        vec![vec![0], vec![0, 1], vec![0]],
+    ] {
+        values.push(OriginalValue {
+            elements: indices
+                .into_iter()
+                .enumerate()
+                .map(|(i, shape_index)| OriginalValueElement {
+                    shape_index,
+                    original_array: vec![OriginalArray {
+                        instruction_name: format!("arg{i}"),
+                        shape_index: vec![],
+                    }],
+                })
+                .collect(),
+            ..OriginalValue::default()
+        });
+    }
+    for value in &values {
+        let normalized = value.normalized().unwrap();
+        assert_eq!(normalized.normalized().unwrap(), normalized);
+        assert!(value.equal(&normalized).unwrap());
+        for other in &values {
+            assert_eq!(value.equal(other).unwrap(), other.equal(value).unwrap());
+            assert_eq!(
+                value.equal(other).unwrap(),
+                normalized.equal(&other.normalized().unwrap()).unwrap()
+            );
+        }
+    }
+}
+
+#[test]
 fn native_types_layouts_shardings_and_exact_literals_roundtrip_in_pliron() {
     let mut ctx = Context::new();
     xlahlo::register(&mut ctx);

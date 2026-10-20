@@ -1,10 +1,85 @@
 use std::ptr;
 use xlahlo::{
+    Diagnostic,
     literal::Literal,
     pliron::{common_traits::Verify, context::Context},
     shape::{Dimension, Layout, Shape},
     types::ElementType as P,
 };
+
+#[test]
+fn raw_literal_payloads_are_checked_at_verification_and_query_boundaries() {
+    let ctx = Context::new();
+    let scalar = Literal::from_bits(&ctx, Shape::scalar(&ctx, P::U8).unwrap(), &[7]).unwrap();
+    let tuple = Literal::tuple(&ctx, vec![scalar.clone()]).unwrap();
+    let token = Literal::token(&ctx);
+    let mut malformed = Vec::new();
+    for literal in [&tuple, &token] {
+        let mut bad = literal.clone();
+        bad.storage.push(1);
+        malformed.push(bad);
+        let mut bad = literal.clone();
+        bad.dynamic_sizes.push(1);
+        malformed.push(bad);
+    }
+    let mut bad = token.clone();
+    bad.tuple_literals.push(scalar.clone());
+    malformed.push(bad);
+    let mut bad = scalar.clone();
+    bad.dynamic_sizes.push(1);
+    malformed.push(bad);
+    let mut bad = scalar.clone();
+    bad.storage.clear();
+    malformed.push(bad);
+    let mut bad = scalar.clone();
+    bad.tuple_literals.push(token.clone());
+    malformed.push(bad);
+    let mut bad = scalar.clone();
+    bad.storage.push(8);
+    malformed.push(bad);
+    let mut bad = tuple.clone();
+    bad.tuple_literals.clear();
+    malformed.push(bad);
+    let mut bad = scalar.clone();
+    bad.storage[0] = 2;
+    bad.shape = Shape::with_default_layout(&ctx, Shape::scalar(&ctx, P::Pred).unwrap()).unwrap();
+    malformed.push(bad);
+
+    for bad in malformed {
+        for error in [
+            bad.verify(&ctx).unwrap_err(),
+            bad.bits(&ctx).unwrap_err(),
+            bad.equal_logical_bits(&ctx, &bad).unwrap_err(),
+            bad.sub_literal(&ctx, &[]).unwrap_err(),
+        ] {
+            assert!(matches!(
+                error.err.downcast_ref::<Diagnostic>(),
+                Some(Diagnostic::InvalidShape { .. })
+            ));
+        }
+    }
+    assert_eq!(scalar.bits(&ctx).unwrap(), [7]);
+    assert!(tuple.verify(&ctx).is_ok());
+    assert!(token.verify(&ctx).is_ok());
+    assert!(tuple.bits(&ctx).is_err());
+    assert!(token.bits(&ctx).is_err());
+}
+
+#[test]
+fn every_f16_and_bf16_encoding_roundtrips_without_numeric_conversion() {
+    let ctx = Context::new();
+    let patterns: Vec<u128> = (0..=u16::MAX).map(u128::from).collect();
+    let bytes: Vec<u8> = (0..=u16::MAX).flat_map(u16::to_le_bytes).collect();
+    for element in [P::F16, P::BF16] {
+        let shape = Shape::array(&ctx, element, vec![patterns.len() as i64]).unwrap();
+        let literal = Literal::from_bits(&ctx, shape, &patterns).unwrap();
+        assert_eq!(literal.storage, bytes);
+        assert_eq!(literal.bits(&ctx).unwrap(), patterns);
+        let restored = Literal::from_storage_bytes(&ctx, shape, bytes.as_slice()).unwrap();
+        assert_eq!(restored.bits(&ctx).unwrap(), patterns);
+        assert!(literal.equal_logical_bits(&ctx, &restored).unwrap());
+    }
+}
 
 #[test]
 fn owned_storage_moves_and_tuple_subviews_borrow_without_payload_copies() {

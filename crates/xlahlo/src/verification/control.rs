@@ -9,9 +9,10 @@ use crate::{
     ops::{
         ReturnOp,
         control::{FusionOp, ShapeList},
+        numerical::NumericalInteger,
     },
     shape::{Shape, layouts_equal},
-    types::{BufferType, ElementType, TokenType, tensor},
+    types::{BufferType, ElementType, TokenType},
 };
 use pliron::result::Result;
 use pliron::{
@@ -19,12 +20,36 @@ use pliron::{
     builtin::attributes::StringAttr,
     common_traits::Verify,
     context::{Context, Ptr},
+    identifier::Identifier,
     linked_list::ContainsLinkedList,
     op::Op,
     operation::Operation,
     r#type::{TypeHandle, Typed},
 };
-use std::{cell::Ref, collections::HashSet};
+use std::{
+    cell::Ref,
+    collections::{HashMap, HashSet},
+};
+
+/// Resolve each async instruction to its wrapped computation using verifier
+/// producer tracing over the supplied module operation index.
+pub fn async_wrapped_computations(
+    ctx: &Context,
+    operations: &[(Ptr<Operation>, Option<Ptr<Operation>>)],
+    computations: &HashMap<Identifier, Ptr<Operation>>,
+) -> Result<HashMap<Ptr<Operation>, Ptr<Operation>>> {
+    asynchronous::wrapped_computations(ctx, operations, computations)
+}
+
+/// Resolve each async instruction to its chain start using verifier producer
+/// tracing over the supplied module operation index.
+pub fn async_chain_starts(
+    ctx: &Context,
+    operations: &[(Ptr<Operation>, Option<Ptr<Operation>>)],
+    computations: &HashMap<Identifier, Ptr<Operation>>,
+) -> Result<HashMap<Ptr<Operation>, Ptr<Operation>>> {
+    asynchronous::chain_starts(ctx, operations, computations)
+}
 
 /// Async ownership, producer tracing, and channel-pair validation.
 pub(crate) mod asynchronous;
@@ -45,6 +70,35 @@ pub(super) fn required<'a, T: Attribute>(
             message: "required attribute is missing".into(),
         })
     })
+}
+
+pub(crate) fn rng_delta(ctx: &Context, op: Ptr<Operation>) -> Result<i64> {
+    Ok(optional_attr::<NumericalInteger>(ctx, op, "hlo_delta")?.map_or(0, |delta| delta.0))
+}
+
+pub(crate) fn custom_call_api_version(
+    ctx: &Context,
+    op: Ptr<Operation>,
+) -> Result<CustomCallApiVersion> {
+    Ok(
+        optional_attr::<CustomCallApiVersion>(ctx, op, "hlo_api_version")?
+            .map_or(CustomCallApiVersion::Unspecified, |version| *version),
+    )
+}
+
+pub(crate) fn custom_call_schedule(
+    ctx: &Context,
+    op: Ptr<Operation>,
+) -> Result<CustomCallSchedule> {
+    Ok(
+        optional_attr::<CustomCallSchedule>(ctx, op, "hlo_schedule")?
+            .map_or(CustomCallSchedule::None, |schedule| *schedule),
+    )
+}
+
+pub(crate) fn custom_call_padding_type(ctx: &Context, op: Ptr<Operation>) -> Result<PaddingType> {
+    Ok(optional_attr::<PaddingType>(ctx, op, "hlo_padding_type")?
+        .map_or(PaddingType::Invalid, |padding| *padding))
 }
 
 pub(crate) fn flag(ctx: &Context, op: Ptr<Operation>, name: &'static str) -> Result<bool> {
@@ -309,47 +363,23 @@ pub(crate) fn instruction(
             result
         }
         Rng => {
-            require(operands.len() == 2, "rng requires two scalar operands")?;
-            let a = tensor(ctx, Shape::array_view(ctx, operands[0])?)?;
-            let b = tensor(ctx, Shape::array_view(ctx, operands[1])?)?;
-            let out = tensor(ctx, Shape::array_view(ctx, result)?)?;
-            require(
-                a.dimensions.is_empty() && b.dimensions.is_empty(),
-                "rng requires two scalar operands",
-            )?;
-            require(
-                a.element == b.element
-                    && (a.element == out.element
-                        || options.allow_mixed_precision
-                            && a.element.same_ignoring_fp_precision(out.element)),
-                "rng operand and result element types differ",
-            )?;
             let distribution: Ref<'_, RandomDistribution> = required(ctx, op, "hlo_distribution")?;
-            require(
-                match *distribution {
-                    RandomDistribution::Uniform => {
-                        a.element.is_float()
-                            || a.element.is_integer()
-                            || a.element == ElementType::Pred
-                    }
-                    RandomDistribution::Normal => a.element.is_float(),
-                },
-                "invalid random distribution or element type",
-            )?;
-            result
+            infer::infer_rng(
+                ctx,
+                &operands,
+                result,
+                *distribution,
+                options.allow_mixed_precision,
+            )?
         }
         RngBitGenerator => {
             let _: Ref<'_, RandomAlgorithm> = required(ctx, op, "hlo_algorithm")?;
-            if Shape::is_tuple(ctx, result) {
-                let parts = Shape::children(ctx, result);
-                require(
-                    parts.len() == 2 && same(ctx, parts[0], operands[0]),
-                    "rng-bit-generator requires two tuple components and matching state shapes",
-                )?;
-            }
-            result
+            infer::infer_rng_bit_generator(ctx, operands[0], result)?
         }
-        RngGetAndUpdateState => Shape::array(ctx, ElementType::U64, vec![2])?,
+        RngGetAndUpdateState => {
+            rng_delta(ctx, op)?;
+            infer::infer_rng_get_and_update_state(ctx)?
+        }
         AllGather
         | AllGatherStart
         | AllGatherDone
@@ -514,8 +544,15 @@ fn verify_custom_call(
             "CreateBuffer requires no operands and a buffer result",
         )?;
     }
-    let _: Option<Ref<'_, CustomCallSchedule>> = optional_attr(ctx, op, "hlo_schedule")?;
-    let _: Option<Ref<'_, CustomCallApiVersion>> = optional_attr(ctx, op, "hlo_api_version")?;
+    custom_call_schedule(ctx, op)?;
+    custom_call_api_version(ctx, op)?;
+    custom_call_padding_type(ctx, op)?;
+    let _: Option<Ref<'_, Window>> = optional_attr(ctx, op, "hlo_window")?;
+    let _: Option<Ref<'_, ConvolutionDimensionNumbers>> = optional_attr(ctx, op, "hlo_dimensions")?;
+    let _: Option<Ref<'_, PrecisionConfig>> = optional_attr(ctx, op, "hlo_precision")?;
+    for key in ["hlo_feature_groups", "hlo_batch_groups"] {
+        let _: Option<Ref<'_, NumericalInteger>> = optional_attr(ctx, op, key)?;
+    }
     flag(ctx, op, "hlo_has_side_effect")?;
     Ok(())
 }
@@ -595,12 +632,37 @@ fn verify_aliases(
             call_alias_equal(ctx, operand, output)?
         } else if options.layout_sensitive {
             options.same_shapes(ctx, operand, output)
+        } else if opcode == Opcode::CustomCall {
+            custom_call_alias_equal(ctx, operand, output)?
         } else {
             same(ctx, operand, output)
         };
         require(equal, "aliased output and operand subshapes differ")?;
     }
     Ok(())
+}
+
+// Aliasing ignores dynamic flags, but unbounded extents are not wildcard bounds.
+fn custom_call_alias_equal(ctx: &Context, a: TypeHandle, b: TypeHandle) -> Result<bool> {
+    if !same(ctx, a, b) {
+        return Ok(false);
+    }
+    let mut pending = vec![(a, b)];
+    while let Some((a, b)) = pending.pop() {
+        if Shape::is_array_or_buffer(ctx, a)
+            && *Shape::dimensions(ctx, Shape::array_view(ctx, a)?)?
+                != *Shape::dimensions(ctx, Shape::array_view(ctx, b)?)?
+        {
+            return Ok(false);
+        }
+        pending.extend(
+            Shape::children(ctx, a)
+                .iter()
+                .copied()
+                .zip(Shape::children(ctx, b).iter().copied()),
+        );
+    }
+    Ok(true)
 }
 
 /// Complete fusion alias layout checks after the module caller index is built.
@@ -725,6 +787,7 @@ fn fusion_alias_equal(ctx: &Context, a: TypeHandle, b: TypeHandle) -> Result<boo
 }
 
 pub(crate) fn fusion(ctx: &Context, fusion: &FusionOp, options: VerifyOptions) -> Result<()> {
+    super::verify_result_accuracy(ctx, fusion.get_operation(), Opcode::Fusion)?;
     let data = fusion.get_operation().deref(ctx);
     require(
         data.get_num_results() == 1
@@ -774,9 +837,11 @@ pub(crate) fn fusion(ctx: &Context, fusion: &FusionOp, options: VerifyOptions) -
             message: "fusion lacks root".into()
         })
     })?;
-    for argument in block.deref(ctx).arguments() {
+    for (index, argument) in block.deref(ctx).arguments().enumerate() {
         require(
-            argument == root || used.contains(&argument),
+            argument == root
+                || used.contains(&argument)
+                || crate::ir::parameter_has_control_dependency(ctx, block, index)?,
             "unused non-root parameter in fusion",
         )?;
     }
@@ -806,16 +871,17 @@ pub(crate) fn fusion(ctx: &Context, fusion: &FusionOp, options: VerifyOptions) -
         result_type,
         &data.operand_types(ctx).collect::<Vec<_>>(),
         options,
-    )
+    )?;
+    crate::ir::verify_fusion_parameters(ctx, block)
 }
 
 /// Query direct effects with channel-sensitive semantics, without visiting callees.
-fn has_local_side_effect(ctx: &Context, op: Ptr<Operation>) -> Result<bool> {
+pub(crate) fn has_local_side_effect(ctx: &Context, op: Ptr<Operation>) -> Result<bool> {
     has_local_side_effect_with_context(ctx, op, true)
 }
 
 /// Query direct effects, optionally treating channel IDs as semantically relevant.
-fn has_local_side_effect_with_context(
+pub(crate) fn has_local_side_effect_with_context(
     ctx: &Context,
     op: Ptr<Operation>,
     channel_id_sensitive: bool,

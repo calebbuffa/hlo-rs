@@ -6,8 +6,9 @@ use xlahlo::{
         Payload,
     },
     ir::{
-        AliasKind, BufferDonorEntry, BufferDonors, ControlPredecessors, InputOutputAliases,
-        InstructionName, InstructionSequence, MetadataPayloads, Schedule,
+        AliasKind, BufferDonorEntry, BufferDonors, ControlPredecessors, DebugOptions,
+        EntryComputationLayout, InputOutputAliases, InstructionName, InstructionSequence,
+        MetadataPayloads, ModuleConfig, Schedule,
     },
     ops::{
         control::{
@@ -24,7 +25,11 @@ use xlahlo::{
         common_traits::Verify,
         context::Context,
         identifier::Identifier,
+        irfmt::parsers::spaced,
         op::Op,
+        operation::Operation,
+        parsable::parse_from_str,
+        printable::Printable,
         r#type::{Type, TypeHandle},
     },
     types::{ElementType, TensorType, TupleType},
@@ -506,4 +511,176 @@ fn module_configuration_overrides_context_unless_explicitly_ignored() {
         },
     )
     .unwrap();
+}
+
+#[test]
+fn module_configuration_defaults_and_channel_id_sensitivity_match_xla() {
+    let default = ModuleConfig::default();
+    assert!(default.debug_options.xla_backend_extra_options.is_empty());
+    assert!(default.entry_computation_layout.is_none());
+    assert!(default.channel_id_sensitive());
+
+    let mut ctx = context();
+    let ty = TensorType::get(&ctx, ElementType::S32, vec![]).unwrap();
+    let module = alias_fixture(&mut ctx, ty, ty);
+    xlahlo::ir::set_config(&ctx, module.get_operation(), default).unwrap();
+    let assembly = module.get_operation().disp(&ctx).to_string();
+    let mut parsed = context();
+    let root = parse_from_str(
+        spaced(Operation::top_level_parser()),
+        &mut parsed,
+        &assembly,
+    )
+    .unwrap();
+    let recovered = xlahlo::ir::config(&parsed, root).unwrap();
+    assert!(recovered.debug_options.xla_backend_extra_options.is_empty());
+    assert!(recovered.entry_computation_layout.is_none());
+
+    for (replica_count, num_partitions) in [(1, 1), (4, 8)] {
+        assert!(
+            ModuleConfig {
+                replica_count,
+                num_partitions,
+                use_spmd_partitioning: false,
+                ..Default::default()
+            }
+            .channel_id_sensitive()
+        );
+        assert!(
+            !ModuleConfig {
+                replica_count,
+                num_partitions,
+                use_spmd_partitioning: true,
+                ..Default::default()
+            }
+            .channel_id_sensitive()
+        );
+    }
+}
+
+#[test]
+fn backend_extra_option_aliases_and_entry_layout_round_trip_through_module_ir() {
+    let mut ctx = context();
+    let parameter =
+        TensorType::with_layout(&ctx, ElementType::F32, vec![2, 3], vec![0, 1]).unwrap();
+    let result = TensorType::with_layout(&ctx, ElementType::F32, vec![2, 3], vec![1, 0]).unwrap();
+    let module = alias_fixture(&mut ctx, parameter, result);
+    let options = [
+        "xla_disable_while_loop_dce",
+        "xla.disable_while_loop_dce",
+        "xla_preserve_tuple_indices",
+        "xla.preserve_tuple_indices",
+    ];
+    let backend_options = options
+        .into_iter()
+        .map(|key| (key.to_owned(), "true".to_owned()))
+        .collect();
+    let configuration = ModuleConfig {
+        debug_options: DebugOptions {
+            xla_backend_extra_options: backend_options,
+        },
+        entry_computation_layout: Some(EntryComputationLayout::new(
+            vec![parameter, result],
+            result,
+        )),
+        ..Default::default()
+    };
+    xlahlo::ir::set_config(&ctx, module.get_operation(), configuration.clone()).unwrap();
+    assert_eq!(
+        xlahlo::ir::config(&ctx, module.get_operation()).unwrap(),
+        configuration.clone()
+    );
+    xlahlo::verification::verify(&ctx, module.get_operation()).unwrap();
+    for alias in options {
+        assert_eq!(
+            configuration
+                .debug_options
+                .xla_backend_extra_options
+                .get(alias)
+                .map(String::as_str),
+            Some("true")
+        );
+    }
+
+    let assembly = module.get_operation().disp(&ctx).to_string();
+    let mut parsed = context();
+    let root = parse_from_str(
+        spaced(Operation::top_level_parser()),
+        &mut parsed,
+        &assembly,
+    )
+    .unwrap();
+    let recovered = xlahlo::ir::config(&parsed, root).unwrap();
+    assert_eq!(
+        recovered.debug_options.xla_backend_extra_options,
+        configuration.debug_options.xla_backend_extra_options
+    );
+    let recovered_layout = recovered.entry_computation_layout.unwrap();
+    assert_eq!(recovered_layout.parameter_shapes.len(), 2);
+    let source_layout = configuration.entry_computation_layout.unwrap();
+    for (source, recovered) in source_layout
+        .parameter_shapes
+        .iter()
+        .chain(std::iter::once(&source_layout.result_shape))
+        .zip(
+            recovered_layout
+                .parameter_shapes
+                .iter()
+                .chain(std::iter::once(&recovered_layout.result_shape)),
+        )
+    {
+        let source_layout = xlahlo::shape::Shape::layout(&ctx, *source)
+            .unwrap()
+            .map(|layout| (*layout).clone());
+        let recovered_layout = xlahlo::shape::Shape::layout(&parsed, *recovered)
+            .unwrap()
+            .map(|layout| (*layout).clone());
+        assert_eq!(source_layout, recovered_layout);
+    }
+    xlahlo::verification::verify(&parsed, root).unwrap();
+}
+
+#[test]
+fn entry_computation_layout_verification_rejects_mismatches_and_recovers() {
+    let mut ctx = context();
+    let ty = TensorType::get(&ctx, ElementType::S32, vec![2]).unwrap();
+    let module = alias_fixture(&mut ctx, ty, ty);
+    let config = |parameters, result| ModuleConfig {
+        entry_computation_layout: Some(EntryComputationLayout::new(parameters, result)),
+        ..Default::default()
+    };
+
+    xlahlo::ir::set_config(&ctx, module.get_operation(), config(vec![ty], ty)).unwrap();
+    assert!(xlahlo::verification::verify(&ctx, module.get_operation()).is_err());
+
+    let wrong = TensorType::get(&ctx, ElementType::S32, vec![3]).unwrap();
+    xlahlo::ir::set_config(&ctx, module.get_operation(), config(vec![wrong, ty], ty)).unwrap();
+    assert!(xlahlo::verification::verify(&ctx, module.get_operation()).is_err());
+
+    xlahlo::ir::set_config(&ctx, module.get_operation(), config(vec![ty, ty], wrong)).unwrap();
+    assert!(xlahlo::verification::verify(&ctx, module.get_operation()).is_err());
+
+    xlahlo::ir::set_config(&ctx, module.get_operation(), config(vec![ty, ty], ty)).unwrap();
+    xlahlo::verification::verify(&ctx, module.get_operation()).unwrap();
+
+    let parameter =
+        TensorType::with_layout(&ctx, ElementType::F32, vec![2, 3], vec![0, 1]).unwrap();
+    let result = TensorType::with_layout(&ctx, ElementType::F32, vec![2, 3], vec![1, 0]).unwrap();
+    let alternate =
+        TensorType::with_layout(&ctx, ElementType::F32, vec![2, 3], vec![1, 0]).unwrap();
+    let layout_module = alias_fixture(&mut ctx, parameter, result);
+    xlahlo::ir::set_config(
+        &ctx,
+        layout_module.get_operation(),
+        config(vec![alternate, result], result),
+    )
+    .unwrap();
+    assert!(xlahlo::verification::verify(&ctx, layout_module.get_operation()).is_err());
+    xlahlo::ir::set_config(
+        &ctx,
+        layout_module.get_operation(),
+        config(vec![parameter, result], result),
+    )
+    .unwrap();
+    xlahlo::verification::verify(&ctx, layout_module.get_operation()).unwrap();
 }

@@ -108,6 +108,71 @@ fn mesh(sizes: &[i64]) -> Mesh {
     )
     .unwrap()
 }
+
+#[test]
+fn mesh_group_materialization_preserves_compact_and_explicit_device_partitions() {
+    let compact = Mesh::new(
+        mesh(&[2, 3]).axes,
+        vec![],
+        vec![IotaTransform {
+            reshape_dims: vec![3, 2],
+            transpose_perm: vec![1, 0],
+        }],
+    )
+    .unwrap();
+    let explicit = Mesh::new(
+        compact.axes.clone(),
+        (0..6)
+            .map(|index| compact.device_at(index).unwrap())
+            .collect(),
+        vec![],
+    )
+    .unwrap();
+    for axes in [
+        vec![],
+        vec![axis(0, None)],
+        vec![axis(1, None)],
+        vec![axis(1, None), axis(0, None)],
+    ] {
+        let a = MeshAxesReplicaGroupList::new(compact.clone(), axes.clone()).unwrap();
+        let b = MeshAxesReplicaGroupList::new(explicit.clone(), axes).unwrap();
+        let materialized = a.replica_groups(6).unwrap();
+        assert_eq!(materialized, b.replica_groups(6).unwrap());
+        let mut devices = Vec::new();
+        for (group, members) in materialized.0.iter().enumerate() {
+            for (member, &device) in members.0.iter().enumerate() {
+                assert_eq!(a.device_at(group as i64, member as i64).unwrap(), device);
+                assert_eq!(b.device_at(group as i64, member as i64).unwrap(), device);
+                devices.push(device);
+            }
+        }
+        devices.sort_unstable();
+        assert_eq!(devices, [0, 1, 2, 3, 4, 5]);
+        assert!(a.replica_groups(5).is_err());
+    }
+}
+
+#[test]
+fn large_explicit_mesh_materializes_without_per_device_assignment_validation() {
+    let count = 32_768;
+    let assignment: Vec<_> = (0..count).rev().collect();
+    let groups = MeshAxesReplicaGroupList::new(
+        Mesh::new(mesh(&[count]).axes, assignment.clone(), vec![]).unwrap(),
+        vec![axis(0, None)],
+    )
+    .unwrap();
+    let materialized = groups.replica_groups(count as usize).unwrap();
+    assert_eq!(materialized.0.len(), 1);
+    assert_eq!(materialized.0[0].0, assignment);
+    assert!(groups.replica_groups(count as usize - 1).is_err());
+
+    let empty = MeshAxesReplicaGroupList::new(Mesh::default(), vec![]).unwrap();
+    assert!(empty.replica_groups(0).unwrap().0.is_empty());
+    let mut malformed = groups;
+    malformed.mesh.device_ids[1] = malformed.mesh.device_ids[0];
+    assert!(malformed.replica_groups(count as usize).is_err());
+}
+
 fn axis(index: i64, sub: Option<(i64, i64)>) -> AxisRef {
     AxisRef::new(
         index,

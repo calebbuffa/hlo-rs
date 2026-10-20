@@ -29,8 +29,270 @@ use xlahlo::{
     },
     shape::{Dimension, Layout, Shape},
     types::{ElementType as E, TensorType},
-    verification::{VerifyOptions, verify},
+    verification::{VerifyOptions, verify, verify_with_options},
 };
+
+#[test]
+fn dimension_size_inference_preserves_s32_boundary_for_every_primitive() {
+    let ctx = Context::new();
+    for &element in E::ALL {
+        for dimension in [
+            Dimension::Static(0),
+            Dimension::Static(i64::from(i32::MAX)),
+            Dimension::Bounded(0),
+            Dimension::Bounded(i64::from(i32::MAX)),
+            Dimension::Unbounded,
+        ] {
+            let input = Shape::dynamic_array(&ctx, element, vec![dimension]).unwrap();
+            let result = infer::infer_get_dimension_size(&ctx, input, 0).unwrap();
+            assert_eq!(Shape::element_type(&ctx, result).unwrap(), E::S32);
+            assert_eq!(Shape::rank(&ctx, result).unwrap(), 0);
+            assert!(infer::infer_get_dimension_size(&ctx, input, 1).is_err());
+        }
+        for dimension in [
+            Dimension::Static(i64::from(i32::MAX) + 1),
+            Dimension::Bounded(i64::from(i32::MAX) + 1),
+        ] {
+            let input = Shape::dynamic_array(&ctx, element, vec![dimension]).unwrap();
+            let error = infer::infer_get_dimension_size(&ctx, input, 0).unwrap_err();
+            assert!(error.to_string().contains("dimension exceeds S32 limit"));
+        }
+    }
+}
+
+#[test]
+fn layout_sensitive_copy_checks_host_offloading_direction_and_precision() {
+    let mut ctx = Context::new();
+    let device = tensor(&ctx, E::F32, &[2, 3]);
+    let mut host_layout = Layout::descending(2);
+    host_layout.memory_space = 5;
+    let host = Shape::with_layout(&ctx, device, host_layout.clone()).unwrap();
+    let mut transposed_layout = Layout::descending(2);
+    transposed_layout.minor_to_major = vec![0, 1];
+    let transposed_device = Shape::with_layout(&ctx, device, transposed_layout.clone()).unwrap();
+    transposed_layout.memory_space = 5;
+    let transposed_host = Shape::with_layout(&ctx, device, transposed_layout).unwrap();
+    let narrow_device = tensor(&ctx, E::BF16, &[2, 3]);
+    let narrow_host = Shape::with_layout(&ctx, narrow_device, host_layout).unwrap();
+    let options = VerifyOptions {
+        layout_sensitive: true,
+        allow_mixed_precision: true,
+        ..Default::default()
+    };
+    for (input, output, accepted) in [
+        (device, host, true),
+        (host, device, true),
+        (device, transposed_host, true),
+        (host, transposed_device, false),
+        (host, narrow_device, false),
+        (device, narrow_host, false),
+    ] {
+        let operand = value(&mut ctx, input, 0);
+        let copy = CopyOp::new(&mut ctx, output, vec![operand]);
+        assert_eq!(copy.verify_with_options(&ctx, options).is_ok(), accepted);
+    }
+    let operand = value(&mut ctx, device, 0);
+    CopyOp::new(&mut ctx, host, vec![operand])
+        .verify(&ctx)
+        .unwrap();
+}
+
+#[test]
+fn static_slice_propagates_only_bounded_dynamism_and_eliminates_unit_extents() {
+    let mut ctx = Context::new();
+    for input_dimension in [
+        Dimension::Static(6),
+        Dimension::Bounded(6),
+        Dimension::Unbounded,
+    ] {
+        let input_type = Shape::dynamic_array(&ctx, E::F32, vec![input_dimension]).unwrap();
+        let input = value(&mut ctx, input_type, 0);
+        for (limit, stride, extent) in [(0, 1, 0), (1, 1, 1), (5, 2, 3), (6, 1, 6)] {
+            let geometry = Slice {
+                starts: Axes(vec![0]),
+                limits: Axes(vec![limit]),
+                strides: Axes(vec![stride]),
+            };
+            let expected_dimension = if input_dimension == Dimension::Bounded(6) && extent != 1 {
+                Dimension::Bounded(extent)
+            } else {
+                Dimension::Static(extent)
+            };
+            let inferred = infer::infer_slice(&ctx, input_type, &geometry).unwrap();
+            assert_eq!(
+                Shape::dimension(&ctx, inferred, 0).unwrap(),
+                expected_dimension
+            );
+            let expected = Shape::dynamic_array(&ctx, E::F32, vec![expected_dimension]).unwrap();
+            SliceOp::new(&mut ctx, expected, vec![input], geometry)
+                .verify(&ctx)
+                .unwrap();
+        }
+    }
+}
+
+#[test]
+fn concatenate_precision_uses_each_operand_against_the_first_operand() {
+    let mut ctx = Context::new();
+    for (elements, expected_element) in [
+        (vec![E::BF16, E::F32], E::F32),
+        (vec![E::F32, E::BF16], E::F32),
+        (vec![E::F16, E::BF16], E::BF16),
+        (vec![E::BF16, E::F16], E::BF16),
+        (vec![E::BF16, E::F64, E::F32], E::F32),
+        (vec![E::BF16, E::F32, E::F64], E::F64),
+    ] {
+        let inputs = elements
+            .iter()
+            .map(|&element| tensor(&ctx, element, &[2]))
+            .collect::<Vec<_>>();
+        let inferred = infer::infer_concatenate(&ctx, &inputs, 0).unwrap();
+        assert_eq!(
+            Shape::element_type(&ctx, inferred).unwrap(),
+            expected_element
+        );
+        let expected = tensor(&ctx, expected_element, &[2 * inputs.len() as i64]);
+        let operands = inputs
+            .iter()
+            .enumerate()
+            .map(|(index, &ty)| value(&mut ctx, ty, index.try_into().unwrap()))
+            .collect();
+        let concat = ConcatenateOp::new(&mut ctx, expected, operands, Index(0));
+        assert!(concat.verify(&ctx).is_err());
+        concat
+            .verify_with_options(
+                &ctx,
+                VerifyOptions {
+                    allow_mixed_precision: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+}
+
+#[test]
+fn dynamic_slice_accepts_vector_or_homogeneous_scalar_indices_and_preserves_full_bounds() {
+    let mut ctx = Context::new();
+    let index = scalar(&ctx, E::S32);
+    let vector = tensor(&ctx, E::S32, &[1]);
+    for input_dimension in [
+        Dimension::Static(6),
+        Dimension::Bounded(6),
+        Dimension::Unbounded,
+    ] {
+        let input_type = Shape::dynamic_array(&ctx, E::F32, vec![input_dimension]).unwrap();
+        let input = value(&mut ctx, input_type, 0);
+        for size in [0, 1, 3, 6] {
+            let expected_dimension = if input_dimension == Dimension::Bounded(6) && size == 6 {
+                Dimension::Bounded(size)
+            } else {
+                Dimension::Static(size)
+            };
+            for indices in [&[index][..], &[vector][..]] {
+                let inferred =
+                    infer::infer_dynamic_slice(&ctx, input_type, indices, &Axes(vec![size]))
+                        .unwrap();
+                assert_eq!(
+                    Shape::dimension(&ctx, inferred, 0).unwrap(),
+                    expected_dimension
+                );
+                let expected =
+                    Shape::dynamic_array(&ctx, E::F32, vec![expected_dimension]).unwrap();
+                let start = value(&mut ctx, indices[0], 1);
+                DynamicSliceOp::new(&mut ctx, expected, vec![input, start], Axes(vec![size]))
+                    .verify(&ctx)
+                    .unwrap();
+            }
+        }
+    }
+    let matrix = tensor(&ctx, E::F32, &[6, 6]);
+    let s64_index = scalar(&ctx, E::S64);
+    let float_index = scalar(&ctx, E::F32);
+    let wrong_vector = tensor(&ctx, E::S32, &[1]);
+    for indices in [
+        vec![index],
+        vec![index, s64_index],
+        vec![float_index; 2],
+        vec![wrong_vector],
+    ] {
+        assert!(infer::infer_dynamic_slice(&ctx, matrix, &indices, &Axes(vec![2, 2])).is_err());
+        assert!(infer::infer_dynamic_update_slice(&ctx, matrix, matrix, &indices).is_err());
+    }
+    let scalar_input = scalar(&ctx, E::F32);
+    let sliced = infer::infer_dynamic_slice(&ctx, scalar_input, &[], &Axes(vec![])).unwrap();
+    assert!(Shape::dimensions(&ctx, sliced).unwrap().is_empty());
+    assert_eq!(Shape::element_type(&ctx, sliced).unwrap(), E::F32);
+    assert_eq!(
+        infer::infer_dynamic_update_slice(&ctx, scalar_input, scalar_input, &[]).unwrap(),
+        scalar_input
+    );
+}
+
+#[test]
+fn dynamic_update_slice_only_propagates_update_dynamism_for_full_dimensions() {
+    let mut ctx = Context::new();
+    let index_type = scalar(&ctx, E::S32);
+    for (input_dimension, update_dimension, expected_dimension) in [
+        (
+            Dimension::Static(6),
+            Dimension::Bounded(6),
+            Dimension::Bounded(6),
+        ),
+        (
+            Dimension::Static(6),
+            Dimension::Bounded(3),
+            Dimension::Static(6),
+        ),
+        (
+            Dimension::Bounded(6),
+            Dimension::Static(3),
+            Dimension::Bounded(6),
+        ),
+        (
+            Dimension::Unbounded,
+            Dimension::Bounded(3),
+            Dimension::Unbounded,
+        ),
+        (
+            Dimension::Unbounded,
+            Dimension::Unbounded,
+            Dimension::Unbounded,
+        ),
+    ] {
+        let array = Shape::dynamic_array(&ctx, E::F32, vec![input_dimension]).unwrap();
+        let mut layout = Layout::descending(1);
+        layout.memory_space = 7;
+        let array = Shape::with_layout(&ctx, array, layout).unwrap();
+        let update = Shape::dynamic_array(&ctx, E::F32, vec![update_dimension]).unwrap();
+        for input in [array, Shape::buffer(&ctx, array).unwrap()] {
+            let inferred =
+                infer::infer_dynamic_update_slice(&ctx, input, update, &[index_type]).unwrap();
+            let inferred_array = Shape::array_view(&ctx, inferred).unwrap();
+            assert_eq!(
+                Shape::dimension(&ctx, inferred_array, 0).unwrap(),
+                expected_dimension
+            );
+            assert_eq!(
+                Shape::layout(&ctx, inferred_array)
+                    .unwrap()
+                    .unwrap()
+                    .memory_space,
+                7
+            );
+            assert_eq!(
+                Shape::is_array(&ctx, inferred),
+                Shape::is_array(&ctx, input)
+            );
+            let operand = value(&mut ctx, input, 0);
+            let update_value = value(&mut ctx, update, 1);
+            let index = value(&mut ctx, index_type, 2);
+            DynamicUpdateSliceOp::new(&mut ctx, inferred, vec![operand, update_value, index])
+                .verify(&ctx)
+                .unwrap();
+        }
+    }
+}
 
 #[test]
 fn malformed_variadic_operand_lists_return_typed_errors() {
@@ -38,7 +300,7 @@ fn malformed_variadic_operand_lists_return_typed_errors() {
     let ty = tensor(&ctx, E::F32, &[2]);
     let errors = [
         ConcatenateOp::new(&mut ctx, ty, vec![], Index(0)).verify(&ctx),
-        DynamicReshapeOp::new(&mut ctx, ty, vec![], Axes(vec![2])).verify(&ctx),
+        DynamicReshapeOp::new(&mut ctx, ty, vec![]).verify(&ctx),
         DynamicSliceOp::new(&mut ctx, ty, vec![], Axes(vec![1])).verify(&ctx),
         DynamicUpdateSliceOp::new(&mut ctx, ty, vec![]).verify(&ctx),
     ];
@@ -202,8 +464,312 @@ fn malformed_tensor_metadata_is_rejected_before_movement_indexing() {
     }
 }
 
+#[test]
+fn dynamic_reshape_inference_and_instruction_size_contracts_are_distinct() {
+    let mut ctx = Context::new();
+    let input_type = tensor(&ctx, E::F32, &[6]);
+    let bounds = vec![Dimension::Static(2), Dimension::Bounded(3)];
+    let output = Shape::dynamic_array(&ctx, E::F32, bounds.clone()).unwrap();
+    let s32_type = scalar(&ctx, E::S32);
+    let f64_type = scalar(&ctx, E::F64);
+    for sizes in [vec![], vec![f64_type], vec![s32_type; 3]] {
+        assert!(Shape::compatible(
+            &ctx,
+            infer::infer_dynamic_reshape(&ctx, input_type, &sizes, bounds.clone()).unwrap(),
+            output,
+        ));
+    }
+    let input = value(&mut ctx, input_type, 0);
+    let size = value(&mut ctx, s32_type, 1);
+    let float_size = value(&mut ctx, f64_type, 2);
+    DynamicReshapeOp::new(&mut ctx, output, vec![input, size, size])
+        .verify(&ctx)
+        .unwrap();
+    assert!(
+        DynamicReshapeOp::new(&mut ctx, output, vec![input, size])
+            .verify(&ctx)
+            .is_err()
+    );
+    assert!(
+        DynamicReshapeOp::new(&mut ctx, output, vec![input, size, float_size],)
+            .verify(&ctx)
+            .is_err()
+    );
+    let vector_type = tensor(&ctx, E::S32, &[2]);
+    let vector_size = value(&mut ctx, vector_type, 3);
+    DynamicReshapeOp::new(&mut ctx, output, vec![input, vector_size, size])
+        .verify(&ctx)
+        .unwrap();
+    let wrong_element = tensor(&ctx, E::S32, &[2, 3]);
+    assert!(
+        DynamicReshapeOp::new(&mut ctx, wrong_element, vec![input, size, size],)
+            .verify(&ctx)
+            .is_err()
+    );
+}
+
+#[test]
+fn dynamic_reshape_rejects_unbounded_element_counts_without_guessing() {
+    let ctx = Context::new();
+    let unbounded = Shape::dynamic_array(&ctx, E::F32, vec![Dimension::Unbounded]).unwrap();
+    let input = tensor(&ctx, E::F32, &[6]);
+    for result in [
+        infer::infer_dynamic_reshape(&ctx, unbounded, &[], vec![Dimension::Static(6)]),
+        infer::infer_dynamic_reshape(&ctx, input, &[], vec![Dimension::Unbounded]),
+    ] {
+        let error = result.unwrap_err();
+        assert!(matches!(
+            error.err.downcast_ref::<Diagnostic>(),
+            Some(Diagnostic::Inference { message }) if message.contains("unbounded")
+        ));
+    }
+}
+
+#[test]
+fn reshape_zero_element_factor_groups_preserve_supported_dynamism() {
+    let ctx = Context::new();
+    for (input, output, expected) in [
+        (
+            vec![Dimension::Bounded(0)],
+            vec![0, 3],
+            vec![Dimension::Bounded(0), Dimension::Static(3)],
+        ),
+        (
+            vec![Dimension::Static(0), Dimension::Bounded(6)],
+            vec![0],
+            vec![Dimension::Bounded(0)],
+        ),
+        (
+            vec![Dimension::Bounded(0), Dimension::Static(6)],
+            vec![0, 6],
+            vec![Dimension::Bounded(0), Dimension::Static(6)],
+        ),
+        (
+            vec![Dimension::Bounded(1)],
+            vec![1, 1],
+            vec![Dimension::Static(1), Dimension::Bounded(1)],
+        ),
+    ] {
+        let input = Shape::dynamic_array(&ctx, E::F32, input).unwrap();
+        let result = infer::infer_reshape(&ctx, input, &output).unwrap();
+        for (axis, expected) in expected.into_iter().enumerate() {
+            assert_eq!(Shape::dimension(&ctx, result, axis).unwrap(), expected);
+        }
+    }
+    let combined_and_split = Shape::dynamic_array(
+        &ctx,
+        E::F32,
+        vec![Dimension::Static(0), Dimension::Bounded(6)],
+    )
+    .unwrap();
+    assert!(infer::infer_reshape(&ctx, combined_and_split, &[0, 3]).is_err());
+}
+
+#[test]
+fn gather_batching_preserves_unsorted_index_batch_mapping_and_dynamic_bounds() {
+    let ctx = Context::new();
+    let input = tensor(&ctx, E::F32, &[100, 64, 5, 48]);
+    let indices = Shape::dynamic_array(
+        &ctx,
+        E::S64,
+        vec![
+            Dimension::Bounded(5),
+            Dimension::Static(100),
+            Dimension::Static(32),
+        ],
+    )
+    .unwrap();
+    let dimensions = GatherDimensionNumbers {
+        offset_dims: Axes(vec![3]),
+        collapsed_slice_dims: Axes(vec![1]),
+        operand_batching_dims: Axes(vec![0, 2]),
+        start_indices_batching_dims: Axes(vec![1, 0]),
+        start_index_map: Axes(vec![1]),
+        index_vector_dim: 3,
+    };
+    let result =
+        infer::infer_gather(&ctx, input, indices, &dimensions, &Axes(vec![1, 1, 1, 8])).unwrap();
+    assert_eq!(
+        Shape::dimensions(&ctx, result).unwrap().as_ref(),
+        [5, 100, 32, 8]
+    );
+    assert_eq!(
+        Shape::dimension(&ctx, result, 0).unwrap(),
+        Dimension::Bounded(5)
+    );
+    let mut repeated = dimensions;
+    repeated.start_indices_batching_dims = Axes(vec![1, 1]);
+    assert!(
+        infer::infer_gather(&ctx, input, indices, &repeated, &Axes(vec![1, 1, 1, 8]),).is_err()
+    );
+}
+
+#[test]
+fn scatter_batching_checks_update_windows_and_index_batches() {
+    let ctx = Context::new();
+    let input = tensor(&ctx, E::F32, &[100, 64, 48]);
+    let indices = tensor(&ctx, E::S64, &[100, 32]);
+    let dimensions = ScatterDimensionNumbers {
+        update_window_dims: Axes(vec![1]),
+        inserted_window_dims: Axes(vec![2]),
+        input_batching_dims: Axes(vec![0]),
+        scatter_indices_batching_dims: Axes(vec![0]),
+        scatter_dims_to_operand_dims: Axes(vec![1]),
+        index_vector_dim: 2,
+    };
+    let updates = tensor(&ctx, E::F32, &[100, 64, 32]);
+    assert_eq!(
+        infer::infer_scatter(&ctx, input, indices, updates, &dimensions).unwrap(),
+        input
+    );
+    for shape in [vec![100, 65, 32], vec![100, 64, 31]] {
+        let updates = tensor(&ctx, E::F32, &shape);
+        assert!(infer::infer_scatter(&ctx, input, indices, updates, &dimensions).is_err());
+    }
+}
+
+#[test]
+fn batching_metadata_does_not_add_unrequested_shape_or_map_constraints() {
+    let ctx = Context::new();
+    let input = tensor(&ctx, E::F32, &[7, 64, 9, 48]);
+    let indices = tensor(&ctx, E::S64, &[5, 100, 32]);
+    let mut dimensions = GatherDimensionNumbers {
+        offset_dims: Axes(vec![3]),
+        collapsed_slice_dims: Axes(vec![1]),
+        operand_batching_dims: Axes(vec![0, 2]),
+        start_indices_batching_dims: Axes(vec![1, 0]),
+        start_index_map: Axes(vec![0]),
+        index_vector_dim: 3,
+    };
+    for index_batching in [vec![1, 0], vec![3, 0]] {
+        dimensions.start_indices_batching_dims = Axes(index_batching);
+        let result =
+            infer::infer_gather(&ctx, input, indices, &dimensions, &Axes(vec![1, 1, 1, 8]))
+                .unwrap();
+        assert_eq!(
+            Shape::dimensions(&ctx, result).unwrap().as_ref(),
+            [5, 100, 32, 8]
+        );
+    }
+    dimensions.start_indices_batching_dims = Axes(vec![0]);
+    assert!(
+        infer::infer_gather(&ctx, input, indices, &dimensions, &Axes(vec![1, 1, 1, 8]),).is_err()
+    );
+
+    let input = tensor(&ctx, E::F32, &[7, 64, 48]);
+    let indices = tensor(&ctx, E::S64, &[100, 32]);
+    let updates = tensor(&ctx, E::F32, &[100, 64, 32]);
+    let mut dimensions = ScatterDimensionNumbers {
+        update_window_dims: Axes(vec![1]),
+        inserted_window_dims: Axes(vec![2]),
+        input_batching_dims: Axes(vec![0]),
+        scatter_indices_batching_dims: Axes(vec![0]),
+        scatter_dims_to_operand_dims: Axes(vec![0]),
+        index_vector_dim: 2,
+    };
+    for index_batching in [0, 2] {
+        dimensions.scatter_indices_batching_dims = Axes(vec![index_batching]);
+        assert_eq!(
+            infer::infer_scatter(&ctx, input, indices, updates, &dimensions).unwrap(),
+            input
+        );
+    }
+    dimensions.scatter_indices_batching_dims = Axes(vec![]);
+    assert!(infer::infer_scatter(&ctx, input, indices, updates, &dimensions).is_err());
+}
+
+#[test]
+fn scatter_reducer_uses_accumulators_first_and_exact_accumulator_result_types() {
+    let mut ctx = Context::new();
+    xlahlo::register(&mut ctx);
+    let f32_input = tensor(&ctx, E::F32, &[5, 4]);
+    let s32_input = tensor(&ctx, E::S32, &[5, 4]);
+    let bf16_updates = tensor(&ctx, E::BF16, &[3, 4]);
+    let s32_updates = tensor(&ctx, E::S32, &[3, 4]);
+    let indices = tensor(&ctx, E::S32, &[3, 1]);
+    let f32_scalar = scalar(&ctx, E::F32);
+    let bf16_scalar = scalar(&ctx, E::BF16);
+    let s32_scalar = scalar(&ctx, E::S32);
+    let result = Shape::tuple(&ctx, vec![f32_input, s32_input]).unwrap();
+    let reducer_result = Shape::tuple(&ctx, vec![f32_scalar, s32_scalar]).unwrap();
+    let dimensions = ScatterDimensionNumbers {
+        update_window_dims: Axes(vec![1]),
+        inserted_window_dims: Axes(vec![0]),
+        input_batching_dims: Axes(vec![]),
+        scatter_indices_batching_dims: Axes(vec![]),
+        scatter_dims_to_operand_dims: Axes(vec![0]),
+        index_vector_dim: 1,
+    };
+    let options = VerifyOptions {
+        allow_mixed_precision: true,
+        ..Default::default()
+    };
+    let (module, _) = scatter_graph(
+        &mut ctx,
+        vec![f32_input, s32_input, indices, bf16_updates, s32_updates],
+        result,
+        dimensions.clone(),
+        &(
+            vec![f32_scalar, s32_scalar, bf16_scalar, s32_scalar],
+            reducer_result,
+        ),
+    );
+    verify_with_options(&ctx, module.get_operation(), options).unwrap();
+    let (reversed, _) = scatter_graph(
+        &mut ctx,
+        vec![f32_input, s32_input, indices, bf16_updates, s32_updates],
+        result,
+        dimensions.clone(),
+        &(
+            vec![bf16_scalar, s32_scalar, f32_scalar, s32_scalar],
+            reducer_result,
+        ),
+    );
+    assert!(verify_with_options(&ctx, reversed.get_operation(), options).is_err());
+    let tuple_scalar = Shape::tuple(&ctx, vec![f32_scalar]).unwrap();
+    let (single, _) = scatter_graph(
+        &mut ctx,
+        vec![f32_input, indices, bf16_updates],
+        f32_input,
+        dimensions,
+        &(vec![f32_scalar, bf16_scalar], tuple_scalar),
+    );
+    verify_with_options(&ctx, single.get_operation(), options).unwrap();
+}
+
 fn tensor(ctx: &Context, element: E, dims: &[i64]) -> TypeHandle {
     TensorType::get(ctx, element, dims.to_vec()).unwrap()
+}
+
+#[test]
+fn shape_preserving_movement_inference_accepts_every_primitive_element_format() {
+    let ctx = Context::new();
+    for &element in E::ALL {
+        let matrix = tensor(&ctx, element, &[2, 3]);
+        let vector = tensor(&ctx, element, &[3]);
+        let results = [
+            infer::infer_copy(&ctx, matrix),
+            infer::infer_reshape(&ctx, matrix, &[6]),
+            infer::infer_transpose(&ctx, matrix, &Axes(vec![1, 0])),
+            infer::infer_reverse(&ctx, matrix, &Axes(vec![0, 1])),
+            infer::infer_slice(
+                &ctx,
+                matrix,
+                &Slice {
+                    starts: Axes(vec![0, 0]),
+                    limits: Axes(vec![2, 3]),
+                    strides: Axes(vec![1, 1]),
+                },
+            ),
+            infer::infer_concatenate(&ctx, &[matrix, matrix], 0),
+            infer::infer_broadcast(&ctx, vector, tensor(&ctx, element, &[2, 3]), &Axes(vec![1])),
+        ];
+        for result in results {
+            let result =
+                result.unwrap_or_else(|error| panic!("movement rejected {element:?}: {error}"));
+            assert_eq!(Shape::element_type(&ctx, result).unwrap(), element);
+        }
+    }
 }
 
 fn scalar(ctx: &Context, element: E) -> TypeHandle {
@@ -354,19 +920,14 @@ fn reshape_and_dynamic_reshape_check_element_counts() {
     let dynamic_input = value(&mut ctx, unsorted_input_type, 4);
     let dynamic_size_type = scalar(&ctx, E::S32);
     let dynamic_size = value(&mut ctx, dynamic_size_type, 5);
-    let dynamic_reshape = DynamicReshapeOp::new(
-        &mut ctx,
-        dynamic_output,
-        vec![dynamic_input, dynamic_size],
-        Axes(vec![6]),
-    );
+    let dynamic_reshape =
+        DynamicReshapeOp::new(&mut ctx, dynamic_output, vec![dynamic_input, dynamic_size]);
     dynamic_reshape.verify(&ctx).unwrap();
     let wrong_dynamic_output = tensor(&ctx, E::F32, &[7]);
     let wrong_dynamic = DynamicReshapeOp::new(
         &mut ctx,
         wrong_dynamic_output,
         vec![dynamic_input, dynamic_size],
-        Axes(vec![7]),
     );
     assert!(wrong_dynamic.verify(&ctx).is_err());
 }
@@ -433,6 +994,52 @@ fn bitcast_applies_layout_and_shape_size_policies() {
                     allow_bitcast_to_have_different_size: true,
                     shape_size: Some(adjusted_size),
                     ..Default::default()
+                },
+            )
+            .is_ok()
+    );
+}
+
+#[test]
+fn bitcast_size_relaxation_accepts_equal_data_with_different_tail_padding() {
+    fn allocation_size(ctx: &xlahlo::pliron::context::Context, shape: TypeHandle) -> Result<i64> {
+        let count = Shape::element_count(ctx, shape)?;
+        let layout = Shape::layout(ctx, shape)?.unwrap();
+        let alignment = layout.tail_padding_alignment_in_elements.max(1);
+        let elements = (count / alignment + i64::from(count % alignment != 0)) * alignment;
+        let element_bits = if layout.element_size_in_bits == 0 {
+            i64::from(Shape::element_type(ctx, shape)?.bit_width())
+        } else {
+            layout.element_size_in_bits
+        };
+        let bits = elements * element_bits;
+        Ok(bits / 8 + i64::from(bits % 8 != 0))
+    }
+
+    let mut ctx = Context::new();
+    let input = Shape::array(&ctx, E::F32, vec![2]).unwrap();
+    let mut input_layout = Layout::descending(1);
+    input_layout.tail_padding_alignment_in_elements = 4;
+    let input = Shape::with_layout(&ctx, input, input_layout).unwrap();
+    let output = Shape::array(&ctx, E::U8, vec![8]).unwrap();
+    let output = Shape::with_default_layout(&ctx, output).unwrap();
+    assert_eq!(Shape::array_data_size(&ctx, input).unwrap(), 8);
+    assert_eq!(Shape::array_data_size(&ctx, output).unwrap(), 8);
+    let value = value(&mut ctx, input, 0);
+    let bitcast = BitcastOp::new(&mut ctx, output, vec![value]);
+    let options = VerifyOptions {
+        layout_sensitive: true,
+        shape_size: Some(allocation_size),
+        ..Default::default()
+    };
+    assert!(bitcast.verify_with_options(&ctx, options).is_err());
+    assert!(
+        bitcast
+            .verify_with_options(
+                &ctx,
+                VerifyOptions {
+                    allow_bitcast_to_have_different_size: true,
+                    ..options
                 },
             )
             .is_ok()
@@ -874,6 +1481,46 @@ fn broadcast_inference_checks_bounded_and_unbounded_dimensions() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn static_reshape_reports_unbounded_results_as_inference_errors_and_recovers() {
+    let ctx = Context::new();
+    let unbounded_size = xlahlo::shape::UNBOUNDED_SIZE;
+    for input in [
+        tensor(&ctx, E::F32, &[6]),
+        Shape::dynamic_array(&ctx, E::F32, vec![Dimension::Bounded(6)]).unwrap(),
+        Shape::dynamic_array(&ctx, E::F32, vec![Dimension::Unbounded]).unwrap(),
+    ] {
+        let before = Shape::dimension(&ctx, input, 0).unwrap();
+        for dimensions in [
+            vec![unbounded_size],
+            vec![2, unbounded_size],
+            vec![unbounded_size, 0],
+        ] {
+            for result in [
+                infer::infer_reshape(&ctx, input, &dimensions),
+                infer::infer_static_reshape(&ctx, input, &dimensions),
+                infer::infer_reshape_with_dimension(&ctx, input, &dimensions, Some(0)),
+            ] {
+                let error = result.unwrap_err();
+                let Some(Diagnostic::Inference { message }) =
+                    error.err.downcast_ref::<Diagnostic>()
+                else {
+                    panic!("expected a reshape inference error, got {error:?}");
+                };
+                assert_eq!(
+                    message,
+                    "reshaping with an unbounded result shape is not supported"
+                );
+                assert_eq!(Shape::dimension(&ctx, input, 0).unwrap(), before);
+            }
+        }
+        let recovered = infer::infer_reshape(&ctx, input, &[2, 3]).unwrap();
+        assert_eq!(Shape::dimensions(&ctx, recovered).unwrap().as_ref(), [2, 3]);
+        assert!(Shape::layout(&ctx, recovered).unwrap().is_some());
+        assert_eq!(Shape::dimension(&ctx, input, 0).unwrap(), before);
+    }
 }
 
 #[test]

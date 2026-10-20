@@ -196,6 +196,158 @@ fn ret(ctx: &mut Context, block: Ptr<BasicBlock>, value: Value) {
 }
 
 #[test]
+fn graph_dot_family_rejects_buffer_operands_with_typed_operation_context() {
+    for opcode in [O::Dot, O::RaggedDot, O::ScaledDot] {
+        let mut ctx = context();
+        let lhs = a(&ctx, P::F32, &[2, 4]);
+        let rhs = a(&ctx, P::F32, &[4, 3]);
+        let group_sizes = a(&ctx, P::S32, &[5]);
+        let inputs = match opcode {
+            O::Dot => vec![lhs, rhs],
+            O::ScaledDot => vec![lhs, rhs, a(&ctx, P::F16, &[1, 2]), a(&ctx, P::F16, &[2, 1])],
+            _ => vec![lhs, rhs, group_sizes],
+        };
+        let result = a(
+            &ctx,
+            P::F32,
+            if opcode == O::RaggedDot {
+                &[5, 2, 3]
+            } else {
+                &[2, 3]
+            },
+        );
+        let data_count = if opcode == O::RaggedDot { 3 } else { 2 };
+        for malformed_index in (0..data_count).chain(std::iter::once(inputs.len())) {
+            let mut parameters = inputs.clone();
+            if let Some(ty) = parameters.get_mut(malformed_index) {
+                *ty = Shape::buffer(&ctx, *ty).unwrap();
+            }
+            let (module, container) = module(&mut ctx);
+            let (main, args) = computation(&mut ctx, container, "main", parameters, result);
+            let operation = if opcode == O::Dot {
+                DotOp::new(
+                    &mut ctx,
+                    result,
+                    args,
+                    dot_dims(&[1], &[0], &[], &[]),
+                    precision(),
+                )
+                .get_operation()
+            } else if opcode == O::RaggedDot {
+                RaggedDotOp::new(
+                    &mut ctx,
+                    result,
+                    args,
+                    RaggedDotDimensionNumbers {
+                        dot_dimension_numbers: dot_dims(&[1], &[0], &[], &[]),
+                        lhs_ragged_dimensions: Axes(vec![1]),
+                        rhs_group_dimensions: Axes(vec![]),
+                    },
+                    precision(),
+                )
+                .get_operation()
+            } else {
+                ScaledDotOp::new(
+                    &mut ctx,
+                    result,
+                    args,
+                    dot_dims(&[1], &[0], &[], &[]),
+                    precision(),
+                )
+                .get_operation()
+            };
+            operation.insert_at_back(main, &ctx);
+            let value = operation.deref(&ctx).get_result(0);
+            ret(&mut ctx, main, value);
+            if malformed_index == inputs.len() {
+                verify(&ctx, module.get_operation()).unwrap();
+                roundtrip_graph(&ctx, module.get_operation());
+                continue;
+            }
+            let error = verify(&ctx, module.get_operation()).unwrap_err();
+            let Some(Diagnostic::Operation { operation, source }) =
+                error.err.downcast_ref::<Diagnostic>()
+            else {
+                panic!("expected operation context, got {error:?}");
+            };
+            assert!(
+                operation.contains(match opcode {
+                    O::Dot => "xlahlo.dot",
+                    O::RaggedDot => "xlahlo.ragged_dot",
+                    _ => "xlahlo.scaled_dot",
+                }),
+                "{operation}"
+            );
+            let Some(Diagnostic::Inference { message }) = source.downcast_ref::<Diagnostic>()
+            else {
+                panic!("expected typed array-operand error, got {source:?}");
+            };
+            let operand = ["lhs", "rhs", "group sizes"][malformed_index];
+            assert!(
+                message.contains(&format!("{operand} must be an array")),
+                "{message}"
+            );
+        }
+    }
+}
+
+#[test]
+fn graph_convolution_group_errors_recover_without_rebuilding_the_computation() {
+    let mut ctx = context();
+    let lhs = a(&ctx, P::F32, &[2, 3, 8]);
+    let rhs = a(&ctx, P::F32, &[4, 3, 3]);
+    let result = a(&ctx, P::F32, &[2, 4, 6]);
+    let (module, container) = module(&mut ctx);
+    let (main, args) = computation(&mut ctx, container, "main", vec![lhs, rhs], result);
+    let convolution = ConvolutionOp::new(
+        &mut ctx,
+        result,
+        args,
+        super::convolution::standard(),
+        super::windows::window(3, 1, 0, 0, 1, 1),
+        NumericalInteger(1),
+        NumericalInteger(1),
+        ConvolutionKind::Fprop,
+        precision(),
+    );
+    convolution.get_operation().insert_at_back(main, &ctx);
+    let value = convolution.result(&ctx);
+    ret(&mut ctx, main, value);
+    for (attribute, group) in [
+        ("hlo_feature_groups", "feature"),
+        ("hlo_batch_groups", "batch"),
+    ] {
+        for count in [0, -1, i64::MIN] {
+            convolution
+                .get_operation()
+                .deref_mut(&ctx)
+                .attributes
+                .set(Identifier::new(attribute), NumericalInteger(count));
+            let error = verify(&ctx, module.get_operation()).unwrap_err();
+            let Some(Diagnostic::Operation { operation, source }) =
+                error.err.downcast_ref::<Diagnostic>()
+            else {
+                panic!("expected operation context, got {error:?}");
+            };
+            assert!(operation.contains("xlahlo.convolution"), "{operation}");
+            let Some(Diagnostic::Inference { message }) = source.downcast_ref::<Diagnostic>()
+            else {
+                panic!("expected typed convolution inference error, got {source:?}");
+            };
+            assert!(message.contains(&format!("{group} group count must be positive")));
+            assert!(message.contains(&format!("got {count}")));
+            convolution
+                .get_operation()
+                .deref_mut(&ctx)
+                .attributes
+                .set(Identifier::new(attribute), NumericalInteger(1));
+            verify(&ctx, module.get_operation()).unwrap();
+        }
+    }
+    roundtrip_graph(&ctx, module.get_operation());
+}
+
+#[test]
 fn graph_errors_preserve_typed_numerical_cause_and_operation_context() {
     let mut ctx = context();
     let lhs = a(&ctx, P::F32, &[2, 4]);
@@ -223,7 +375,7 @@ fn graph_errors_preserve_typed_numerical_cause_and_operation_context() {
     else {
         panic!("expected operation context, got {error:?}");
     };
-    assert!(operation.contains("hlo.dot"), "{operation}");
+    assert!(operation.contains("xlahlo.dot"), "{operation}");
     assert!(matches!(
         source.downcast_ref::<Diagnostic>(),
         Some(Diagnostic::InvalidAttribute {
@@ -315,12 +467,11 @@ fn indexed_graph_verifies_variadic_reducer_tuple_and_missing_callee() {
 }
 
 #[test]
-fn indexed_graph_checks_scan_slices_carries_and_dynamic_layout_policy() {
+fn indexed_graph_checks_scan_slices_carries_and_associative_layout_policy() {
     let mut ctx = context();
-    let slice = a(&ctx, P::F32, &[3]);
+    let slice = dynamic(&ctx, P::F32, &[D::Bounded(3)]);
     let input = dynamic(&ctx, P::F32, &[D::Static(4), D::Bounded(3)]);
-    let array = a(&ctx, P::F32, &[4, 3]);
-    let result = Shape::tuple(&ctx, vec![array, slice]).unwrap();
+    let result = Shape::tuple(&ctx, vec![input, slice]).unwrap();
     let root = Shape::tuple(&ctx, vec![slice, slice]).unwrap();
     let (module, container) = module(&mut ctx);
     let (body, params) = computation(&mut ctx, container, "body", vec![slice, slice], root);
@@ -343,6 +494,19 @@ fn indexed_graph_checks_scan_slices_carries_and_dynamic_layout_policy() {
     ret(&mut ctx, main, value);
     verify(&ctx, module.get_operation()).unwrap();
     roundtrip_graph(&ctx, module.get_operation());
+    verify_with_options(
+        &ctx,
+        module.get_operation(),
+        VerifyOptions {
+            layout_sensitive: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    scan.get_operation()
+        .deref_mut(&ctx)
+        .attributes
+        .set(Identifier::new("hlo_is_associative"), TriState::False);
     assert!(
         xlahlo::verification::verify_with_options(
             &ctx,

@@ -23,6 +23,23 @@ use std::{cell::Ref, collections::HashSet};
 
 use super::{VerifyOptions, instruction_types, optional_attr};
 
+pub(crate) fn reshape_inferred_dimension(ctx: &Context, op: Ptr<Operation>) -> Result<i64> {
+    let dimensions = optional_attr::<Axes>(ctx, op, "hlo_dimensions")?;
+    match dimensions
+        .as_deref()
+        .map(|dimensions| dimensions.0.as_slice())
+    {
+        None | Some([]) => Ok(-1),
+        Some([dimension]) if *dimension >= -1 => Ok(*dimension),
+        _ => pliron::verify_err_noloc!(Diagnostic::InvalidAttribute {
+            attribute: "hlo_dimensions",
+            message:
+                "reshape requires at most one inferred dimension, which must be -1 or nonnegative"
+                    .into(),
+        }),
+    }
+}
+
 fn required_attr<'a, T: Attribute>(
     ctx: &'a Context,
     op: Ptr<Operation>,
@@ -147,6 +164,31 @@ pub(crate) fn instruction(
     let inferred = match opcode {
         Opcode::Copy => {
             let expected = inference::movement::infer_copy(ctx, operands[0])?;
+            if options.layout_sensitive
+                && Shape::is_array(ctx, result)
+                && Shape::is_array(ctx, expected)
+                && let (Some(output_layout), Some(input_layout)) =
+                    (Shape::layout(ctx, result)?, Shape::layout(ctx, expected)?)
+                && output_layout.memory_space != input_layout.memory_space
+                && (output_layout.memory_space == 5 || input_layout.memory_space == 5)
+            {
+                if output_layout.memory_space == 5 {
+                    // Host-bound copies may transpose before memory-space propagation.
+                    require(
+                        Shape::element_type(ctx, result)? == Shape::element_type(ctx, expected)?,
+                        "host-bound copy must preserve the element type",
+                    )?;
+                } else {
+                    let mut layout = output_layout.clone();
+                    layout.memory_space = input_layout.memory_space;
+                    let normalized = Shape::with_layout(ctx, result, layout)?;
+                    require(
+                        Shape::equal_including_layout(ctx, normalized, expected),
+                        "host-to-device copy must preserve shape and layout except memory space",
+                    )?;
+                }
+                return Ok(());
+            }
             equivalent(ctx, options, result, expected)?;
             return Ok(());
         }
@@ -176,8 +218,24 @@ pub(crate) fn instruction(
                 input.element == output.element,
                 "reshape cannot change element type",
             )?;
-            let expected =
-                inference::movement::infer_reshape(ctx, operands[0], &output.dimensions)?;
+            let dimension = reshape_inferred_dimension(ctx, op)?;
+            let dimension = if dimension == -1 {
+                None
+            } else {
+                Some(usize::try_from(dimension).map_err(|_| {
+                    pliron::verify_error_noloc!(Diagnostic::InvalidAttribute {
+                        attribute: "hlo_dimensions",
+                        message: "reshape inferred dimension does not fit the host index type"
+                            .into(),
+                    })
+                })?)
+            };
+            let expected = inference::movement::infer_reshape_with_dimension(
+                ctx,
+                operands[0],
+                &output.dimensions,
+                dimension,
+            )?;
             require(
                 Shape::compatible(ctx, result, expected),
                 "reshape changes element count or dynamic bounds",
@@ -192,11 +250,28 @@ pub(crate) fn instruction(
         }
         Opcode::DynamicReshape => {
             arrays(ctx, operands[0], result)?;
-            let dimensions = required_attr::<Axes>(ctx, op, "hlo_dimensions")?;
+            let input = tensor(ctx, Shape::array_view(ctx, operands[0])?)?;
+            let output = tensor(ctx, Shape::array_view(ctx, result)?)?;
             require(
-                dimensions.0.as_slice() == Shape::dimensions(ctx, result)?.as_ref(),
-                "dynamic reshape bounds differ from result type",
+                input.element == output.element,
+                "dynamic reshape cannot change element type",
             )?;
+            require(
+                operands.len() - 1 == output.dimensions.len(),
+                &format!(
+                    "dynamic reshape requires one size operand per result dimension: got {} for rank {}",
+                    operands.len() - 1,
+                    output.dimensions.len()
+                ),
+            )?;
+            for (axis, &size) in operands[1..].iter().enumerate() {
+                require(
+                    Shape::element_type(ctx, size)? == crate::types::ElementType::S32,
+                    &format!(
+                        "dynamic reshape size operand for axis {axis} must have S32 element type"
+                    ),
+                )?;
+            }
             let bounds = declared_bounds(ctx, result)?;
             inference::movement::infer_dynamic_reshape(ctx, operands[0], &operands[1..], bounds)?
         }
@@ -337,7 +412,7 @@ pub(crate) fn verify_callees(
     ctx: &Context,
     op: Ptr<Operation>,
     opcode: Opcode,
-    options: VerifyOptions,
+    _options: VerifyOptions,
     resolved: &[&Signature],
 ) -> Result<()> {
     require(
@@ -359,63 +434,49 @@ pub(crate) fn verify_callees(
         parameters.len() == count * 2,
         "scatter reducer parameter count must be twice the variadic arity",
     )?;
-    let inputs = &operands[..count];
-    let updates = &operands[count + 1..];
-    for (&expected, &actual) in updates.iter().chain(inputs).zip(parameters) {
-        let expected = tensor(ctx, Shape::array_view(ctx, expected)?)?;
-        let actual = tensor(ctx, Shape::array_view(ctx, actual)?)?;
-        require(
-            actual.dimensions.is_empty(),
-            "scatter reducer parameters must be scalar",
-        )?;
-        require(
-            expected.element == actual.element
-                || options.allow_mixed_precision
-                    && expected.element.is_float()
-                    && actual.element.is_float(),
-            "scatter reducer parameter type differs from input/update",
-        )?;
-    }
-    if count == 1 {
-        let expected = tensor(ctx, Shape::array_view(ctx, inputs[0])?)?;
-        let actual = tensor(ctx, Shape::array_view(ctx, *result)?)?;
-        require(
-            actual.dimensions.is_empty(),
-            "scatter reducer result must be scalar",
-        )?;
-        require(
-            expected.element == actual.element
-                || options.allow_mixed_precision
-                    && expected.element.is_float()
-                    && actual.element.is_float(),
-            "scatter reducer result type differs from scatter input",
-        )?;
-    } else {
-        let result_ty = result.deref(ctx);
-        let tuple = result_ty.downcast_ref::<TupleType>().ok_or_else(|| {
-            pliron::verify_error_noloc!(Diagnostic::Verification {
-                message: format!("scatter reducer for {count} inputs must return a tuple"),
-            })
-        })?;
+    let result_ty = result.deref(ctx);
+    let results = if let Some(tuple) = result_ty.downcast_ref::<TupleType>() {
         require(
             tuple.elements.len() == count,
             "scatter reducer result tuple arity mismatch",
         )?;
-        for (&input, &actual) in inputs.iter().zip(&tuple.elements) {
-            let expected = tensor(ctx, Shape::array_view(ctx, input)?)?;
-            let actual = tensor(ctx, Shape::array_view(ctx, actual)?)?;
-            require(
-                actual.dimensions.is_empty(),
-                "scatter reducer result elements must be scalar",
-            )?;
-            require(
-                expected.element == actual.element
-                    || options.allow_mixed_precision
-                        && expected.element.is_float()
-                        && actual.element.is_float(),
-                "scatter reducer result type differs from scatter input",
-            )?;
-        }
+        tuple.elements.as_slice()
+    } else {
+        require(count == 1, "variadic scatter reducer must return a tuple")?;
+        std::slice::from_ref(result)
+    };
+    for (index, &result) in results.iter().enumerate() {
+        let accumulator = tensor(ctx, result)?;
+        let parameter = tensor(ctx, parameters[index])?;
+        let update_parameter = tensor(ctx, parameters[count + index])?;
+        let input = tensor(ctx, operands[index])?;
+        let update = tensor(ctx, operands[count + 1 + index])?;
+        require(
+            accumulator.dimensions.is_empty()
+                && parameter.dimensions.is_empty()
+                && update_parameter.dimensions.is_empty(),
+            &format!("scatter reducer lane {index} requires scalar parameters and result"),
+        )?;
+        require(
+            accumulator.element == parameter.element,
+            &format!(
+                "scatter reducer accumulator parameter {index} must exactly match its result type"
+            ),
+        )?;
+        require(
+            accumulator
+                .element
+                .same_ignoring_fp_precision(input.element)
+                && update_parameter
+                    .element
+                    .same_ignoring_fp_precision(update.element)
+                && accumulator
+                    .element
+                    .same_ignoring_fp_precision(update_parameter.element),
+            &format!(
+                "scatter reducer lane {index} has incompatible accumulator/input/update types"
+            ),
+        )?;
     }
     Ok(())
 }

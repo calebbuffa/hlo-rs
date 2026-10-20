@@ -220,7 +220,7 @@ fn reducer_contract(ctx: &Context, ir: &Operation, check_shape: bool, count: usi
     true
 }
 
-#[pliron_op(name="stablehlo.all_gather",format="operands(CharSpace(`,`)) attr($stablehlo_all_gather_dimension, $IntegerAttr) attr($stablehlo_all_gather_replica_groups, $VecAttr) attr($stablehlo_all_gather_channel_handle, $ChannelHandleAttr) attr($stablehlo_all_gather_use_global_device_ids, $BoolAttr)",attributes=(stablehlo_all_gather_dimension:IntegerAttr,stablehlo_all_gather_replica_groups:VecAttr,stablehlo_all_gather_channel_handle:ChannelHandleAttr,stablehlo_all_gather_use_global_device_ids:BoolAttr))]
+#[pliron_op(name="stablehlo.all_gather",format,attributes=(stablehlo_all_gather_dimension:IntegerAttr,stablehlo_all_gather_replica_groups:VecAttr,stablehlo_all_gather_channel_handle:ChannelHandleAttr,stablehlo_all_gather_use_global_device_ids:BoolAttr))]
 pub struct AllGatherOp;
 impl AllGatherOp {
     pub fn new(
@@ -321,7 +321,7 @@ impl Verify for AllGatherOp {
     }
 }
 
-#[pliron_op(name="stablehlo.all_reduce",format="operands(CharSpace(`,`)) regions(CharSpace(`,`)) attr($stablehlo_all_reduce_replica_groups, $VecAttr) attr($stablehlo_all_reduce_channel_handle, $ChannelHandleAttr) attr($stablehlo_all_reduce_use_global_device_ids, $BoolAttr)",attributes=(stablehlo_all_reduce_replica_groups:VecAttr,stablehlo_all_reduce_channel_handle:ChannelHandleAttr,stablehlo_all_reduce_use_global_device_ids:BoolAttr))]
+#[pliron_op(name="stablehlo.all_reduce",format,attributes=(stablehlo_all_reduce_replica_groups:VecAttr,stablehlo_all_reduce_channel_handle:ChannelHandleAttr,stablehlo_all_reduce_use_global_device_ids:BoolAttr))]
 pub struct AllReduceOp;
 impl AllReduceOp {
     pub fn new(
@@ -376,7 +376,7 @@ impl Verify for AllReduceOp {
     }
 }
 
-#[pliron_op(name="stablehlo.reduce_scatter",format="operands(CharSpace(`,`)) attr($stablehlo_reduce_scatter_dimension, $IntegerAttr) attr($stablehlo_reduce_scatter_replica_groups, $VecAttr) attr($stablehlo_reduce_scatter_channel_handle, $ChannelHandleAttr) attr($stablehlo_reduce_scatter_use_global_device_ids, $BoolAttr) regions(CharSpace(`,`))",attributes=(stablehlo_reduce_scatter_dimension:IntegerAttr,stablehlo_reduce_scatter_replica_groups:VecAttr,stablehlo_reduce_scatter_channel_handle:ChannelHandleAttr,stablehlo_reduce_scatter_use_global_device_ids:BoolAttr))]
+#[pliron_op(name="stablehlo.reduce_scatter",format,attributes=(stablehlo_reduce_scatter_dimension:IntegerAttr,stablehlo_reduce_scatter_replica_groups:VecAttr,stablehlo_reduce_scatter_channel_handle:ChannelHandleAttr,stablehlo_reduce_scatter_use_global_device_ids:BoolAttr))]
 pub struct ReduceScatterOp;
 impl ReduceScatterOp {
     pub fn new(
@@ -468,7 +468,7 @@ impl Verify for ReduceScatterOp {
     }
 }
 
-#[pliron_op(name="stablehlo.all_to_all",format="operands(CharSpace(`,`)) attr($stablehlo_all_to_all_split_dimension, $IntegerAttr) attr($stablehlo_all_to_all_concat_dimension, $IntegerAttr) attr($stablehlo_all_to_all_split_count, $IntegerAttr) attr($stablehlo_all_to_all_replica_groups, $VecAttr) attr($stablehlo_all_to_all_channel_handle, $ChannelHandleAttr) attr($stablehlo_all_to_all_use_global_device_ids, $BoolAttr)",attributes=(stablehlo_all_to_all_split_dimension:IntegerAttr,stablehlo_all_to_all_concat_dimension:IntegerAttr,stablehlo_all_to_all_split_count:IntegerAttr,stablehlo_all_to_all_replica_groups:VecAttr,stablehlo_all_to_all_channel_handle:ChannelHandleAttr,stablehlo_all_to_all_use_global_device_ids:BoolAttr))]
+#[pliron_op(name="stablehlo.all_to_all",format,attributes=(stablehlo_all_to_all_split_dimension:IntegerAttr,stablehlo_all_to_all_concat_dimension:IntegerAttr,stablehlo_all_to_all_split_count:IntegerAttr,stablehlo_all_to_all_replica_groups:VecAttr,stablehlo_all_to_all_channel_handle:ChannelHandleAttr,stablehlo_all_to_all_use_global_device_ids:BoolAttr))]
 pub struct AllToAllOp;
 impl AllToAllOp {
     pub fn new(
@@ -588,7 +588,7 @@ impl Verify for AllToAllOp {
     }
 }
 
-#[pliron_op(name="stablehlo.collective_broadcast",format="operands(CharSpace(`,`)) attr($stablehlo_collective_broadcast_has_dynamic_root, $BoolAttr) attr($stablehlo_collective_broadcast_replica_groups, $VecAttr) attr($stablehlo_collective_broadcast_channel_handle, $ChannelHandleAttr)",attributes=(stablehlo_collective_broadcast_has_dynamic_root:BoolAttr,stablehlo_collective_broadcast_replica_groups:VecAttr,stablehlo_collective_broadcast_channel_handle:ChannelHandleAttr))]
+#[pliron_op(name="stablehlo.collective_broadcast",format,attributes=(stablehlo_collective_broadcast_has_dynamic_root:BoolAttr,stablehlo_collective_broadcast_replica_groups:VecAttr,stablehlo_collective_broadcast_channel_handle:ChannelHandleAttr))]
 pub struct CollectiveBroadcastOp;
 impl CollectiveBroadcastOp {
     pub fn new(
@@ -676,7 +676,7 @@ impl Verify for CollectiveBroadcastOp {
     }
 }
 
-#[pliron_op(name="stablehlo.collective_reduce",format="operands(CharSpace(`,`)) regions(CharSpace(`,`)) attr($stablehlo_collective_reduce_replica_groups, $VecAttr) attr($stablehlo_collective_reduce_has_dynamic_root, $BoolAttr) attr($stablehlo_collective_reduce_channel_handle, $ChannelHandleAttr) attr($stablehlo_collective_reduce_use_global_device_ids, $BoolAttr)",attributes=(stablehlo_collective_reduce_replica_groups:VecAttr,stablehlo_collective_reduce_has_dynamic_root:BoolAttr,stablehlo_collective_reduce_channel_handle:ChannelHandleAttr,stablehlo_collective_reduce_use_global_device_ids:BoolAttr))]
+#[pliron_op(name="stablehlo.collective_reduce",format,attributes=(stablehlo_collective_reduce_replica_groups:VecAttr,stablehlo_collective_reduce_has_dynamic_root:BoolAttr,stablehlo_collective_reduce_channel_handle:ChannelHandleAttr,stablehlo_collective_reduce_use_global_device_ids:BoolAttr))]
 pub struct CollectiveReduceOp;
 impl CollectiveReduceOp {
     pub fn new(
@@ -747,7 +747,7 @@ impl Verify for CollectiveReduceOp {
     }
 }
 
-#[pliron_op(name="stablehlo.collective_permute",format="$0 attr($stablehlo_collective_permute_source_target_pairs, $VecAttr) attr($stablehlo_collective_permute_channel_handle, $ChannelHandleAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_collective_permute_source_target_pairs:VecAttr,stablehlo_collective_permute_channel_handle:ChannelHandleAttr))]
+#[pliron_op(name="stablehlo.collective_permute",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_collective_permute_source_target_pairs:VecAttr,stablehlo_collective_permute_channel_handle:ChannelHandleAttr))]
 pub struct CollectivePermuteOp;
 impl CollectivePermuteOp {
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle, pairs: VecAttr) -> Self {
@@ -787,7 +787,7 @@ impl Verify for CollectivePermuteOp {
     }
 }
 
-#[pliron_op(name="stablehlo.cross_replica_sum",format="$0 attr($stablehlo_cross_replica_sum_replica_groups, $VecAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_cross_replica_sum_replica_groups:VecAttr))]
+#[pliron_op(name="stablehlo.cross-replica-sum",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_cross_replica_sum_replica_groups:VecAttr))]
 pub struct CrossReplicaSumOp;
 impl CrossReplicaSumOp {
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle, groups: VecAttr) -> Self {

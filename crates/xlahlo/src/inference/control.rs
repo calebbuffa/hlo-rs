@@ -2,6 +2,7 @@
 use super::{Signature, require};
 use crate::Diagnostic;
 use crate::{
+    attributes::RandomDistribution,
     shape::Shape,
     types::{ElementType, TensorType, tensor},
 };
@@ -15,6 +16,70 @@ use std::cell::Ref;
 
 /// Collective shape inference with explicit group cardinalities.
 pub mod collective;
+
+/// Validate scalar distribution parameters and retain the declared random array shape.
+///
+/// Uniform distributions accept real floating-point, integer, and predicate
+/// parameters; normal distributions require real floating-point parameters.
+/// Mixed precision permits a different real floating-point result format, never
+/// different parameter formats. Generator/backend capabilities are not checked.
+pub fn infer_rng(
+    ctx: &Context,
+    operands: &[TypeHandle],
+    result: TypeHandle,
+    distribution: RandomDistribution,
+    allow_mixed_precision: bool,
+) -> Result<TypeHandle> {
+    require(operands.len() == 2, "rng requires two scalar operands")?;
+    let a = tensor(ctx, Shape::array_view(ctx, operands[0])?)?;
+    let b = tensor(ctx, Shape::array_view(ctx, operands[1])?)?;
+    let out = tensor(ctx, Shape::array_view(ctx, result)?)?;
+    require(
+        a.dimensions.is_empty() && b.dimensions.is_empty(),
+        "rng requires two scalar operands",
+    )?;
+    require(
+        a.element == b.element
+            && (a.element == out.element
+                || allow_mixed_precision && a.element.same_ignoring_fp_precision(out.element)),
+        "rng operand and result element types differ",
+    )?;
+    require(
+        match distribution {
+            RandomDistribution::Uniform => {
+                a.element.is_float() || a.element.is_integer() || a.element == ElementType::Pred
+            }
+            RandomDistribution::Normal => a.element.is_float(),
+        },
+        "invalid random distribution or element type",
+    )?;
+    Ok(result)
+}
+
+/// Check an optional `(state, generated values)` result and retain its shape.
+///
+/// Non-tuple results are accepted. Tuple results require exactly two children
+/// and a first child compatible with the input state; algorithm-specific state
+/// sizes and generated-value formats belong to lowering, not this shape rule.
+pub fn infer_rng_bit_generator(
+    ctx: &Context,
+    state: TypeHandle,
+    result: TypeHandle,
+) -> Result<TypeHandle> {
+    if Shape::is_tuple(ctx, result) {
+        let parts = Shape::children(ctx, result);
+        require(
+            parts.len() == 2 && Shape::compatible(ctx, parts[0], state),
+            "rng-bit-generator requires two tuple components and matching state shapes",
+        )?;
+    }
+    Ok(result)
+}
+
+/// Infer the fixed `U64[2]` state returned by the stateful RNG counter operation.
+pub fn infer_rng_get_and_update_state(ctx: &Context) -> Result<TypeHandle> {
+    Shape::array(ctx, ElementType::U64, vec![2])
+}
 
 /// Infer a tuple containing the operand types in order.
 pub fn infer_tuple(ctx: &Context, operands: &[TypeHandle]) -> Result<TypeHandle> {

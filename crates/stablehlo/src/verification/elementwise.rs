@@ -1,4 +1,5 @@
 use crate::types::{ElementType, QuantizedElementType, TensorType, primitive_element};
+use pliron::identifier::Identifier;
 use pliron::r#type::TypeHandle;
 use pliron::{
     common_traits::Verify, context::Context, op::Op, operation::Operation, result::Result,
@@ -13,6 +14,21 @@ pub(crate) fn verify_elementwise(
 ) -> Result<()> {
     crate::verification::verify_elementwise(op, ctx, mnemonic, arity)?;
     let ir = op.get_operation().deref(ctx);
+    if let Some(attribute) = ir
+        .attributes
+        .0
+        .get(&Identifier::new("stablehlo_result_accuracy"))
+    {
+        let Some(attribute) = attribute.downcast_ref::<crate::attributes::ResultAccuracyAttr>()
+        else {
+            return crate::verification::invalid(
+                op,
+                ctx,
+                "result_accuracy must use the StableHLO result_accuracy attribute",
+            );
+        };
+        attribute.verify(ctx)?;
+    }
     let types = ir
         .operands()
         .map(|value| value.get_type(ctx))

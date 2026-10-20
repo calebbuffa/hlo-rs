@@ -1,6 +1,6 @@
 # xlahlo
 
-`xlahlo` is a OpenXLA HLO dialect for [pliron](https://crates.io/crates/pliron).
+`xlahlo` is an OpenXLA HLO dialect for [pliron](https://crates.io/crates/pliron).
 
 ## Example
 
@@ -42,11 +42,6 @@ Constructors accept explicit result types and typed attributes. They do not
 implicitly verify the graph; use the checked `inference` functions when computing
 result types, then verify before consuming the IR.
 
-pliron maintains stable operation/value handles and use lists. Use its
-`Value::replace_all_uses_with`, `Operation::replace_operand`, `Operation::erase`
-and block insertion/movement APIs directly. Erasure requires no remaining users.
-Batch edits before calling `verification::verify`.
-
 ## API organization
 
 | Namespace                                             | Contents                                                               |
@@ -62,25 +57,7 @@ Batch edits before calling `verification::verify`.
 | `inference::{elementwise,movement,numerical,control}` | Checked shape inference                                                |
 | `ir`                                                  | Module configuration, entry points, aliases, donors and schedules      |
 | `verification`                                        | Whole-graph verification and caller policies                           |
-
-`register` installs the complete dialect. `pliron` is re-exported as a dependency
-namespace so consumers can use the matching IR APIs. Shape and attribute queries
-borrow context storage; transformations explicitly construct owned output records.
-See the API documentation for individual contracts and attribute keys.
-
-## Verification
-
-`verification::verify` accepts a builtin module or a self-contained computation.
-It checks local opcode contracts, isolated SSA/dominance, computation signatures,
-nonrecursive calls, execution threads, asynchronous chains, collective topology,
-sharding, control dependencies, schedules, aliases and buffer writers.
-
-A builtin module must declare its entry symbol through `ir::set_entry`.
-`ir::set_config` attaches module configuration.
-`verification::verify_with_options` supplies policies such as layout sensitivity,
-mixed precision and target allocation sizes. Module topology overrides the
-corresponding caller context unless `ignore_module_config` is enabled.
-Standalone computations cannot resolve external callee symbols.
+| `effects`                                             | Native pliron `SideEffects` analysis over a module snapshot            |
 
 ## Errors and handle safety
 

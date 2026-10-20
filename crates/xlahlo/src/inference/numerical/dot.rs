@@ -123,6 +123,8 @@ pub(super) fn validate(
 }
 
 /// Infer a generalized dot, optionally selecting an explicit result element type.
+///
+/// Both operands must be arrays, not buffer-wrapped arrays.
 pub fn infer_dot(
     ctx: &Context,
     lhs: TypeHandle,
@@ -134,6 +136,8 @@ pub fn infer_dot(
 }
 
 /// Infer a dot after expanding sparse contracting extents with checked arithmetic.
+///
+/// Data operands must be arrays; sparsity does not permit buffer operands.
 pub fn infer_dot_with_sparsity(
     ctx: &Context,
     lhs: TypeHandle,
@@ -142,8 +146,8 @@ pub fn infer_dot_with_sparsity(
     preferred: Option<ElementType>,
     sparsity: Option<&SparsityConfig>,
 ) -> Result<TypeHandle> {
-    let lhs = array(ctx, lhs)?;
-    let rhs = array(ctx, rhs)?;
+    require(Shape::is_array(ctx, lhs), "dot lhs must be an array")?;
+    require(Shape::is_array(ctx, rhs), "dot rhs must be an array")?;
     let (left, right) = validate(ctx, lhs, rhs, d, sparsity)?;
     let mut dims = Vec::new();
     for &axis in &d.lhs_batch_dimensions.0 {
@@ -163,6 +167,8 @@ pub fn infer_dot_with_sparsity(
 }
 
 /// Infer ragged-dot output for ragged batch, contracting, or noncontracting axes.
+///
+/// Data operands and group sizes must be arrays, not buffer-wrapped arrays.
 pub fn infer_ragged_dot(
     ctx: &Context,
     lhs: TypeHandle,
@@ -171,9 +177,13 @@ pub fn infer_ragged_dot(
     d: &RaggedDotDimensionNumbers,
     preferred: Option<ElementType>,
 ) -> Result<TypeHandle> {
-    let lhs = array(ctx, lhs)?;
-    let rhs = array(ctx, rhs)?;
-    let groups = array(ctx, group_sizes)?;
+    require(Shape::is_array(ctx, lhs), "ragged-dot lhs must be an array")?;
+    require(Shape::is_array(ctx, rhs), "ragged-dot rhs must be an array")?;
+    require(
+        Shape::is_array(ctx, group_sizes),
+        "ragged-dot group sizes must be an array",
+    )?;
+    let groups = group_sizes;
     let dot = &d.dot_dimension_numbers;
     let (left, right) = validate(ctx, lhs, rhs, dot, None)?;
     require(
@@ -268,6 +278,9 @@ pub fn infer_ragged_dot(
 }
 
 /// Infer a dot with explicit block-scale operands and validate scale geometry.
+///
+/// After scale validation, the original data operands must satisfy the dot
+/// array contract; buffer views used to inspect geometry do not change it.
 pub fn infer_scaled_dot(
     ctx: &Context,
     lhs: TypeHandle,
@@ -277,20 +290,20 @@ pub fn infer_scaled_dot(
     d: &DotDimensionNumbers,
     preferred: Option<ElementType>,
 ) -> Result<TypeHandle> {
-    let lhs = array(ctx, lhs)?;
-    let rhs = array(ctx, rhs)?;
+    let lhs_array = array(ctx, lhs)?;
+    let rhs_array = array(ctx, rhs)?;
     let lhs_scale = array(ctx, lhs_scale)?;
     let rhs_scale = array(ctx, rhs_scale)?;
-    validate(ctx, lhs, rhs, d, None)?;
+    validate(ctx, lhs_array, rhs_array, d, None)?;
     for (operand, scale, batch, contracting) in [
         (
-            lhs,
+            lhs_array,
             lhs_scale,
             &d.lhs_batch_dimensions.0,
             &d.lhs_contracting_dimensions.0,
         ),
         (
-            rhs,
+            rhs_array,
             rhs_scale,
             &d.rhs_batch_dimensions.0,
             &d.rhs_contracting_dimensions.0,

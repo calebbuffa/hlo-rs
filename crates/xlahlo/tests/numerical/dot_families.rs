@@ -1,6 +1,97 @@
 use super::super::*;
 
 #[test]
+fn dot_requires_array_operands_before_validating_contraction_geometry() {
+    let mut ctx = context();
+    let lhs = a(&ctx, P::F32, &[2, 4]);
+    let rhs = a(&ctx, P::F32, &[8, 3]);
+    let output = a(&ctx, P::F32, &[2, 3]);
+    let d = dot_dims(&[1], &[0], &[], &[]);
+    let config = sparse(true, 2, 4, 1, 2);
+    for mask in 1..4 {
+        let mut inputs = [lhs, rhs];
+        for (index, ty) in inputs.iter_mut().enumerate() {
+            if mask & (1 << index) != 0 {
+                *ty = Shape::buffer(&ctx, *ty).unwrap();
+            }
+        }
+        let expected = if mask & 1 != 0 {
+            "dot lhs must be an array"
+        } else {
+            "dot rhs must be an array"
+        };
+        for result in [
+            inference::infer_dot(&ctx, inputs[0], inputs[1], &d, None),
+            inference::infer_dot_with_sparsity(&ctx, inputs[0], inputs[1], &d, None, Some(&config)),
+        ] {
+            let error = result.unwrap_err();
+            assert!(matches!(
+                error.err.downcast_ref::<xlahlo::Diagnostic>(),
+                Some(xlahlo::Diagnostic::Inference { message }) if message == expected
+            ));
+        }
+        let args = values(&mut ctx, &inputs);
+        let op = DotOp::new(&mut ctx, output, args, d.clone(), precision());
+        error_contains(op.verify(&ctx), expected);
+    }
+    assert_eq!(
+        dims(
+            &ctx,
+            inference::infer_dot_with_sparsity(&ctx, lhs, rhs, &d, None, Some(&config)).unwrap()
+        ),
+        [2, 3],
+    );
+}
+
+#[test]
+fn ragged_dot_requires_array_data_and_group_sizes_before_geometry_validation() {
+    let mut ctx = context();
+    let inputs = [
+        a(&ctx, P::F32, &[2, 4]),
+        a(&ctx, P::F32, &[4, 3]),
+        a(&ctx, P::S32, &[5]),
+    ];
+    let output = a(&ctx, P::F32, &[5, 2, 3]);
+    let d = RaggedDotDimensionNumbers {
+        dot_dimension_numbers: dot_dims(&[1], &[0], &[], &[]),
+        lhs_ragged_dimensions: Axes(vec![1]),
+        rhs_group_dimensions: Axes(vec![]),
+    };
+    for mask in 1..8 {
+        let mut malformed = inputs;
+        for (index, ty) in malformed.iter_mut().enumerate() {
+            if mask & (1 << index) != 0 {
+                *ty = Shape::buffer(&ctx, *ty).unwrap();
+            }
+        }
+        let expected = if mask & 1 != 0 {
+            "ragged-dot lhs must be an array"
+        } else if mask & 2 != 0 {
+            "ragged-dot rhs must be an array"
+        } else {
+            "ragged-dot group sizes must be an array"
+        };
+        let error =
+            inference::infer_ragged_dot(&ctx, malformed[0], malformed[1], malformed[2], &d, None)
+                .unwrap_err();
+        assert!(matches!(
+            error.err.downcast_ref::<xlahlo::Diagnostic>(),
+            Some(xlahlo::Diagnostic::Inference { message }) if message == expected
+        ));
+        let args = values(&mut ctx, &malformed);
+        let op = RaggedDotOp::new(&mut ctx, output, args, d.clone(), precision());
+        error_contains(op.verify(&ctx), expected);
+    }
+    assert_eq!(
+        dims(
+            &ctx,
+            inference::infer_ragged_dot(&ctx, inputs[0], inputs[1], inputs[2], &d, None).unwrap()
+        ),
+        [5, 2, 3],
+    );
+}
+
+#[test]
 fn dot_inference_uses_default_layout_instead_of_copying_operands() {
     let ctx = context();
     let lhs = Shape::with_layout(
@@ -466,11 +557,9 @@ fn sparse_dot_expands_only_configured_contracting_dimensions() {
     let rhs = a(&ctx, P::F32, &[8, 3]);
     let d = dot_dims(&[1], &[0], &[], &[]);
     let config = sparse(true, 2, 4, 1, 2);
-    for lhs in [lhs, Shape::buffer(&ctx, lhs).unwrap()] {
-        let result =
-            inference::infer_dot_with_sparsity(&ctx, lhs, rhs, &d, None, Some(&config)).unwrap();
-        assert_eq!(dims(&ctx, result), [2, 3]);
-    }
+    let result =
+        inference::infer_dot_with_sparsity(&ctx, lhs, rhs, &d, None, Some(&config)).unwrap();
+    assert_eq!(dims(&ctx, result), [2, 3]);
     let result = inference::infer_dot_with_sparsity(
         &ctx,
         a(&ctx, P::F32, &[2, 8]),
@@ -589,6 +678,57 @@ fn block_scaling_tracks_all_scales_and_optional_zero_points_without_inventing_ge
             .set(Identifier::new("hlo_block_scaling"), config);
         assert_eq!(op.verify(&ctx).is_ok(), valid);
     }
+}
+
+#[test]
+fn scaled_dot_preserves_data_array_contract_after_checking_scale_geometry() {
+    let mut ctx = context();
+    let lhs = a(&ctx, P::F32, &[4, 8]);
+    let rhs = a(&ctx, P::F32, &[8, 6]);
+    let ls = a(&ctx, P::F16, &[2, 2]);
+    let rs = a(&ctx, P::S32, &[4, 3]);
+    let result = a(&ctx, P::F32, &[4, 6]);
+    let d = dot_dims(&[1], &[0], &[], &[]);
+    for mask in 1..4 {
+        let left = if mask & 1 != 0 {
+            Shape::buffer(&ctx, lhs).unwrap()
+        } else {
+            lhs
+        };
+        let right = if mask & 2 != 0 {
+            Shape::buffer(&ctx, rhs).unwrap()
+        } else {
+            rhs
+        };
+        let expected = if mask & 1 != 0 {
+            "dot lhs must be an array"
+        } else {
+            "dot rhs must be an array"
+        };
+        let error = inference::infer_scaled_dot(&ctx, left, right, ls, rs, &d, None).unwrap_err();
+        assert!(matches!(
+            error.err.downcast_ref::<xlahlo::Diagnostic>(),
+            Some(xlahlo::Diagnostic::Inference { message }) if message == expected
+        ));
+        let args = values(&mut ctx, &[left, right, ls, rs]);
+        let op = ScaledDotOp::new(&mut ctx, result, args, d.clone(), precision());
+        error_contains(op.verify(&ctx), expected);
+        error_contains(
+            inference::infer_scaled_dot(&ctx, left, right, a(&ctx, P::F16, &[3, 2]), rs, &d, None),
+            "data bounds must be divisible by nonzero scale bounds",
+        );
+    }
+    assert_eq!(
+        dims(
+            &ctx,
+            inference::infer_scaled_dot(&ctx, lhs, rhs, ls, rs, &d, None).unwrap()
+        ),
+        [4, 6],
+    );
+    let args = values(&mut ctx, &[lhs, rhs, ls, rs]);
+    ScaledDotOp::new(&mut ctx, result, args, d, precision())
+        .verify(&ctx)
+        .unwrap();
 }
 
 #[test]

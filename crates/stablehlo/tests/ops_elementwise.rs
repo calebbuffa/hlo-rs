@@ -55,11 +55,13 @@ fn every_unary_operation_builds_and_verifies() {
     ok!(CosineOp, f);
     ok!(ExponentialOp, f);
     ok!(ExponentialMinusOneOp, f);
+    ok!(Exp2Op, f);
     ok!(FloorOp, f);
     ok!(ImagOp, f);
     ok!(IsFiniteOp, f);
     ok!(LogOp, f);
     ok!(LogPlusOneOp, f);
+    ok!(Log2Op, f);
     ok!(LogisticOp, f);
     ok!(NegateOp, f);
     ok!(RealOp, f);
@@ -74,6 +76,28 @@ fn every_unary_operation_builds_and_verifies() {
     ok!(CountLeadingZerosOp, i);
     ok!(PopulationCountOp, i);
     ok!(NotOp, i);
+}
+
+#[test]
+fn exp2_and_log2_preserve_and_verify_result_accuracy() {
+    let mut ctx = Context::new();
+    let input = value(&mut ctx, &[2], ElementType::F32, 0);
+    let exp2 = Exp2Op::new_inferred(&mut ctx, input).unwrap();
+    let accuracy = ResultAccuracyAttr::new(0.0, 0.0, 0, ResultAccuracyMode::Highest);
+    exp2.set_attr_stablehlo_result_accuracy(&mut ctx, accuracy.clone());
+    assert_eq!(
+        exp2.get_attr_stablehlo_result_accuracy(&ctx)
+            .map(|attr| attr.mode),
+        Some(ResultAccuracyMode::Highest as u8)
+    );
+    assert!(exp2.verify(&ctx).is_ok());
+
+    let log2 = Log2Op::new_inferred(&mut ctx, input).unwrap();
+    log2.set_attr_stablehlo_result_accuracy(
+        &mut ctx,
+        ResultAccuracyAttr::new(-1.0, 0.0, 0, ResultAccuracyMode::Tolerance),
+    );
+    assert!(log2.verify(&ctx).is_err());
 }
 
 #[test]

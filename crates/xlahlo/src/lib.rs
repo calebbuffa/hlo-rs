@@ -4,6 +4,7 @@
 use pliron::{attribute::Attribute, r#type::Type};
 
 pub mod attributes;
+pub mod effects;
 mod error;
 pub mod inference;
 pub mod ir;

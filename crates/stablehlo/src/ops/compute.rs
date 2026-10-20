@@ -151,7 +151,7 @@ fn dot_element_compatible(
     }
 }
 
-#[pliron_op(name="stablehlo.dot_general",format="$0 `,` $1 attr($stablehlo_dot_dimensions, $DotDimensionNumbersAttr) attr($stablehlo_dot_precision, $VecAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dot_dimensions:DotDimensionNumbersAttr,stablehlo_dot_precision:VecAttr))]
+#[pliron_op(name="stablehlo.dot_general",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dot_dimensions:DotDimensionNumbersAttr,stablehlo_dot_precision:VecAttr))]
 pub struct DotGeneralOp;
 impl DotGeneralOp {
     #[allow(clippy::too_many_arguments)]
@@ -199,6 +199,17 @@ impl DotGeneralOp {
         );
         op.set_attr_stablehlo_dot_precision(ctx, ints(ctx, precision));
         op
+    }
+    /// Return the batching and contracting dimension numbers.
+    pub fn dimension_numbers(&self, ctx: &Context) -> Option<DotDimensionNumbersAttr> {
+        self.get_attr_stablehlo_dot_dimensions(ctx)
+            .map(|attr| attr.clone())
+    }
+    /// Return the per-operand precision configuration values.
+    pub fn precision(&self, ctx: &Context) -> Option<Vec<u64>> {
+        self.get_attr_stablehlo_dot_precision(ctx)
+            .as_deref()
+            .and_then(crate::attributes::read_integer_list)
     }
 }
 impl Verify for DotGeneralOp {
@@ -264,7 +275,7 @@ impl Verify for DotGeneralOp {
             || lc.len() != rc.len()
             || lb.len() != rb.len()
             || p.len() > 2
-            || p.iter().any(|&x| x != 0)
+            || p.iter().any(|&x| x > 2)
             || !axes_ok(l.len(), &lb, &lc)
             || !axes_ok(r.len(), &rb, &rc)
             || lc
@@ -320,7 +331,7 @@ impl Verify for DotGeneralOp {
     }
 }
 
-#[pliron_op(name="stablehlo.dot",format="$0 `,` $1 attr($stablehlo_compute_dot_precision, $VecAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_dot_precision:VecAttr))]
+#[pliron_op(name="stablehlo.dot",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_dot_precision:VecAttr))]
 pub struct DotOp;
 impl DotOp {
     pub fn new(
@@ -391,7 +402,7 @@ impl Verify for DotOp {
     }
 }
 
-#[pliron_op(name="stablehlo.einsum",format="$0 `,` $1 attr($stablehlo_compute_einsum_equation, $StringAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_einsum_equation:StringAttr))]
+#[pliron_op(name="stablehlo.einsum",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_einsum_equation:StringAttr))]
 pub struct EinsumOp;
 impl EinsumOp {
     pub fn new(
@@ -436,7 +447,7 @@ impl Verify for EinsumOp {
         Ok(())
     }
 }
-#[pliron_op(name="stablehlo.unary_einsum",format="$0 attr($stablehlo_compute_unary_einsum_equation, $StringAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_unary_einsum_equation:StringAttr))]
+#[pliron_op(name="stablehlo.unary_einsum",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_unary_einsum_equation:StringAttr))]
 pub struct UnaryEinsumOp;
 impl UnaryEinsumOp {
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle, equation: String) -> Self {
@@ -475,7 +486,7 @@ impl Verify for UnaryEinsumOp {
     }
 }
 
-#[pliron_op(name="stablehlo.convolution",format="$0 `,` $1 attr($stablehlo_compute_conv_dims, $ConvDimensionNumbersAttr) attr($stablehlo_compute_conv_strides, $VecAttr) attr($stablehlo_compute_conv_padding, $VecAttr) attr($stablehlo_compute_conv_lhs_dilation, $VecAttr) attr($stablehlo_compute_conv_rhs_dilation, $VecAttr) attr($stablehlo_compute_conv_groups, $VecAttr) attr($stablehlo_compute_conv_reversal, $VecAttr) attr($stablehlo_compute_conv_precision, $VecAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_conv_dims:ConvDimensionNumbersAttr,stablehlo_compute_conv_strides:VecAttr,stablehlo_compute_conv_padding:VecAttr,stablehlo_compute_conv_lhs_dilation:VecAttr,stablehlo_compute_conv_rhs_dilation:VecAttr,stablehlo_compute_conv_groups:VecAttr,stablehlo_compute_conv_reversal:VecAttr,stablehlo_compute_conv_precision:VecAttr))]
+#[pliron_op(name="stablehlo.convolution",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_conv_dims:ConvDimensionNumbersAttr,stablehlo_compute_conv_strides:VecAttr,stablehlo_compute_conv_padding:VecAttr,stablehlo_compute_conv_lhs_dilation:VecAttr,stablehlo_compute_conv_rhs_dilation:VecAttr,stablehlo_compute_conv_groups:VecAttr,stablehlo_compute_conv_reversal:VecAttr,stablehlo_compute_conv_precision:VecAttr))]
 pub struct ConvolutionOp;
 impl ConvolutionOp {
     #[allow(clippy::too_many_arguments)]
@@ -683,7 +694,7 @@ impl Verify for ConvolutionOp {
     }
 }
 
-#[pliron_op(name="stablehlo.dynamic_conv",format="$0 `,` $1 `,` $2 attr($stablehlo_compute_dynamic_conv_dims, $ConvDimensionNumbersAttr) attr($stablehlo_compute_dynamic_conv_strides, $VecAttr) attr($stablehlo_compute_dynamic_conv_lhs_dilation, $VecAttr) attr($stablehlo_compute_dynamic_conv_rhs_dilation, $VecAttr) attr($stablehlo_compute_dynamic_conv_groups, $VecAttr) attr($stablehlo_compute_dynamic_conv_reversal, $VecAttr) attr($stablehlo_compute_dynamic_conv_precision, $VecAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_dynamic_conv_dims:ConvDimensionNumbersAttr,stablehlo_compute_dynamic_conv_strides:VecAttr,stablehlo_compute_dynamic_conv_lhs_dilation:VecAttr,stablehlo_compute_dynamic_conv_rhs_dilation:VecAttr,stablehlo_compute_dynamic_conv_groups:VecAttr,stablehlo_compute_dynamic_conv_reversal:VecAttr,stablehlo_compute_dynamic_conv_precision:VecAttr))]
+#[pliron_op(name="stablehlo.dynamic_conv",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_dynamic_conv_dims:ConvDimensionNumbersAttr,stablehlo_compute_dynamic_conv_strides:VecAttr,stablehlo_compute_dynamic_conv_lhs_dilation:VecAttr,stablehlo_compute_dynamic_conv_rhs_dilation:VecAttr,stablehlo_compute_dynamic_conv_groups:VecAttr,stablehlo_compute_dynamic_conv_reversal:VecAttr,stablehlo_compute_dynamic_conv_precision:VecAttr))]
 pub struct DynamicConvOp;
 impl DynamicConvOp {
     pub fn new(
@@ -858,7 +869,7 @@ impl Verify for DynamicConvOp {
     }
 }
 
-#[pliron_op(name="stablehlo.fft",format="$0 attr($stablehlo_compute_fft_type, $FftTypeAttr) attr($stablehlo_compute_fft_length, $VecAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_fft_type:FftTypeAttr,stablehlo_compute_fft_length:VecAttr))]
+#[pliron_op(name="stablehlo.fft",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_fft_type:FftTypeAttr,stablehlo_compute_fft_length:VecAttr))]
 pub struct FftOp;
 impl FftOp {
     pub fn new(
@@ -935,7 +946,7 @@ impl Verify for FftOp {
     }
 }
 
-#[pliron_op(name="stablehlo.cholesky",format="$0 attr($stablehlo_compute_cholesky_lower, $BoolAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_cholesky_lower:BoolAttr))]
+#[pliron_op(name="stablehlo.cholesky",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_cholesky_lower:BoolAttr))]
 pub struct CholeskyOp;
 impl CholeskyOp {
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle, lower: bool) -> Self {
@@ -981,7 +992,7 @@ impl Verify for CholeskyOp {
     }
 }
 
-#[pliron_op(name="stablehlo.triangular_solve",format="$0 `,` $1 attr($stablehlo_compute_triangular_flags, $VecAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_triangular_flags:VecAttr))]
+#[pliron_op(name="stablehlo.triangular_solve",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_triangular_flags:VecAttr))]
 pub struct TriangularSolveOp;
 impl TriangularSolveOp {
     #[allow(clippy::too_many_arguments)]
@@ -1073,7 +1084,7 @@ impl Verify for TriangularSolveOp {
     }
 }
 
-#[pliron_op(name="stablehlo.batch_norm_inference",format="$0 `,` $1 `,` $2 `,` $3 `,` $4 attr($stablehlo_compute_bn_options, $VecAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_bn_options:VecAttr))]
+#[pliron_op(name="stablehlo.batch_norm_inference",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_bn_options:VecAttr))]
 pub struct BatchNormInferenceOp;
 impl BatchNormInferenceOp {
     #[allow(clippy::too_many_arguments)]
@@ -1114,7 +1125,7 @@ impl Verify for BatchNormInferenceOp {
         )
     }
 }
-#[pliron_op(name="stablehlo.batch_norm_training",format="$0 `,` $1 `,` $2 attr($stablehlo_compute_bn_training_options, $VecAttr)",attributes=(stablehlo_compute_bn_training_options:VecAttr))]
+#[pliron_op(name="stablehlo.batch_norm_training",format,attributes=(stablehlo_compute_bn_training_options:VecAttr))]
 pub struct BatchNormTrainingOp;
 impl BatchNormTrainingOp {
     #[allow(clippy::too_many_arguments)]
@@ -1156,7 +1167,7 @@ impl Verify for BatchNormTrainingOp {
         )
     }
 }
-#[pliron_op(name="stablehlo.batch_norm_grad",format="$0 `,` $1 `,` $2 `,` $3 `,` $4 attr($stablehlo_compute_bn_grad_options, $VecAttr)",attributes=(stablehlo_compute_bn_grad_options:VecAttr))]
+#[pliron_op(name="stablehlo.batch_norm_grad",format,attributes=(stablehlo_compute_bn_grad_options:VecAttr))]
 pub struct BatchNormGradOp;
 impl BatchNormGradOp {
     #[allow(clippy::too_many_arguments)]
@@ -1275,7 +1286,7 @@ fn verify_bn(
     Ok(())
 }
 
-#[pliron_op(name="stablehlo.rng",format="$0 `,` $1 `,` $2 attr($stablehlo_compute_rng_distribution, $RngDistributionAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_rng_distribution:RngDistributionAttr))]
+#[pliron_op(name="stablehlo.rng",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_rng_distribution:RngDistributionAttr))]
 pub struct RngOp;
 impl RngOp {
     pub fn new(
@@ -1347,7 +1358,7 @@ impl Verify for RngOp {
     }
 }
 
-#[pliron_op(name="stablehlo.rng_bit_generator",format="$0 attr($stablehlo_compute_rng_bit_algorithm, $RngAlgorithmAttr)",attributes=(stablehlo_compute_rng_bit_algorithm:RngAlgorithmAttr))]
+#[pliron_op(name="stablehlo.rng_bit_generator",format,attributes=(stablehlo_compute_rng_bit_algorithm:RngAlgorithmAttr))]
 pub struct RngBitGeneratorOp;
 impl RngBitGeneratorOp {
     pub fn new(

@@ -13,7 +13,7 @@ use pliron::{
     value::Value,
 };
 
-#[pliron_op(name="stablehlo.convert",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.convert",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ConvertOp;
 impl ConvertOp {
     #[inline]
@@ -47,7 +47,7 @@ impl Verify for ConvertOp {
     }
 }
 
-#[pliron_op(name="stablehlo.select",format="$0 `,` $1 `,` $2",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.select",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct SelectOp;
 impl SelectOp {
     pub fn predicate(&self, ctx: &Context) -> Value {
@@ -92,7 +92,7 @@ impl Verify for SelectOp {
     }
 }
 
-#[pliron_op(name="stablehlo.compare",format="$0 `,` $1 attr($stablehlo_compare_direction, $ComparisonDirectionAttr) attr($stablehlo_compare_type, $ComparisonTypeAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compare_direction:ComparisonDirectionAttr,stablehlo_compare_type:ComparisonTypeAttr))]
+#[pliron_op(name="stablehlo.compare",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compare_direction:ComparisonDirectionAttr,stablehlo_compare_type:ComparisonTypeAttr))]
 pub struct CompareOp;
 impl CompareOp {
     pub fn lhs(&self, ctx: &Context) -> Value {
@@ -168,6 +168,32 @@ impl CompareOp {
         op.set_attr_stablehlo_compare_type(ctx, comparison_type_attr(comparison));
         op
     }
+    /// Return the comparison direction, if the attribute is present and valid.
+    pub fn direction(&self, ctx: &Context) -> Option<CompareDirection> {
+        Some(
+            match self.get_attr_stablehlo_compare_direction(ctx)?.value {
+                0 => CompareDirection::Eq,
+                1 => CompareDirection::Ne,
+                2 => CompareDirection::Ge,
+                3 => CompareDirection::Gt,
+                4 => CompareDirection::Le,
+                5 => CompareDirection::Lt,
+                _ => return None,
+            },
+        )
+    }
+    /// Return the explicit comparison type; `None` when omitted or invalid.
+    pub fn compare_type(&self, ctx: &Context) -> Option<CompareType> {
+        Some(match self.get_attr_stablehlo_compare_type(ctx)?.value {
+            0 => CompareType::NoType,
+            1 => CompareType::Float,
+            2 => CompareType::TotalOrder,
+            3 => CompareType::Signed,
+            4 => CompareType::Unsigned,
+            5 => CompareType::WeakOrder,
+            _ => return None,
+        })
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u64)]
@@ -224,7 +250,7 @@ impl Verify for CompareOp {
     }
 }
 
-#[pliron_op(name="stablehlo.clamp",format="$0 `,` $1 `,` $2",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.clamp",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ClampOp;
 impl ClampOp {
     pub fn min(&self, ctx: &Context) -> Value {
@@ -275,7 +301,7 @@ impl Verify for ClampOp {
     }
 }
 
-#[pliron_op(name="stablehlo.iota",format="attr($stablehlo_iota_dimension, $IntegerAttr)",interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<0>,pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_iota_dimension:IntegerAttr))]
+#[pliron_op(name="stablehlo.iota",format,interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<0>,pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_iota_dimension:IntegerAttr))]
 pub struct IotaOp;
 impl IotaOp {
     pub fn dimension(&self, ctx: &Context) -> Option<usize> {
@@ -310,7 +336,7 @@ impl Verify for IotaOp {
     }
 }
 
-#[pliron_op(name="stablehlo.abs",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.abs",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct AbsOp;
 impl AbsOp {
     #[inline]
@@ -344,7 +370,7 @@ impl Verify for AbsOp {
     }
 }
 
-#[pliron_op(name="stablehlo.cbrt",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.cbrt",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_result_accuracy:ResultAccuracyAttr))]
 pub struct CbrtOp;
 impl CbrtOp {
     #[inline]
@@ -378,7 +404,7 @@ impl Verify for CbrtOp {
     }
 }
 
-#[pliron_op(name="stablehlo.ceil",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.ceil",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct CeilOp;
 impl CeilOp {
     #[inline]
@@ -412,7 +438,7 @@ impl Verify for CeilOp {
     }
 }
 
-#[pliron_op(name="stablehlo.count_leading_zeros",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.count_leading_zeros",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct CountLeadingZerosOp;
 impl CountLeadingZerosOp {
     #[inline]
@@ -446,7 +472,7 @@ impl Verify for CountLeadingZerosOp {
     }
 }
 
-#[pliron_op(name="stablehlo.cosine",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.cosine",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_result_accuracy:ResultAccuracyAttr))]
 pub struct CosineOp;
 impl CosineOp {
     #[inline]
@@ -480,7 +506,7 @@ impl Verify for CosineOp {
     }
 }
 
-#[pliron_op(name="stablehlo.exponential",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.exponential",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_result_accuracy:ResultAccuracyAttr))]
 pub struct ExponentialOp;
 impl ExponentialOp {
     #[inline]
@@ -514,7 +540,7 @@ impl Verify for ExponentialOp {
     }
 }
 
-#[pliron_op(name="stablehlo.exponential_minus_one",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.exponential_minus_one",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_result_accuracy:ResultAccuracyAttr))]
 pub struct ExponentialMinusOneOp;
 impl ExponentialMinusOneOp {
     #[inline]
@@ -552,7 +578,41 @@ impl Verify for ExponentialMinusOneOp {
     }
 }
 
-#[pliron_op(name="stablehlo.floor",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.exp2",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_result_accuracy:ResultAccuracyAttr))]
+pub struct Exp2Op;
+impl Exp2Op {
+    #[inline]
+    pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
+        Self {
+            op: Operation::new(
+                ctx,
+                Self::get_concrete_op_info(),
+                vec![result],
+                vec![input],
+                vec![],
+                0,
+            ),
+        }
+    }
+    #[inline]
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "exp2", &[input.get_type(ctx)]),
+            "stablehlo.exp2",
+        )?;
+        Ok(Self::new(ctx, input, result))
+    }
+    pub fn input(&self, ctx: &Context) -> Value {
+        self.get_operation().deref(ctx).get_operand(0)
+    }
+}
+impl Verify for Exp2Op {
+    fn verify(&self, ctx: &Context) -> Result<()> {
+        crate::verification::elementwise::verify_elementwise(self, ctx, "exp2", 1)
+    }
+}
+
+#[pliron_op(name="stablehlo.floor",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct FloorOp;
 impl FloorOp {
     #[inline]
@@ -586,7 +646,7 @@ impl Verify for FloorOp {
     }
 }
 
-#[pliron_op(name="stablehlo.imag",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.imag",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ImagOp;
 impl ImagOp {
     #[inline]
@@ -620,7 +680,7 @@ impl Verify for ImagOp {
     }
 }
 
-#[pliron_op(name="stablehlo.is_finite",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.is_finite",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct IsFiniteOp;
 impl IsFiniteOp {
     #[inline]
@@ -654,7 +714,7 @@ impl Verify for IsFiniteOp {
     }
 }
 
-#[pliron_op(name="stablehlo.log",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.log",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_result_accuracy:ResultAccuracyAttr))]
 pub struct LogOp;
 impl LogOp {
     #[inline]
@@ -688,7 +748,7 @@ impl Verify for LogOp {
     }
 }
 
-#[pliron_op(name="stablehlo.log_plus_one",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.log_plus_one",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_result_accuracy:ResultAccuracyAttr))]
 pub struct LogPlusOneOp;
 impl LogPlusOneOp {
     #[inline]
@@ -722,7 +782,41 @@ impl Verify for LogPlusOneOp {
     }
 }
 
-#[pliron_op(name="stablehlo.logistic",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.log2",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_result_accuracy:ResultAccuracyAttr))]
+pub struct Log2Op;
+impl Log2Op {
+    #[inline]
+    pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
+        Self {
+            op: Operation::new(
+                ctx,
+                Self::get_concrete_op_info(),
+                vec![result],
+                vec![input],
+                vec![],
+                0,
+            ),
+        }
+    }
+    #[inline]
+    pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
+        let result = crate::ops::builder_result(
+            crate::inference::infer_elementwise(ctx, "log2", &[input.get_type(ctx)]),
+            "stablehlo.log2",
+        )?;
+        Ok(Self::new(ctx, input, result))
+    }
+    pub fn input(&self, ctx: &Context) -> Value {
+        self.get_operation().deref(ctx).get_operand(0)
+    }
+}
+impl Verify for Log2Op {
+    fn verify(&self, ctx: &Context) -> Result<()> {
+        crate::verification::elementwise::verify_elementwise(self, ctx, "log2", 1)
+    }
+}
+
+#[pliron_op(name="stablehlo.logistic",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_result_accuracy:ResultAccuracyAttr))]
 pub struct LogisticOp;
 impl LogisticOp {
     #[inline]
@@ -756,7 +850,7 @@ impl Verify for LogisticOp {
     }
 }
 
-#[pliron_op(name="stablehlo.not",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.not",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct NotOp;
 impl NotOp {
     #[inline]
@@ -790,7 +884,7 @@ impl Verify for NotOp {
     }
 }
 
-#[pliron_op(name="stablehlo.negate",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.negate",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct NegateOp;
 impl NegateOp {
     #[inline]
@@ -824,7 +918,7 @@ impl Verify for NegateOp {
     }
 }
 
-#[pliron_op(name="stablehlo.popcnt",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.popcnt",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct PopulationCountOp;
 impl PopulationCountOp {
     #[inline]
@@ -858,7 +952,7 @@ impl Verify for PopulationCountOp {
     }
 }
 
-#[pliron_op(name="stablehlo.real",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.real",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct RealOp;
 impl RealOp {
     #[inline]
@@ -892,7 +986,7 @@ impl Verify for RealOp {
     }
 }
 
-#[pliron_op(name="stablehlo.round_nearest_afz",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.round_nearest_afz",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct RoundNearestAfzOp;
 impl RoundNearestAfzOp {
     #[inline]
@@ -926,7 +1020,7 @@ impl Verify for RoundNearestAfzOp {
     }
 }
 
-#[pliron_op(name="stablehlo.round_nearest_even",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.round_nearest_even",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct RoundNearestEvenOp;
 impl RoundNearestEvenOp {
     #[inline]
@@ -960,7 +1054,7 @@ impl Verify for RoundNearestEvenOp {
     }
 }
 
-#[pliron_op(name="stablehlo.rsqrt",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.rsqrt",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_result_accuracy:ResultAccuracyAttr))]
 pub struct RsqrtOp;
 impl RsqrtOp {
     #[inline]
@@ -994,7 +1088,7 @@ impl Verify for RsqrtOp {
     }
 }
 
-#[pliron_op(name="stablehlo.sign",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.sign",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct SignOp;
 impl SignOp {
     #[inline]
@@ -1028,7 +1122,7 @@ impl Verify for SignOp {
     }
 }
 
-#[pliron_op(name="stablehlo.sine",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.sine",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_result_accuracy:ResultAccuracyAttr))]
 pub struct SineOp;
 impl SineOp {
     #[inline]
@@ -1062,7 +1156,7 @@ impl Verify for SineOp {
     }
 }
 
-#[pliron_op(name="stablehlo.sqrt",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.sqrt",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_result_accuracy:ResultAccuracyAttr))]
 pub struct SqrtOp;
 impl SqrtOp {
     #[inline]
@@ -1096,7 +1190,7 @@ impl Verify for SqrtOp {
     }
 }
 
-#[pliron_op(name="stablehlo.tan",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.tan",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_result_accuracy:ResultAccuracyAttr))]
 pub struct TanOp;
 impl TanOp {
     #[inline]
@@ -1130,7 +1224,7 @@ impl Verify for TanOp {
     }
 }
 
-#[pliron_op(name="stablehlo.tanh",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.tanh",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_result_accuracy:ResultAccuracyAttr))]
 pub struct TanhOp;
 impl TanhOp {
     #[inline]
@@ -1164,7 +1258,7 @@ impl Verify for TanhOp {
     }
 }
 
-#[pliron_op(name="stablehlo.add",format="$0 `,` $1",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.add",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct AddOp;
 impl AddOp {
     #[inline]
@@ -1200,7 +1294,7 @@ impl Verify for AddOp {
     }
 }
 
-#[pliron_op(name="stablehlo.atan2",format="$0 `,` $1",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.atan2",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct Atan2Op;
 impl Atan2Op {
     #[inline]
@@ -1241,7 +1335,7 @@ impl Verify for Atan2Op {
     }
 }
 
-#[pliron_op(name="stablehlo.complex",format="$0 `,` $1",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.complex",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ComplexOp;
 impl ComplexOp {
     #[inline]
@@ -1282,7 +1376,7 @@ impl Verify for ComplexOp {
     }
 }
 
-#[pliron_op(name="stablehlo.divide",format="$0 `,` $1",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.divide",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct DivideOp;
 impl DivideOp {
     #[inline]
@@ -1323,7 +1417,7 @@ impl Verify for DivideOp {
     }
 }
 
-#[pliron_op(name="stablehlo.maximum",format="$0 `,` $1",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.maximum",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct MaximumOp;
 impl MaximumOp {
     #[inline]
@@ -1364,7 +1458,7 @@ impl Verify for MaximumOp {
     }
 }
 
-#[pliron_op(name="stablehlo.minimum",format="$0 `,` $1",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.minimum",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct MinimumOp;
 impl MinimumOp {
     #[inline]
@@ -1405,7 +1499,7 @@ impl Verify for MinimumOp {
     }
 }
 
-#[pliron_op(name="stablehlo.multiply",format="$0 `,` $1",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.multiply",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct MultiplyOp;
 impl MultiplyOp {
     #[inline]
@@ -1441,7 +1535,7 @@ impl Verify for MultiplyOp {
     }
 }
 
-#[pliron_op(name="stablehlo.power",format="$0 `,` $1",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.power",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct PowerOp;
 impl PowerOp {
     #[inline]
@@ -1482,7 +1576,7 @@ impl Verify for PowerOp {
     }
 }
 
-#[pliron_op(name="stablehlo.remainder",format="$0 `,` $1",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.remainder",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct RemainderOp;
 impl RemainderOp {
     #[inline]
@@ -1523,7 +1617,7 @@ impl Verify for RemainderOp {
     }
 }
 
-#[pliron_op(name="stablehlo.shift_left",format="$0 `,` $1",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.shift_left",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ShiftLeftOp;
 impl ShiftLeftOp {
     #[inline]
@@ -1564,7 +1658,7 @@ impl Verify for ShiftLeftOp {
     }
 }
 
-#[pliron_op(name="stablehlo.shift_right_arithmetic",format="$0 `,` $1",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.shift_right_arithmetic",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ShiftRightArithmeticOp;
 impl ShiftRightArithmeticOp {
     #[inline]
@@ -1605,7 +1699,7 @@ impl Verify for ShiftRightArithmeticOp {
     }
 }
 
-#[pliron_op(name="stablehlo.shift_right_logical",format="$0 `,` $1",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.shift_right_logical",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ShiftRightLogicalOp;
 impl ShiftRightLogicalOp {
     #[inline]
@@ -1646,7 +1740,7 @@ impl Verify for ShiftRightLogicalOp {
     }
 }
 
-#[pliron_op(name="stablehlo.subtract",format="$0 `,` $1",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.subtract",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct SubtractOp;
 impl SubtractOp {
     #[inline]
@@ -1687,7 +1781,7 @@ impl Verify for SubtractOp {
     }
 }
 
-#[pliron_op(name="stablehlo.and",format="$0 `,` $1",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.and",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct AndOp;
 impl AndOp {
     #[inline]
@@ -1728,7 +1822,7 @@ impl Verify for AndOp {
     }
 }
 
-#[pliron_op(name="stablehlo.or",format="$0 `,` $1",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.or",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct OrOp;
 impl OrOp {
     #[inline]
@@ -1765,7 +1859,7 @@ impl Verify for OrOp {
     }
 }
 
-#[pliron_op(name="stablehlo.xor",format="$0 `,` $1",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.xor",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct XorOp;
 impl XorOp {
     #[inline]
@@ -1806,7 +1900,7 @@ impl Verify for XorOp {
     }
 }
 
-#[pliron_op(name="stablehlo.bitcast_convert",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.bitcast_convert",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct BitcastConvertOp;
 impl BitcastConvertOp {
     pub fn input(&self, ctx: &Context) -> Value {
@@ -1841,7 +1935,7 @@ impl Verify for BitcastConvertOp {
     }
 }
 
-#[pliron_op(name="stablehlo.reduce_precision",format="$0 attr($stablehlo_exponent_bits, $IntegerAttr) attr($stablehlo_mantissa_bits, $IntegerAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_exponent_bits:IntegerAttr,stablehlo_mantissa_bits:IntegerAttr))]
+#[pliron_op(name="stablehlo.reduce_precision",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_exponent_bits:IntegerAttr,stablehlo_mantissa_bits:IntegerAttr))]
 pub struct ReducePrecisionOp;
 impl ReducePrecisionOp {
     pub fn input(&self, ctx: &Context) -> Value {
@@ -1899,7 +1993,7 @@ impl Verify for ReducePrecisionOp {
     }
 }
 
-#[pliron_op(name="stablehlo.uniform_quantize",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.uniform_quantize",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct UniformQuantizeOp;
 impl UniformQuantizeOp {
     pub fn input(&self, ctx: &Context) -> Value {
@@ -1941,7 +2035,7 @@ impl Verify for UniformQuantizeOp {
     }
 }
 
-#[pliron_op(name="stablehlo.uniform_dequantize",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.uniform_dequantize",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct UniformDequantizeOp;
 impl UniformDequantizeOp {
     pub fn input(&self, ctx: &Context) -> Value {

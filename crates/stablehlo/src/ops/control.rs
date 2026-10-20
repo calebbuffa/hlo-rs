@@ -20,7 +20,7 @@ use pliron::{
     builtin::attributes::TypeAttr as PlironTypeAttr, identifier::Identifier, region::Region,
 };
 
-#[pliron_op(name="stablehlo.return",format="operands(CharSpace(`,`))",interfaces=[pliron::builtin::op_interfaces::NResultsInterface<0>,pliron::builtin::op_interfaces::IsTerminatorInterface])]
+#[pliron_op(name="stablehlo.return",format,interfaces=[pliron::builtin::op_interfaces::NResultsInterface<0>,pliron::builtin::op_interfaces::IsTerminatorInterface])]
 pub struct ReturnOp;
 impl ReturnOp {
     pub fn new(ctx: &mut Context, value: Value) -> Self {
@@ -41,7 +41,7 @@ impl Verify for ReturnOp {
     }
 }
 
-#[pliron_op(name="stablehlo.module",format="`module`",interfaces=[pliron::builtin::op_interfaces::OneRegionInterface])]
+#[pliron_op(name="stablehlo.module",format,interfaces=[pliron::builtin::op_interfaces::OneRegionInterface,pliron::builtin::op_interfaces::IsolatedFromAboveInterface])]
 pub struct ModuleOp;
 impl ModuleOp {
     /// Creates a module with exactly one body region and one empty body block.
@@ -94,7 +94,7 @@ impl Verify for ModuleOp {
     }
 }
 
-#[pliron_op(name="stablehlo.call",format="attr($stablehlo_call_callee, $StringAttr) operands(CharSpace(`,`))",attributes=(stablehlo_call_callee:StringAttr))]
+#[pliron_op(name="stablehlo.call",format,attributes=(stablehlo_call_callee:StringAttr))]
 pub struct CallOp;
 impl CallOp {
     pub fn new(
@@ -116,27 +116,20 @@ impl Verify for CallOp {
             return invalid(self, ctx, "call requires a symbol reference");
         }
         let ir = self.get_operation().deref(ctx);
-        if ir
-            .operands()
-            .any(|v| tensor_parts(ctx, v.get_type(ctx)).is_none())
-            || ir
-                .results()
-                .any(|v| tensor_parts(ctx, v.get_type(ctx)).is_none())
+        if ir.operands().any(|v| !is_value_type(ctx, v.get_type(ctx)))
+            || ir.results().any(|v| !is_value_type(ctx, v.get_type(ctx)))
         {
             return invalid(
                 self,
                 ctx,
-                "call operands and results must be supported ranked tensors",
+                "call operands and results must be supported value types",
             );
         }
         Ok(())
     }
 }
 
-#[pliron_op(
-    name = "stablehlo.while",
-    format = "operands(CharSpace(`,`)) regions(CharSpace(`,`))"
-)]
+#[pliron_op(name = "stablehlo.while", format)]
 pub struct WhileOp;
 impl WhileOp {
     pub fn new(ctx: &mut Context, carried: Vec<Value>, result_types: Vec<TypeHandle>) -> Self {
@@ -194,7 +187,7 @@ impl Verify for WhileOp {
     }
 }
 
-#[pliron_op(name="stablehlo.func",format="`func`",interfaces=[pliron::builtin::op_interfaces::OneRegionInterface],attributes=(stablehlo_function_name: StringAttr, stablehlo_function_signature: PlironTypeAttr))]
+#[pliron_op(name="stablehlo.func",format,interfaces=[pliron::builtin::op_interfaces::OneRegionInterface,pliron::builtin::op_interfaces::IsolatedFromAboveInterface],attributes=(stablehlo_function_name: StringAttr, stablehlo_function_signature: PlironTypeAttr))]
 pub struct FuncOp;
 impl FuncOp {
     /// Creates a named function with a validated StableHLO signature and typed entry block.
@@ -328,10 +321,7 @@ impl Verify for FuncOp {
     }
 }
 
-#[pliron_op(
-    name = "stablehlo.if",
-    format = "operands(CharSpace(`,`)) regions(CharSpace(`,`))"
-)]
+#[pliron_op(name = "stablehlo.if", format)]
 pub struct IfOp;
 impl IfOp {
     pub fn new(ctx: &mut Context, predicate: Value, results: Vec<TypeHandle>) -> Self {
@@ -386,10 +376,7 @@ impl Verify for IfOp {
     }
 }
 
-#[pliron_op(
-    name = "stablehlo.case",
-    format = "operands(CharSpace(`,`)) regions(CharSpace(`,`))"
-)]
+#[pliron_op(name = "stablehlo.case", format)]
 pub struct CaseOp;
 impl CaseOp {
     pub fn new(
@@ -429,7 +416,7 @@ impl Verify for CaseOp {
     }
 }
 
-#[pliron_op(name="stablehlo.tuple",format="operands(CharSpace(`,`))",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.tuple",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct TupleOp;
 impl TupleOp {
     pub fn new(ctx: &mut Context, values: Vec<Value>) -> Self {
@@ -470,7 +457,7 @@ impl Verify for TupleOp {
     }
 }
 
-#[pliron_op(name="stablehlo.get_tuple_element",format="$0 attr($stablehlo_get_tuple_element_index, $IntegerAttr)",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_get_tuple_element_index:IntegerAttr))]
+#[pliron_op(name="stablehlo.get_tuple_element",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_get_tuple_element_index:IntegerAttr))]
 pub struct GetTupleElementOp;
 impl GetTupleElementOp {
     pub fn new(ctx: &mut Context, value: Value, index: u32, result: TypeHandle) -> Self {
@@ -489,6 +476,14 @@ impl GetTupleElementOp {
             typed_integer_attr(ctx, index as u64, 32),
         );
         op
+    }
+    /// Return the projected tuple element index.
+    pub fn index(&self, ctx: &Context) -> Option<u32> {
+        self.get_attr_stablehlo_get_tuple_element_index(ctx)?
+            .value()
+            .to_string_decimal(false)
+            .parse()
+            .ok()
     }
 }
 impl Verify for GetTupleElementOp {
@@ -515,7 +510,7 @@ impl Verify for GetTupleElementOp {
     }
 }
 
-#[pliron_op(name="stablehlo.composite",format="operands(CharSpace(`,`)) regions(CharSpace(`,`))",attributes=(stablehlo_composite_name:StringAttr,stablehlo_composite_version:IntegerAttr,stablehlo_composite_decomposition:StringAttr,stablehlo_composite_attributes:DictAttr))]
+#[pliron_op(name="stablehlo.composite",format,attributes=(stablehlo_composite_name:StringAttr,stablehlo_composite_version:IntegerAttr,stablehlo_composite_decomposition:StringAttr,stablehlo_composite_attributes:DictAttr))]
 pub struct CompositeOp;
 impl CompositeOp {
     pub fn new(
@@ -560,11 +555,92 @@ impl Verify for CompositeOp {
     }
 }
 
-#[pliron_op(name="stablehlo.custom_call",format="operands(CharSpace(`,`))",attributes=(stablehlo_custom_call_target:StringAttr,stablehlo_custom_call_has_side_effect:BoolAttr,stablehlo_custom_call_api_version:IntegerAttr,stablehlo_custom_call_output_operand_aliases:VecAttr,stablehlo_custom_call_operand_layouts:ArrayOfLayoutAttr,stablehlo_custom_call_result_layouts:ArrayOfLayoutAttr))]
+#[pliron_op(name="stablehlo.custom_call",format,attributes=(stablehlo_custom_call_target:StringAttr,stablehlo_custom_call_has_side_effect:BoolAttr,stablehlo_custom_call_api_version:IntegerAttr,stablehlo_custom_call_called_computations:VecAttr,stablehlo_custom_call_output_operand_aliases:VecAttr,stablehlo_custom_call_operand_layouts:ArrayOfLayoutAttr,stablehlo_custom_call_result_layouts:ArrayOfLayoutAttr))]
 pub struct CustomCallOp;
 static CUSTOM_CALL_BACKEND_CONFIG: std::sync::LazyLock<Identifier> =
     std::sync::LazyLock::new(|| Identifier::new("stablehlo_custom_call_backend_config"));
+static CUSTOM_CALL_CALLED_COMPUTATIONS: std::sync::LazyLock<Identifier> =
+    std::sync::LazyLock::new(|| Identifier::new("stablehlo_custom_call_called_computations"));
 impl CustomCallOp {
+    /// Resolve the source API version, using the upstream ORIGINAL default.
+    pub fn api_version(&self, ctx: &Context) -> Result<u32> {
+        let ir = self.get_operation().deref(ctx);
+        let key = Identifier::new("stablehlo_custom_call_api_version");
+        let Some(attribute) = ir.attributes.0.get(&key) else {
+            return Ok(1);
+        };
+        let version = attribute
+            .downcast_ref::<IntegerAttr>()
+            .and_then(|attribute| {
+                attribute
+                    .value()
+                    .to_string_decimal(false)
+                    .parse::<u32>()
+                    .ok()
+            })
+            .filter(|version| *version <= 4);
+        version.ok_or_else(|| {
+            pliron::verify_error_noloc!(crate::Diagnostic::InvalidAttribute {
+                attribute: "api_version",
+                reason: "custom_call api_version must be an integer between 0 and 4",
+            })
+        })
+    }
+    /// Return ordered flat function references, defaulting to an empty list.
+    pub fn called_computations(&self, ctx: &Context) -> Result<Vec<String>> {
+        let ir = self.get_operation().deref(ctx);
+        let Some(value) = ir.attributes.0.get(&*CUSTOM_CALL_CALLED_COMPUTATIONS) else {
+            return Ok(vec![]);
+        };
+        let Some(values) = value.downcast_ref::<VecAttr>() else {
+            return pliron::verify_err!(
+                self.loc(ctx),
+                crate::Diagnostic::InvalidAttribute {
+                    attribute: "called_computations",
+                    reason: "expected an array of flat symbol references",
+                }
+            );
+        };
+        let mut names = Vec::with_capacity(values.0.len());
+        for value in &values.0 {
+            let Some(reference) = value.downcast_ref::<SymbolRefAttr>() else {
+                return pliron::verify_err!(
+                    self.loc(ctx),
+                    crate::Diagnostic::InvalidAttribute {
+                        attribute: "called_computations",
+                        reason: "entries must be flat symbol references",
+                    }
+                );
+            };
+            if reference.path.len() != 1 || reference.path[0].as_str().is_empty() {
+                return pliron::verify_err!(
+                    self.loc(ctx),
+                    crate::Diagnostic::InvalidAttribute {
+                        attribute: "called_computations",
+                        reason: "references must have exactly one nonempty symbol name",
+                    }
+                );
+            }
+            names.push(reference.path[0].as_str().to_owned());
+        }
+        Ok(names)
+    }
+    /// Set ordered flat function references without imposing callee signatures.
+    pub fn set_called_computations(&self, ctx: &mut Context, names: Vec<String>) {
+        self.set_attr_stablehlo_custom_call_called_computations(
+            ctx,
+            VecAttr::new(
+                names
+                    .into_iter()
+                    .map(|name| {
+                        Box::new(SymbolRefAttr {
+                            path: vec![StringAttr::new(name)],
+                        }) as AttrObj
+                    })
+                    .collect(),
+            ),
+        );
+    }
     /// Set the native string/bytes (untyped FFI) or dictionary (typed FFI) configuration.
     pub fn set_backend_config(&self, ctx: &mut Context, config: AttrObj) {
         self.get_operation()
@@ -606,37 +682,43 @@ impl CustomCallOp {
             typed_integer_attr(ctx, api_version as u64, 32),
         );
         op.set_attr_stablehlo_custom_call_output_operand_aliases(ctx, VecAttr::new(vec![]));
-        op.set_attr_stablehlo_custom_call_operand_layouts(
-            ctx,
-            ArrayOfLayoutAttr { layouts: vec![] },
-        );
-        op.set_attr_stablehlo_custom_call_result_layouts(
-            ctx,
-            ArrayOfLayoutAttr { layouts: vec![] },
-        );
         op
     }
 }
 impl Verify for CustomCallOp {
     fn verify(&self, ctx: &Context) -> Result<()> {
         let ir = self.get_operation().deref(ctx);
-        if self
-            .get_attr_stablehlo_custom_call_target(ctx)
-            .is_none_or(|x| x.as_str().is_empty())
-        {
-            return invalid(self, ctx, "custom_call requires nonempty target name");
+        self.called_computations(ctx)?;
+        for (key, valid) in [
+            (
+                "stablehlo_custom_call_has_side_effect",
+                self.get_attr_stablehlo_custom_call_has_side_effect(ctx)
+                    .is_some(),
+            ),
+            (
+                "stablehlo_custom_call_output_operand_aliases",
+                self.get_attr_stablehlo_custom_call_output_operand_aliases(ctx)
+                    .is_some(),
+            ),
+        ] {
+            if ir.attributes.0.contains_key(&Identifier::new(key)) && !valid {
+                return invalid(
+                    self,
+                    ctx,
+                    "custom_call effect or aliases metadata has invalid type",
+                );
+            }
         }
-        let api = self
-            .get_attr_stablehlo_custom_call_api_version(ctx)
-            .and_then(|a| a.value().to_string_decimal(false).parse::<u32>().ok());
-        if api.is_none_or(|v| v > 4) {
-            return invalid(self, ctx, "custom_call api_version must be between 0 and 4");
-        }
+        let Some(target) = self.get_attr_stablehlo_custom_call_target(ctx) else {
+            return invalid(self, ctx, "custom_call requires a string target name");
+        };
+        let special_buffer_call = matches!(target.as_str(), "CreateBuffer" | "Pin" | "Unpin");
+        let api = self.api_version(ctx)?;
         if let Some(config) = self.backend_config(ctx) {
             let dictionary = config.downcast_ref::<DictAttr>().is_some();
             let string = config.downcast_ref::<StringAttr>().is_some()
                 || config.downcast_ref::<BytesAttr>().is_some();
-            if (api == Some(4) && !dictionary) || (api != Some(4) && !string) {
+            if (api == 4 && !dictionary) || (api != 4 && !string) {
                 return invalid(
                     self,
                     ctx,
@@ -645,22 +727,32 @@ impl Verify for CustomCallOp {
             }
             crate::attributes::verify_attribute(ctx, &config)?;
         }
-        let operand_layouts = self
-            .get_attr_stablehlo_custom_call_operand_layouts(ctx)
-            .map(|a| a.layouts.clone())
-            .unwrap_or_default();
-        let result_layouts = self
-            .get_attr_stablehlo_custom_call_result_layouts(ctx)
-            .map(|a| a.layouts.clone())
-            .unwrap_or_default();
-        if operand_layouts.is_empty() != result_layouts.is_empty() {
+        let operand_layouts = self.get_attr_stablehlo_custom_call_operand_layouts(ctx);
+        let result_layouts = self.get_attr_stablehlo_custom_call_result_layouts(ctx);
+        for (key, valid) in [
+            (
+                "stablehlo_custom_call_operand_layouts",
+                operand_layouts.is_some(),
+            ),
+            (
+                "stablehlo_custom_call_result_layouts",
+                result_layouts.is_some(),
+            ),
+        ] {
+            if ir.attributes.0.contains_key(&Identifier::new(key)) && !valid {
+                return invalid(self, ctx, "custom_call layouts require ArrayOfLayoutAttr");
+            }
+        }
+        if operand_layouts.is_some() != result_layouts.is_some() {
             return invalid(
                 self,
                 ctx,
                 "custom_call operand and result layouts must be supplied together",
             );
         }
-        if !operand_layouts.is_empty() {
+        if let (Some(operand_layouts), Some(result_layouts)) = (operand_layouts, result_layouts) {
+            let operand_layouts = &operand_layouts.layouts;
+            let result_layouts = &result_layouts.layouts;
             let result_types: Vec<_> = if ir.get_num_results() == 1 {
                 let ty = ir.get_result(0).get_type(ctx);
                 let obj = ty.deref(ctx);
@@ -682,16 +774,45 @@ impl Verify for CustomCallOp {
             for (ty, layout) in ir
                 .operands()
                 .map(|v| v.get_type(ctx))
-                .zip(&operand_layouts)
-                .chain(result_types.iter().copied().zip(&result_layouts))
+                .zip(operand_layouts)
+                .chain(result_types.iter().copied().zip(result_layouts))
             {
                 let object = ty.deref(ctx);
+                let values = &layout.minor_to_major;
+                if object.is::<TupleType>() {
+                    return invalid(
+                        self,
+                        ctx,
+                        "custom_call tuple layout constraints are not supported",
+                    );
+                }
+                if object.is::<UnrankedTensorType>() || object.is::<UnrankedBufferType>() {
+                    continue;
+                }
                 let rank = object
                     .downcast_ref::<TensorType>()
                     .map(|t| t.rank())
-                    .or_else(|| object.downcast_ref::<TupleType>().map(|_| usize::MAX));
-                let values = &layout.minor_to_major;
-                if rank.is_none_or(|r| r != values.len()) || {
+                    .or_else(|| {
+                        object
+                            .downcast_ref::<BufferType>()
+                            .map(|t| t.dimensions.len())
+                    })
+                    .or_else(|| {
+                        object
+                            .downcast_ref::<VectorType>()
+                            .map(|t| t.dimensions.len())
+                    });
+                let Some(rank) = rank else {
+                    if values.is_empty() {
+                        continue;
+                    }
+                    return invalid(
+                        self,
+                        ctx,
+                        "custom_call non-shaped values require empty layouts",
+                    );
+                };
+                if rank != values.len() || {
                     let mut seen = std::collections::HashSet::new();
                     values
                         .iter()
@@ -705,8 +826,9 @@ impl Verify for CustomCallOp {
                 }
             }
         }
+        let mut buffer_outputs = std::collections::HashSet::new();
+        let mut buffer_operands = std::collections::HashSet::new();
         if let Some(aliases) = self.get_attr_stablehlo_custom_call_output_operand_aliases(ctx) {
-            let mut outputs = std::collections::HashSet::new();
             for item in &aliases.0 {
                 let Some(alias) = item.downcast_ref::<OutputOperandAliasAttr>() else {
                     return invalid(
@@ -715,13 +837,13 @@ impl Verify for CustomCallOp {
                         "output_operand_aliases must contain typed aliases",
                     );
                 };
-                let Some(input) = usize::try_from(alias.operand_index).ok().and_then(|i| {
-                    tuple_path(
-                        ctx,
-                        ir.get_operand(i).get_type(ctx),
-                        &alias.operand_tuple_indices,
-                    )
-                }) else {
+                let Some(input) = usize::try_from(alias.operand_index)
+                    .ok()
+                    .and_then(|i| ir.operands().nth(i))
+                    .and_then(|value| {
+                        tuple_path(ctx, value.get_type(ctx), &alias.operand_tuple_indices)
+                    })
+                else {
                     return invalid(self, ctx, "output_operand_aliases operand path is invalid");
                 };
                 let output = if ir.get_num_results() == 1 {
@@ -739,12 +861,105 @@ impl Verify for CustomCallOp {
                         None => None,
                     }
                 };
-                if output != Some(input) || !outputs.insert(alias.output_tuple_indices.clone()) {
-                    return invalid(
-                        self,
-                        ctx,
-                        "output_operand_aliases paths must be unique and types must agree",
-                    );
+                if output != Some(input) {
+                    return invalid(self, ctx, "output_operand_aliases types must agree");
+                }
+                if !special_buffer_call && input.deref(ctx).is::<BufferType>() {
+                    if !buffer_outputs.insert(alias.output_tuple_indices.clone()) {
+                        return invalid(
+                            self,
+                            ctx,
+                            "buffer output cannot be aliased more than once",
+                        );
+                    }
+                    if !buffer_operands
+                        .insert((alias.operand_index, alias.operand_tuple_indices.clone()))
+                    {
+                        return invalid(
+                            self,
+                            ctx,
+                            "buffer operand cannot be aliased more than once",
+                        );
+                    }
+                }
+            }
+        }
+        if target.as_str() == "CreateBuffer" {
+            if ir.get_num_operands() != 0
+                || ir.get_num_results() != 1
+                || !ir.get_type(0).deref(ctx).is::<BufferType>()
+            {
+                return invalid(
+                    self,
+                    ctx,
+                    "CreateBuffer requires no operands and one ranked buffer result",
+                );
+            }
+            return Ok(());
+        }
+        if matches!(target.as_str(), "Pin" | "Unpin") {
+            if ir.get_num_operands() != 1 || ir.get_num_results() != 1 {
+                return invalid(self, ctx, "Pin/Unpin requires one operand and one result");
+            }
+            let input = ir.get_operand(0).get_type(ctx);
+            let output = ir.get_type(0);
+            let (tensor, buffer) = if target.as_str() == "Pin" {
+                (input, output)
+            } else {
+                (output, input)
+            };
+            let tensor = tensor.deref(ctx);
+            let buffer = buffer.deref(ctx);
+            let Some(buffer) = buffer.downcast_ref::<BufferType>() else {
+                return invalid(self, ctx, "Pin/Unpin requires a ranked buffer");
+            };
+            let compatible = if let Some(tensor) = tensor.downcast_ref::<TensorType>() {
+                tensor.element == buffer.element
+                    && tensor.dimensions.len() == buffer.dimensions.len()
+                    && tensor
+                        .dimensions
+                        .iter()
+                        .zip(&buffer.dimensions)
+                        .all(|(&a, &b)| a < 0 || b < 0 || a == b)
+            } else if let Some(tensor) = tensor.downcast_ref::<UnrankedTensorType>() {
+                tensor.element == buffer.element
+            } else {
+                false
+            };
+            if !compatible {
+                return invalid(
+                    self,
+                    ctx,
+                    "Pin/Unpin requires compatible tensor and buffer shapes with identical elements",
+                );
+            }
+            return Ok(());
+        }
+        let singleton = ir.get_num_results() == 1;
+        let mut pending: Vec<_> = ir
+            .results()
+            .enumerate()
+            .map(|(index, value)| {
+                (
+                    value.get_type(ctx),
+                    if singleton {
+                        vec![]
+                    } else {
+                        vec![index as i64]
+                    },
+                )
+            })
+            .collect();
+        while let Some((ty, path)) = pending.pop() {
+            let object = ty.deref(ctx);
+            if object.is::<BufferType>() && !buffer_outputs.contains(&path) {
+                return invalid(self, ctx, "buffer output requires an output_operand_alias");
+            }
+            if let Some(tuple) = object.downcast_ref::<TupleType>() {
+                for (index, &element) in tuple.elements.iter().enumerate() {
+                    let mut path = path.clone();
+                    path.push(index as i64);
+                    pending.push((element, path));
                 }
             }
         }
@@ -752,10 +967,7 @@ impl Verify for CustomCallOp {
     }
 }
 
-#[pliron_op(
-    name = "stablehlo.optimization_barrier",
-    format = "operands(CharSpace(`,`))"
-)]
+#[pliron_op(name = "stablehlo.optimization_barrier", format)]
 pub struct OptimizationBarrierOp;
 impl OptimizationBarrierOp {
     pub fn new(ctx: &mut Context, values: Vec<Value>) -> Self {
@@ -783,7 +995,7 @@ impl Verify for OptimizationBarrierOp {
     }
 }
 
-#[pliron_op(name="stablehlo.create_token",format="",interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<0>,pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.create_token",format,interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<0>,pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct CreateTokenOp;
 impl CreateTokenOp {
     pub fn new(ctx: &mut Context) -> Self {
@@ -813,7 +1025,7 @@ impl Verify for CreateTokenOp {
     }
 }
 
-#[pliron_op(name="stablehlo.after_all",format="operands(CharSpace(`,`))",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.after_all",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct AfterAllOp;
 impl AfterAllOp {
     pub fn new(ctx: &mut Context, tokens: Vec<Value>) -> Self {
@@ -912,7 +1124,7 @@ fn region_signature(
     actual_args == args && region_returns(region, ctx, args.len(), results, false)
 }
 
-#[pliron_op(name="stablehlo.replica_id",format="",interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<0>,pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.replica_id",format,interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<0>,pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ReplicaIdOp;
 impl ReplicaIdOp {
     pub fn new(ctx: &mut Context) -> Self {
@@ -941,7 +1153,7 @@ impl Verify for ReplicaIdOp {
     }
 }
 
-#[pliron_op(name="stablehlo.partition_id",format="",interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<0>,pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.partition_id",format,interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<0>,pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct PartitionIdOp;
 impl PartitionIdOp {
     pub fn new(ctx: &mut Context) -> Self {
@@ -970,7 +1182,7 @@ impl Verify for PartitionIdOp {
     }
 }
 
-#[pliron_op(name="stablehlo.infeed",format="$0 attr($stablehlo_infeed_config, $StringAttr) attr($stablehlo_infeed_layout, $ArrayOfLayoutAttr)",attributes=(stablehlo_infeed_config:StringAttr,stablehlo_infeed_layout:ArrayOfLayoutAttr))]
+#[pliron_op(name="stablehlo.infeed",format,attributes=(stablehlo_infeed_config:StringAttr,stablehlo_infeed_layout:ArrayOfLayoutAttr))]
 pub struct InfeedOp;
 impl InfeedOp {
     pub fn new(
@@ -1038,7 +1250,7 @@ impl Verify for InfeedOp {
     }
 }
 
-#[pliron_op(name="stablehlo.outfeed",format="operands(CharSpace(`,`)) attr($stablehlo_outfeed_config, $StringAttr)",attributes=(stablehlo_outfeed_config:StringAttr))]
+#[pliron_op(name="stablehlo.outfeed",format,attributes=(stablehlo_outfeed_config:StringAttr))]
 pub struct OutfeedOp;
 impl OutfeedOp {
     pub fn new(ctx: &mut Context, value: Value, token: Value, config: String) -> Self {
@@ -1076,7 +1288,7 @@ impl Verify for OutfeedOp {
     }
 }
 
-#[pliron_op(name="stablehlo.send",format="operands(CharSpace(`,`)) attr($stablehlo_send_channel_handle, $ChannelHandleAttr) attr($stablehlo_send_is_host_transfer, $BoolAttr)",attributes=(stablehlo_send_channel_handle:ChannelHandleAttr,stablehlo_send_is_host_transfer:BoolAttr))]
+#[pliron_op(name="stablehlo.send",format,attributes=(stablehlo_send_channel_handle:ChannelHandleAttr,stablehlo_send_is_host_transfer:BoolAttr))]
 pub struct SendOp;
 impl SendOp {
     pub fn new(
@@ -1130,7 +1342,7 @@ impl Verify for SendOp {
     }
 }
 
-#[pliron_op(name="stablehlo.recv",format="$0 attr($stablehlo_recv_channel_handle, $ChannelHandleAttr) attr($stablehlo_recv_is_host_transfer, $BoolAttr)",attributes=(stablehlo_recv_channel_handle:ChannelHandleAttr,stablehlo_recv_is_host_transfer:BoolAttr))]
+#[pliron_op(name="stablehlo.recv",format,attributes=(stablehlo_recv_channel_handle:ChannelHandleAttr,stablehlo_recv_is_host_transfer:BoolAttr))]
 pub struct RecvOp;
 impl RecvOp {
     pub fn new(
@@ -1184,10 +1396,7 @@ impl Verify for RecvOp {
     }
 }
 
-#[pliron_op(
-    name = "stablehlo.async_start",
-    format = "operands(CharSpace(`,`)) regions(CharSpace(`,`))"
-)]
+#[pliron_op(name = "stablehlo.async_start", format)]
 pub struct AsyncStartOp;
 impl AsyncStartOp {
     pub fn new(ctx: &mut Context, operands: Vec<Value>, future_results: Vec<TypeHandle>) -> Self {
@@ -1253,7 +1462,7 @@ impl Verify for AsyncStartOp {
                     | "stablehlo.collective_broadcast"
                     | "stablehlo.collective_reduce"
                     | "stablehlo.collective_permute"
-                    | "stablehlo.cross_replica_sum"
+                    | "stablehlo.cross-replica-sum"
             ) {
                 return invalid(
                     self,
@@ -1287,7 +1496,7 @@ impl Verify for AsyncStartOp {
     }
 }
 
-#[pliron_op(name="stablehlo.async_done",format="$0",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
+#[pliron_op(name="stablehlo.async_done",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct AsyncDoneOp;
 impl AsyncDoneOp {
     pub fn new(ctx: &mut Context, state: Value, results: Vec<TypeHandle>) -> Self {

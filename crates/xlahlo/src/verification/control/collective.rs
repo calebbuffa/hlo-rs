@@ -49,6 +49,90 @@ fn group_mode(channel: bool, global: Option<bool>) -> Result<GroupMode> {
     })
 }
 
+enum GroupList<'a> {
+    Explicit(Ref<'a, ReplicaGroups>),
+    Iota(Ref<'a, IotaReplicaGroupList>),
+    Mesh(Ref<'a, MeshAxesReplicaGroupList>),
+}
+
+fn group_count(value: i64) -> Result<usize> {
+    usize::try_from(value).map_err(|_| {
+        pliron::verify_error_noloc!(Diagnostic::InvalidAttribute {
+            attribute: "replica_groups",
+            message: "replica group count or size is outside the index domain".into(),
+        })
+    })
+}
+
+impl<'a> GroupList<'a> {
+    fn new(ctx: &'a Context, op: Ptr<Operation>) -> Result<Self> {
+        if let Some(iota) = optional_attr(ctx, op, "hlo_iota_groups")? {
+            return Ok(Self::Iota(iota));
+        }
+        if let Some(mesh) = optional_attr(ctx, op, "hlo_mesh_groups")? {
+            return Ok(Self::Mesh(mesh));
+        }
+        Ok(Self::Explicit(required(ctx, op, "hlo_groups")?))
+    }
+
+    fn len(&self) -> Result<usize> {
+        match self {
+            Self::Explicit(groups) => Ok(groups.0.len()),
+            Self::Iota(groups) => group_count(groups.num_replica_groups),
+            Self::Mesh(groups) => group_count(groups.num_replica_groups()?),
+        }
+    }
+
+    fn members(&self, group: usize) -> Result<usize> {
+        match self {
+            Self::Explicit(groups) => Ok(groups.0[group].0.len()),
+            Self::Iota(groups) => group_count(groups.num_devices_per_group),
+            Self::Mesh(groups) => group_count(groups.num_devices_per_group()?),
+        }
+    }
+
+    fn device_at(&self, group: usize, member: usize) -> Result<i64> {
+        match self {
+            Self::Explicit(groups) => Ok(groups.0[group].0[member]),
+            Self::Iota(groups) => groups.device_at(group as i64, member as i64),
+            Self::Mesh(groups) => groups.device_at(group as i64, member as i64),
+        }
+    }
+}
+
+pub(super) fn same_groups(
+    ctx: &Context,
+    left: Ptr<Operation>,
+    right: Ptr<Operation>,
+) -> Result<bool> {
+    let left = GroupList::new(ctx, left)?;
+    let right = GroupList::new(ctx, right)?;
+    if match (&left, &right) {
+        (GroupList::Explicit(a), GroupList::Explicit(b)) => **a == **b,
+        (GroupList::Iota(a), GroupList::Iota(b)) => **a == **b,
+        (GroupList::Mesh(a), GroupList::Mesh(b)) => **a == **b,
+        _ => false,
+    } {
+        return Ok(true);
+    }
+    let count = left.len()?;
+    if count != right.len()? {
+        return Ok(false);
+    }
+    for group in 0..count {
+        let members = left.members(group)?;
+        if members != right.members(group)? {
+            return Ok(false);
+        }
+        for member in 0..members {
+            if left.device_at(group, member)? != right.device_at(group, member)? {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
 fn groups(
     ctx: &Context,
     op: Ptr<Operation>,

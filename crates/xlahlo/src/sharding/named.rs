@@ -81,7 +81,7 @@ pub(super) fn iota_key(dimensions: &[i64], permutation: &[i64], count: i64) -> B
     coefficients
 }
 
-#[pliron_attr(name = "hlo.mesh_axis", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.mesh_axis", format, verifier = "succ")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 /// One named dimension and its positive extent in a device mesh.
 pub struct MeshAxis {
@@ -89,7 +89,7 @@ pub struct MeshAxis {
     pub size: i64,
 }
 #[pliron_attr(
-    name = "hlo.iota_transform",
+    name = "xlahlo.iota_transform",
     format = "`<` `[` vec($reshape_dims, CharSpace(`,`)) `]` `,` `[` vec($transpose_perm, CharSpace(`,`)) `]` `>`",
     verifier = "succ"
 )]
@@ -100,7 +100,7 @@ pub struct IotaTransform {
     pub transpose_perm: Vec<i64>,
 }
 #[pliron_attr(
-    name = "hlo.mesh",
+    name = "xlahlo.mesh",
     format = "`<` `[` vec($axes, CharSpace(`,`)) `]` `,` `[` vec($device_ids, CharSpace(`,`)) `]` `,` `[` vec($iota_transform, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -228,13 +228,17 @@ impl Mesh {
                 message: "mesh device index out of range".into(),
             }));
         }
-        Ok(if !self.device_ids.is_empty() {
+        Ok(self.device_at_validated(index))
+    }
+    /// The caller must validate the mesh and check `index` against its cardinality.
+    pub(crate) fn device_at_validated(&self, index: i64) -> i64 {
+        if !self.device_ids.is_empty() {
             self.device_ids[index as usize]
         } else if let Some(t) = self.iota_transform.first() {
             iota_value(&t.reshape_dims, &t.transpose_perm, index)
         } else {
             index
-        })
+        }
     }
     /// Compare device order independently from axis names and reshape representation.
     pub fn device_assignment_equal(&self, other: &Self) -> Result<bool> {
@@ -292,7 +296,7 @@ impl Mesh {
     }
 }
 
-#[pliron_attr(name = "hlo.sub_axis", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.sub_axis", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// A proper mesh-axis factor starting at a multiplicative prefix.
 pub struct SubAxis {
@@ -300,7 +304,7 @@ pub struct SubAxis {
     pub size: i64,
 }
 #[pliron_attr(
-    name = "hlo.axis_ref",
+    name = "xlahlo.axis_ref",
     format = "`<` $mesh_axis_index `,` `[` vec($sub_axis_info, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -419,7 +423,7 @@ impl AxisRef {
 }
 
 #[pliron_attr(
-    name = "hlo.dimension_sharding",
+    name = "xlahlo.dimension_sharding",
     format = "`<` `[` vec($axes, CharSpace(`,`)) `]` `,` $is_closed `>`",
     verifier = "succ"
 )]
@@ -429,7 +433,7 @@ pub struct DimensionSharding {
     pub axes: Vec<AxisRef>,
     pub is_closed: bool,
 }
-#[pliron_attr(name = "hlo.reduction_op", format, verifier = "succ")]
+#[pliron_attr(name = "xlahlo.reduction_op", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 /// Reduction semantics associated with unreduced mesh axes.
 pub enum ReductionOp {
@@ -439,7 +443,7 @@ pub enum ReductionOp {
     Min,
 }
 #[pliron_attr(
-    name = "hlo.named_sharding",
+    name = "xlahlo.named_sharding",
     format = "`<` $mesh `,` `[` vec($dim_shardings, CharSpace(`,`)) `]` `,` `[` vec($replicated_axes, CharSpace(`,`)) `]` `,` `[` vec($unreduced_axes, CharSpace(`,`)) `]` `,` `[` vec($manual_axes, CharSpace(`,`)) `]` `,` $reduction_op `,` $metadata `>`"
 )]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]

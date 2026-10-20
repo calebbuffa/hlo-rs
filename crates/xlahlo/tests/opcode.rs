@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use xlahlo::{
-    opcode::Opcode,
+    opcode::{CallContext, Opcode},
     ops::{ComputationOp, HloOpInterface, ReturnOp, elementwise::NegateOp},
     pliron::{
         basic_block::BasicBlock,
@@ -81,6 +81,73 @@ fn result_accuracy_support_matches_opcode_contract() {
 }
 
 #[test]
+fn opcode_capabilities_match_pinned_hlo_opcode_helpers() {
+    // hlo_opcode.h and hlo_opcode.cc at 941335fe721cdc5fad5b6c37a0c2e3a7a36fea24.
+    let control_flow = [
+        Opcode::Call,
+        Opcode::Conditional,
+        Opcode::While,
+        Opcode::AsyncStart,
+        Opcode::AsyncUpdate,
+        Opcode::AsyncDone,
+    ];
+    let embedded = [
+        Opcode::AllReduce,
+        Opcode::ReduceScatter,
+        Opcode::CollectiveReduce,
+        Opcode::AllReduceStart,
+        Opcode::Map,
+        Opcode::Reduce,
+        Opcode::ReduceWindow,
+        Opcode::Scan,
+        Opcode::Scatter,
+        Opcode::SelectAndScatter,
+        Opcode::Sort,
+        Opcode::Fusion,
+        Opcode::CustomCall,
+    ];
+    let asynchronous = [Opcode::AsyncStart, Opcode::AsyncUpdate, Opcode::AsyncDone];
+    let commutative = [
+        Opcode::Add,
+        Opcode::Multiply,
+        Opcode::Mulhi,
+        Opcode::Maximum,
+        Opcode::Minimum,
+        Opcode::And,
+        Opcode::Or,
+        Opcode::Xor,
+    ];
+    for &opcode in Opcode::ALL {
+        assert_eq!(
+            opcode.is_async(),
+            asynchronous.contains(&opcode),
+            "{opcode}"
+        );
+        assert_eq!(
+            opcode.is_binary_commutative(),
+            commutative.contains(&opcode),
+            "{opcode}"
+        );
+        let expected = if control_flow.contains(&opcode) {
+            CallContext::ControlFlow
+        } else if embedded.contains(&opcode) {
+            CallContext::Embedded
+        } else {
+            CallContext::None
+        };
+        assert_eq!(opcode.call_context(), expected, "{opcode}");
+    }
+    for (context, spelling) in [
+        (CallContext::Embedded, "kEmbedded"),
+        (CallContext::ControlFlow, "kControlFlow"),
+        (CallContext::Both, "kBoth"),
+        (CallContext::None, "kNone"),
+    ] {
+        assert_eq!(context.to_string(), spelling);
+    }
+}
+
+#[test]
 fn every_catalog_opcode_has_a_registered_native_hlo_interface() {
     let mut ctx = Context::new();
     xlahlo::register(&mut ctx);
@@ -96,14 +163,18 @@ fn every_catalog_opcode_has_a_registered_native_hlo_interface() {
         .get_operation()
         .insert_at_back(block, &ctx);
     let template = computation.disp(&ctx).to_string();
+    assert!(template.contains("xlahlo.computation"));
+    assert!(template.contains("xlahlo.negate"));
+    assert!(template.contains("xlahlo.return"));
+    assert!(template.contains("xlahlo.tensor"));
     for opcode in Opcode::ALL {
         let spelling = match opcode {
             Opcode::OptimizationBarrier => "optimization_barrier".to_owned(),
             Opcode::TopK => "top_k".to_owned(),
             _ => opcode.name().replace('-', "_"),
         };
-        let name = format!("hlo.{spelling}");
-        let assembly = template.replacen("hlo.negate", &name, 1);
+        let name = format!("xlahlo.{spelling}");
+        let assembly = template.replacen("xlahlo.negate", &name, 1);
         let mut parsed = Context::new();
         xlahlo::register(&mut parsed);
         let operation = parse_from_str(
@@ -124,5 +195,6 @@ fn every_catalog_opcode_has_a_registered_native_hlo_interface() {
         let hlo = op_cast::<dyn HloOpInterface>(dynamic.as_ref())
             .unwrap_or_else(|| panic!("{opcode} must implement HloOpInterface"));
         assert_eq!(hlo.opcode(), *opcode, "{name}");
+        assert_eq!(Operation::get_opid(instruction, &parsed).to_string(), name);
     }
 }

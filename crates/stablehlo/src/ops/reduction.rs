@@ -138,7 +138,7 @@ fn region_for_reduce_ir(ctx: &Context, ir: &Operation, region: Ptr<Region>) -> b
     region_signature(ctx, region, &args, &rets)
 }
 
-#[pliron_op(name="stablehlo.reduce",format="operands(CharSpace(`,`)) attr($stablehlo_reduce_dimensions, $VecAttr) regions(CharSpace(`,`))",attributes=(stablehlo_reduce_dimensions:VecAttr))]
+#[pliron_op(name="stablehlo.reduce",format,attributes=(stablehlo_reduce_dimensions:VecAttr))]
 pub struct ReduceOp;
 impl ReduceOp {
     pub fn new(
@@ -165,6 +165,10 @@ impl ReduceOp {
     }
     pub fn reducer_region(&self, ctx: &Context) -> Ptr<Region> {
         self.get_operation().deref(ctx).get_region(0)
+    }
+    /// Return the reduced input dimensions.
+    pub fn dimensions(&self, ctx: &Context) -> Option<Vec<u64>> {
+        read_ints(self.get_attr_stablehlo_reduce_dimensions(ctx))
     }
 }
 impl Verify for ReduceOp {
@@ -233,7 +237,7 @@ impl Verify for ReduceOp {
     }
 }
 
-#[pliron_op(name="stablehlo.reduce_window",format="operands(CharSpace(`,`)) attr($stablehlo_reduction_window, $VecAttr) attr($stablehlo_reduction_strides, $VecAttr) attr($stablehlo_reduction_base_dilations, $VecAttr) attr($stablehlo_reduction_window_dilations, $VecAttr) attr($stablehlo_reduction_padding, $VecAttr) regions(CharSpace(`,`))",attributes=(stablehlo_reduction_window:VecAttr,stablehlo_reduction_strides:VecAttr,stablehlo_reduction_base_dilations:VecAttr,stablehlo_reduction_window_dilations:VecAttr,stablehlo_reduction_padding:VecAttr))]
+#[pliron_op(name="stablehlo.reduce_window",format,attributes=(stablehlo_reduction_window:VecAttr,stablehlo_reduction_strides:VecAttr,stablehlo_reduction_base_dilations:VecAttr,stablehlo_reduction_window_dilations:VecAttr,stablehlo_reduction_padding:VecAttr))]
 pub struct ReduceWindowOp;
 impl ReduceWindowOp {
     pub fn new(
@@ -438,7 +442,7 @@ impl Verify for ReduceWindowOp {
     }
 }
 
-#[pliron_op(name="stablehlo.select_and_scatter",format="$0 `,` $1 `,` $2 attr($stablehlo_reduction_select_window, $VecAttr) attr($stablehlo_reduction_select_strides, $VecAttr) attr($stablehlo_reduction_select_padding, $VecAttr) regions(CharSpace(`,`))",attributes=(stablehlo_reduction_select_window:VecAttr,stablehlo_reduction_select_strides:VecAttr,stablehlo_reduction_select_padding:VecAttr))]
+#[pliron_op(name="stablehlo.select_and_scatter",format,attributes=(stablehlo_reduction_select_window:VecAttr,stablehlo_reduction_select_strides:VecAttr,stablehlo_reduction_select_padding:VecAttr))]
 pub struct SelectAndScatterOp;
 impl SelectAndScatterOp {
     pub fn new(
@@ -597,7 +601,7 @@ impl Verify for SelectAndScatterOp {
     }
 }
 
-#[pliron_op(name="stablehlo.sort",format="operands(CharSpace(`,`)) attr($stablehlo_reduction_sort_dimension, $IntegerAttr) attr($stablehlo_reduction_sort_stable, $BoolAttr) regions(CharSpace(`,`))",attributes=(stablehlo_reduction_sort_dimension:IntegerAttr,stablehlo_reduction_sort_stable:BoolAttr))]
+#[pliron_op(name="stablehlo.sort",format,attributes=(stablehlo_reduction_sort_dimension:IntegerAttr,stablehlo_reduction_sort_stable:BoolAttr))]
 pub struct SortOp;
 impl SortOp {
     pub fn new(
@@ -702,7 +706,7 @@ impl Verify for SortOp {
     }
 }
 
-#[pliron_op(name="stablehlo.map",format="operands(CharSpace(`,`)) attr($stablehlo_reduction_map_dimensions, $VecAttr) regions(CharSpace(`,`))",attributes=(stablehlo_reduction_map_dimensions:VecAttr))]
+#[pliron_op(name="stablehlo.map",format,attributes=(stablehlo_reduction_map_dimensions:VecAttr))]
 pub struct MapOp;
 impl MapOp {
     pub fn new(

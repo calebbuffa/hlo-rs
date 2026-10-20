@@ -17,6 +17,11 @@ pub enum RecoveryCategory {
 pub enum Diagnostic {
     #[error("unsupported StableHLO type")]
     UnsupportedType,
+    #[error("cannot serialize {entity} as MLIR: {reason}")]
+    UnsupportedSerialization {
+        entity: String,
+        reason: &'static str,
+    },
     #[error("incompatible tensor shapes")]
     IncompatibleShape,
     #[error("incompatible element types")]
@@ -197,7 +202,9 @@ impl Diagnostic {
     /// Recovery guidance for handling this diagnostic.
     pub fn recovery_category(&self) -> RecoveryCategory {
         match self {
-            Self::UnsupportedType => RecoveryCategory::Unsupported,
+            Self::UnsupportedType | Self::UnsupportedSerialization { .. } => {
+                RecoveryCategory::Unsupported
+            }
             Self::Overflow | Self::MeshTooLarge => RecoveryCategory::Unsupported,
             Self::Source { category, .. } | Self::BuilderFailure { category, .. } => *category,
             Self::InternalInvariant { .. } => RecoveryCategory::InternalInvariant,
