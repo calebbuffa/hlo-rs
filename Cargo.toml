@@ -3,9 +3,12 @@ resolver = "3"
 members = [
     "crates/clienthlo",
     "crates/stablehlo",
-    "crates/xlahlo", "crates/xlahlo-cubecl",
+    # "crates/stablehlo-codec",
+    "crates/xlahlo",
+    "crates/xlahlo-cubecl",
+    # "crates/xlahlo-codec",
 ]
 
 [workspace.package]
 license = "Apache-2.0"
-license-file = "LICENSE-APACHE"
+license-file = "LICENSE"
