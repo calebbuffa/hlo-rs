@@ -1,3 +1,16 @@
+//! CHLO operation definitions, builders, and verification.
+//!
+//! `new` constructors allocate operations with caller-supplied result types and
+//! do not verify them. Use [`Verify::verify`] before consuming externally supplied
+//! or manually edited IR. Inferred constructors check the constraints needed to
+//! determine result types; they are not a substitute for full verification unless
+//! explicitly documented otherwise.
+//!
+//! Operand and result accessors assume the operation has its declared arity;
+//! malformed IR can panic when an operand or result is missing. Attribute
+//! accessors return `None` for absent or incorrectly typed attributes unless a
+//! documented dialect default applies.
+
 use crate::{
     Diagnostic,
     attributes::*,
@@ -34,6 +47,21 @@ fn fail(
 }
 fn domain_error(operation: &'static str) -> pliron::result::Error {
     Diagnostic::InvalidDomain { operation }.into()
+}
+fn failure_with_source(
+    ctx: &Context,
+    ir: &Operation,
+    operation: &'static str,
+    reason: &'static str,
+    source: pliron::result::Error,
+) -> pliron::result::Error {
+    Diagnostic::OperationFailure {
+        operation,
+        location: ir.loc().disp(ctx).to_string(),
+        reason,
+        source: Box::new(source),
+    }
+    .into()
 }
 fn verify_pure_structure(ir: &Operation, operation: &'static str) -> Result<()> {
     if ir.num_regions() != 0 || ir.get_num_successors() != 0 {
@@ -156,19 +184,37 @@ fn check_unary(
     Ok(())
 }
 macro_rules! unary_op {
-    ($struct:ident,$name:literal,$domain:expr,$rule:expr) => {
+    ($struct:ident,$name:literal,$doc:literal,$domain:expr,$rule:expr) => {
+        #[doc = $doc]
+        ///
+        /// Applies independently to each tensor element, preserving shape and
+        /// encoding. Infinity predicates produce `i1` elements; other operations
+        /// preserve the operand element type. Ranked and unranked tensors are accepted.
         #[pliron_op(name=$name,format="$0 attr_dict `:` typesig",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
         pub struct $struct;
         impl $struct {
+            /// Allocates an operation with an explicit result type, without verification.
+            ///
+            /// The result must be compatible with the operand's shape and the
+            /// operation's element-type rule. Call `verify` to check that contract.
             pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
                 Self { op: Operation::new(ctx, Self::get_concrete_op_info(), vec![result], vec![input], vec![], 0) }
             }
+            /// Allocates an operation after inferring its result from the input tensor.
+            ///
+            /// # Errors
+            ///
+            /// Returns an error when the operand is not a tensor in this operation's
+            /// element domain or its result type cannot be inferred.
             pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
                 let ty = infer_unary(ctx, input.get_type(ctx), $name, $domain, $rule)?;
                 Ok(Self::new(ctx, input, ty))
             }
+            /// Returns the tensor operand to which the elementwise operation applies.
             pub fn operand(&self, ctx: &Context) -> Value { self.get_operation().deref(ctx).get_operand(0) }
+            /// Returns the input tensor; an alias of [`Self::operand`].
             pub fn input(&self, ctx: &Context) -> Value { self.operand(ctx) }
+            /// Returns the single output tensor.
             pub fn result(&self, ctx: &Context) -> Value { self.get_operation().deref(ctx).get_result(0) }
         }
         impl Verify for $struct {
@@ -180,45 +226,163 @@ use UnaryResult::{Compatible as Same, Pred as IsPred};
 unary_op!(
     AsinAcosKernelOp,
     "chlo._asin_acos_kernel",
+    "Shared complex-valued kernel used when expanding inverse sine and cosine.",
     Domain::Complex,
     Same
 );
-unary_op!(AcosOp, "chlo.acos", Domain::FloatOrComplex, Same);
-unary_op!(AcoshOp, "chlo.acosh", Domain::FloatOrComplex, Same);
-unary_op!(AsinOp, "chlo.asin", Domain::FloatOrComplex, Same);
-unary_op!(AsinhOp, "chlo.asinh", Domain::FloatOrComplex, Same);
-unary_op!(AtanOp, "chlo.atan", Domain::FloatOrComplex, Same);
-unary_op!(AtanhOp, "chlo.atanh", Domain::FloatOrComplex, Same);
-unary_op!(BesselI1eOp, "chlo.bessel_i1e", Domain::FloatOrComplex, Same);
-unary_op!(ConjOp, "chlo.conj", Domain::FloatOrComplex, Same);
-unary_op!(CoshOp, "chlo.cosh", Domain::FloatOrComplex, Same);
-unary_op!(SinhOp, "chlo.sinh", Domain::FloatOrComplex, Same);
-unary_op!(TanOp, "chlo.tan", Domain::FloatOrComplex, Same);
-unary_op!(DigammaOp, "chlo.digamma", Domain::Float, Same);
-unary_op!(ErfOp, "chlo.erf", Domain::Float, Same);
-unary_op!(ErfInvOp, "chlo.erf_inv", Domain::Float, Same);
-unary_op!(ErfcOp, "chlo.erfc", Domain::Float, Same);
-unary_op!(LgammaOp, "chlo.lgamma", Domain::Float, Same);
-unary_op!(SquareOp, "chlo.square", Domain::FloatOrComplex, Same);
-unary_op!(IsInfOp, "chlo.is_inf", Domain::Float, IsPred);
-unary_op!(IsNegInfOp, "chlo.is_neg_inf", Domain::Float, IsPred);
-unary_op!(IsPosInfOp, "chlo.is_pos_inf", Domain::Float, IsPred);
+unary_op!(
+    AcosOp,
+    "chlo.acos",
+    "Inverse cosine of floating-point or complex elements.",
+    Domain::FloatOrComplex,
+    Same
+);
+unary_op!(
+    AcoshOp,
+    "chlo.acosh",
+    "Inverse hyperbolic cosine of floating-point or complex elements.",
+    Domain::FloatOrComplex,
+    Same
+);
+unary_op!(
+    AsinOp,
+    "chlo.asin",
+    "Inverse sine of floating-point or complex elements.",
+    Domain::FloatOrComplex,
+    Same
+);
+unary_op!(
+    AsinhOp,
+    "chlo.asinh",
+    "Inverse hyperbolic sine of floating-point or complex elements.",
+    Domain::FloatOrComplex,
+    Same
+);
+unary_op!(
+    AtanOp,
+    "chlo.atan",
+    "Inverse tangent of floating-point or complex elements.",
+    Domain::FloatOrComplex,
+    Same
+);
+unary_op!(
+    AtanhOp,
+    "chlo.atanh",
+    "Inverse hyperbolic tangent of floating-point or complex elements.",
+    Domain::FloatOrComplex,
+    Same
+);
+unary_op!(
+    BesselI1eOp,
+    "chlo.bessel_i1e",
+    "Exponentially scaled modified Bessel function of the first kind, order one, on floating-point or complex elements.",
+    Domain::FloatOrComplex,
+    Same
+);
+unary_op!(
+    ConjOp,
+    "chlo.conj",
+    "Complex conjugation, leaving real floating-point elements unchanged.",
+    Domain::FloatOrComplex,
+    Same
+);
+unary_op!(
+    CoshOp,
+    "chlo.cosh",
+    "Hyperbolic cosine of floating-point or complex elements.",
+    Domain::FloatOrComplex,
+    Same
+);
+unary_op!(
+    SinhOp,
+    "chlo.sinh",
+    "Hyperbolic sine of floating-point or complex elements.",
+    Domain::FloatOrComplex,
+    Same
+);
+unary_op!(
+    TanOp,
+    "chlo.tan",
+    "Tangent of floating-point or complex elements.",
+    Domain::FloatOrComplex,
+    Same
+);
+unary_op!(
+    DigammaOp,
+    "chlo.digamma",
+    "Logarithmic derivative of the gamma function on floating-point elements.",
+    Domain::Float,
+    Same
+);
+unary_op!(
+    ErfOp,
+    "chlo.erf",
+    "Error function on floating-point elements.",
+    Domain::Float,
+    Same
+);
+unary_op!(
+    ErfInvOp,
+    "chlo.erf_inv",
+    "Inverse error function on floating-point elements.",
+    Domain::Float,
+    Same
+);
+unary_op!(
+    ErfcOp,
+    "chlo.erfc",
+    "Complementary error function on floating-point elements.",
+    Domain::Float,
+    Same
+);
+unary_op!(
+    LgammaOp,
+    "chlo.lgamma",
+    "Logarithm of the absolute value of the gamma function on floating-point elements.",
+    Domain::Float,
+    Same
+);
+unary_op!(
+    SquareOp,
+    "chlo.square",
+    "Elementwise squaring of floating-point or complex elements.",
+    Domain::FloatOrComplex,
+    Same
+);
+unary_op!(
+    IsInfOp,
+    "chlo.is_inf",
+    "Predicate identifying either signed infinity in floating-point elements.",
+    Domain::Float,
+    IsPred
+);
+unary_op!(
+    IsNegInfOp,
+    "chlo.is_neg_inf",
+    "Predicate identifying negative infinity in floating-point elements.",
+    Domain::Float,
+    IsPred
+);
+unary_op!(
+    IsPosInfOp,
+    "chlo.is_pos_inf",
+    "Predicate identifying positive infinity in floating-point elements.",
+    Domain::Float,
+    IsPred
+);
 
 /// `HLO_CompatibleOperandsAndResultType` inference over `inferMostSpecificType`.
 fn infer_compatible(
     ctx: &Context,
-    operands: &[TypeHandle],
+    operands: &[TypeHandle; 2],
     operation: &'static str,
     domain: Domain,
     ranked_only: bool,
 ) -> Result<TypeHandle> {
-    for &ty in operands {
-        typed(ctx, ty, domain, ranked_only, operation)?;
-    }
-    if operands
-        .iter()
-        .any(|&ty| !inference::compatible_types(ctx, operands[0], ty))
-    {
+    let [lhs, rhs] = operands;
+    typed(ctx, *lhs, domain, ranked_only, operation)?;
+    typed(ctx, *rhs, domain, ranked_only, operation)?;
+    if !inference::compatible_types(ctx, *lhs, *rhs) {
         return Err(invalid(operation, "operand types must be compatible"));
     }
     inference::most_specific(ctx, operands)
@@ -239,8 +403,10 @@ fn check_compatible(
     ];
     let result = ir.get_result(0).get_type(ctx);
     typed(ctx, result, domain, ranked_only, operation)?;
-    let inferred = infer_compatible(ctx, &operands, operation, domain, ranked_only)
-        .map_err(|_| fail(ctx, &ir, operation, "operand types are incompatible"))?;
+    let inferred =
+        infer_compatible(ctx, &operands, operation, domain, ranked_only).map_err(|error| {
+            failure_with_source(ctx, &ir, operation, "operand types are incompatible", error)
+        })?;
     if operands
         .iter()
         .chain([&inferred])
@@ -256,18 +422,33 @@ fn check_compatible(
     Ok(())
 }
 macro_rules! binary_op {
-    ($struct:ident,$name:literal,$domain:expr,$ranked:expr) => {
+    ($struct:ident,$name:literal,$doc:literal,$domain:expr,$ranked:expr) => {
+        #[doc = $doc]
+        ///
+        /// This operation does not broadcast: operand and result shapes and
+        /// element types must be compatible.
         #[pliron_op(name=$name,format="$0 `,` $1 attr_dict `:` typesig",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
         pub struct $struct;
         impl $struct {
+            /// Allocates an operation with the supplied result type, without verification.
+            ///
+            /// Call `verify` to check operand domains and compatibility of all types.
             pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, result: TypeHandle) -> Self {
                 Self { op: Operation::new(ctx, Self::get_concrete_op_info(), vec![result], vec![lhs, rhs], vec![], 0) }
             }
+            /// Infers the most specific compatible operand type and allocates the operation.
+            ///
+            /// # Errors
+            ///
+            /// Returns an error for operands outside the operation's domain, a
+            /// rank requirement violation, or incompatible element types or shapes.
             pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
                 let ty = infer_compatible(ctx, &[lhs.get_type(ctx), rhs.get_type(ctx)], $name, $domain, $ranked)?;
                 Ok(Self::new(ctx, lhs, rhs, ty))
             }
+            /// Returns the left-hand operand.
             pub fn lhs(&self, ctx: &Context) -> Value { self.get_operation().deref(ctx).get_operand(0) }
+            /// Returns the right-hand operand.
             pub fn rhs(&self, ctx: &Context) -> Value { self.get_operation().deref(ctx).get_operand(1) }
         }
         impl Verify for $struct {
@@ -275,10 +456,34 @@ macro_rules! binary_op {
         }
     };
 }
-binary_op!(NextAfterOp, "chlo.next_after", Domain::Float, false);
-binary_op!(PolygammaOp, "chlo.polygamma", Domain::Float, false);
-binary_op!(ZetaOp, "chlo.zeta", Domain::Float, false);
-binary_op!(MulhiOp, "chlo.mulhi", Domain::Int, true);
+binary_op!(
+    NextAfterOp,
+    "chlo.next_after",
+    "Next representable floating-point value after `lhs` in the direction of `rhs`; accepts ranked or unranked tensors.",
+    Domain::Float,
+    false
+);
+binary_op!(
+    PolygammaOp,
+    "chlo.polygamma",
+    "Polygamma function with floating-point derivative order in `lhs` and argument in `rhs`; accepts ranked or unranked tensors.",
+    Domain::Float,
+    false
+);
+binary_op!(
+    ZetaOp,
+    "chlo.zeta",
+    "Hurwitz zeta function with floating-point exponent in `lhs` and shift in `rhs`; accepts ranked or unranked tensors.",
+    Domain::Float,
+    false
+);
+binary_op!(
+    MulhiOp,
+    "chlo.mulhi",
+    "High half of an integer multiplication on ranked integer tensors.",
+    Domain::Int,
+    true
+);
 
 /// Element-type trait attached to a broadcasting binary operation.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -367,7 +572,9 @@ fn check_broadcast(
         ));
     }
     let inferred = infer_broadcast_binary(ctx, &lhs, &rhs, dimensions, element, operation)
-        .map_err(|_| fail(ctx, ir, operation, "mismatched operand types"))?;
+        .map_err(|error| {
+            failure_with_source(ctx, ir, operation, "mismatched operand types", error)
+        })?;
     if !inference::compatible_types(ctx, inferred, result_ty) {
         return Err(fail(
             ctx,
@@ -379,15 +586,63 @@ fn check_broadcast(
     Ok(())
 }
 macro_rules! broadcast_op {
-    ($struct:ident,$name:literal,$attr:ident,$setter:ident,$getter:ident,$domain:expr,$result_domain:expr,$trait:expr) => {
-        #[pliron_op(name=$name,format="$0 `,` $1 attr_dict `:` typesig",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=($attr:VecAttr))]
+    ($struct:ident,$name:literal,$doc:literal,$attr:literal,$attr_module:ident,$attr_key:ident,$setter:ident,$getter:ident,$domain:expr,$result_domain:expr,$trait:expr) => {
+        #[doc = $doc]
+        ///
+        /// With no explicit dimensions, operands use trailing-axis NumPy broadcasting.
+        /// Explicit dimensions map the lower-rank operand's axes into the higher-rank
+        /// operand (the left operand is mapped when ranks are equal). Inference can
+        /// yield an unranked result when the broadcast shape cannot be determined.
+        ///
+        #[doc = concat!("The optional axis mapping is stored as `", $attr, "` with type [`VecAttr`].")]
+        // pliron's attribute-table generator stringifies long token paths with
+        // embedded newlines, producing invalid Markdown links. Keep these
+        // accessors local so documentation uses the actual identifier tokens.
+        #[pliron_op(name=$name,format="$0 `,` $1 attr_dict `:` typesig",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
         pub struct $struct;
+        #[doc(hidden)]
+        pub mod $attr_module {
+            pliron::dict_key!($attr_key, $attr);
+        }
         impl $struct {
+            #[doc = concat!("Reads `", $attr, "`.")]
+            ///
+            /// Borrows the explicit broadcast axis mapping attribute.
+            ///
+            /// Returns `None` when the attribute is absent or is not a `VecAttr`.
+            /// The returned borrow holds the containing operation immutably;
+            /// drop it before mutating that operation.
+            pub fn $getter<'a>(&self, ctx: &'a Context) -> Option<std::cell::Ref<'a, VecAttr>> {
+                std::cell::Ref::filter_map(self.op.deref(ctx), |op|
+                    op.attributes.get::<VecAttr>(&$attr_module::$attr_key)).ok()
+            }
+            #[doc = concat!("Replaces `", $attr, "`.")]
+            ///
+            /// Stores an explicit broadcast axis mapping without validating its entries.
+            ///
+            /// The list maps lower-rank operand axes into the higher-rank operand;
+            /// use `verify` to check the operation after modifying it.
+            pub fn $setter(&self, ctx: &Context, value: VecAttr) {
+                self.op.deref_mut(ctx).attributes.set($attr_module::$attr_key.clone(), value);
+            }
+            /// Allocates an operation with the supplied output type, without verification.
+            ///
+            /// `dimensions` is an optional lower-rank-to-higher-rank axis mapping;
+            /// `None` selects NumPy broadcasting. Call `verify` before using the IR.
             pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, result: TypeHandle, dimensions: Option<Vec<i64>>) -> Self {
                 let op = Self { op: Operation::new(ctx, Self::get_concrete_op_info(), vec![result], vec![lhs, rhs], vec![], 0) };
                 if let Some(d) = dimensions { op.$setter(ctx, signed_list(ctx, &d)); }
                 op
             }
+            /// Infers the broadcast output type and allocates the operation.
+            ///
+            /// `None` selects NumPy broadcasting. An indeterminate or incompatible
+            /// broadcast shape yields an unranked tensor rather than an error.
+            ///
+            /// # Errors
+            ///
+            /// Returns an error for operands outside the operation's element domain
+            /// or operands violating its element-type compatibility requirements.
             pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value, dimensions: Option<Vec<i64>>) -> Result<Self> {
                 let a = typed(ctx, lhs.get_type(ctx), $domain, false, $name)?;
                 let b = typed(ctx, rhs.get_type(ctx), $domain, false, $name)?;
@@ -397,8 +652,14 @@ macro_rules! broadcast_op {
                 let result = infer_broadcast_binary(ctx, &a, &b, dimensions.as_deref(), None, $name)?;
                 Ok(Self::new(ctx, lhs, rhs, result, dimensions))
             }
+            /// Returns the left-hand tensor operand.
             pub fn lhs(&self, ctx: &Context) -> Value { self.get_operation().deref(ctx).get_operand(0) }
+            /// Returns the right-hand tensor operand.
             pub fn rhs(&self, ctx: &Context) -> Value { self.get_operation().deref(ctx).get_operand(1) }
+            /// Copies the explicit axis mapping, or returns `None` if absent or malformed.
+            ///
+            /// An absent mapping selects NumPy broadcasting; an empty mapping is
+            /// distinct and explicitly maps a scalar operand.
             pub fn broadcast_dimensions(&self, ctx: &Context) -> Option<Vec<i64>> {
                 let a = self.$getter(ctx)?;
                 read_signed_list(&a)
@@ -419,7 +680,10 @@ use ElementTrait::{
 broadcast_op!(
     BroadcastAddOp,
     "chlo.broadcast_add",
-    chlo_broadcast_add_dimensions,
+    "Elementwise addition with broadcasting and HLO-compatible element types, including quantized tensors.",
+    "chlo_broadcast_add_dimensions",
+    broadcast_add_op_attr_names,
+    ATTR_KEY_CHLO_BROADCAST_ADD_DIMENSIONS,
     set_attr_chlo_broadcast_add_dimensions,
     get_attr_chlo_broadcast_add_dimensions,
     Domain::Any,
@@ -429,7 +693,10 @@ broadcast_op!(
 broadcast_op!(
     BroadcastAtan2Op,
     "chlo.broadcast_atan2",
-    chlo_broadcast_atan2_dimensions,
+    "Quadrant-aware arctangent of `lhs / rhs` with broadcasting and identical operand/result element types.",
+    "chlo_broadcast_atan2_dimensions",
+    broadcast_atan2_op_attr_names,
+    ATTR_KEY_CHLO_BROADCAST_ATAN2_DIMENSIONS,
     set_attr_chlo_broadcast_atan2_dimensions,
     get_attr_chlo_broadcast_atan2_dimensions,
     Domain::Any,
@@ -439,7 +706,10 @@ broadcast_op!(
 broadcast_op!(
     BroadcastDivideOp,
     "chlo.broadcast_divide",
-    chlo_broadcast_divide_dimensions,
+    "Elementwise `lhs / rhs` with broadcasting and identical operand/result element types.",
+    "chlo_broadcast_divide_dimensions",
+    broadcast_divide_op_attr_names,
+    ATTR_KEY_CHLO_BROADCAST_DIVIDE_DIMENSIONS,
     set_attr_chlo_broadcast_divide_dimensions,
     get_attr_chlo_broadcast_divide_dimensions,
     Domain::Any,
@@ -449,7 +719,10 @@ broadcast_op!(
 broadcast_op!(
     BroadcastMaximumOp,
     "chlo.broadcast_maximum",
-    chlo_broadcast_maximum_dimensions,
+    "Elementwise maximum with broadcasting and HLO-compatible element types, including quantized tensors.",
+    "chlo_broadcast_maximum_dimensions",
+    broadcast_maximum_op_attr_names,
+    ATTR_KEY_CHLO_BROADCAST_MAXIMUM_DIMENSIONS,
     set_attr_chlo_broadcast_maximum_dimensions,
     get_attr_chlo_broadcast_maximum_dimensions,
     Domain::Any,
@@ -459,7 +732,10 @@ broadcast_op!(
 broadcast_op!(
     BroadcastMinimumOp,
     "chlo.broadcast_minimum",
-    chlo_broadcast_minimum_dimensions,
+    "Elementwise minimum with broadcasting and HLO-compatible element types, including quantized tensors.",
+    "chlo_broadcast_minimum_dimensions",
+    broadcast_minimum_op_attr_names,
+    ATTR_KEY_CHLO_BROADCAST_MINIMUM_DIMENSIONS,
     set_attr_chlo_broadcast_minimum_dimensions,
     get_attr_chlo_broadcast_minimum_dimensions,
     Domain::Any,
@@ -469,7 +745,10 @@ broadcast_op!(
 broadcast_op!(
     BroadcastMultiplyOp,
     "chlo.broadcast_multiply",
-    chlo_broadcast_multiply_dimensions,
+    "Elementwise multiplication with broadcasting and identical operand/result element types.",
+    "chlo_broadcast_multiply_dimensions",
+    broadcast_multiply_op_attr_names,
+    ATTR_KEY_CHLO_BROADCAST_MULTIPLY_DIMENSIONS,
     set_attr_chlo_broadcast_multiply_dimensions,
     get_attr_chlo_broadcast_multiply_dimensions,
     Domain::Any,
@@ -479,7 +758,10 @@ broadcast_op!(
 broadcast_op!(
     BroadcastNextAfterOp,
     "chlo.broadcast_next_after",
-    chlo_broadcast_next_after_dimensions,
+    "Next representable value after `lhs` toward `rhs`, with broadcasting and identical element types.",
+    "chlo_broadcast_next_after_dimensions",
+    broadcast_next_after_op_attr_names,
+    ATTR_KEY_CHLO_BROADCAST_NEXT_AFTER_DIMENSIONS,
     set_attr_chlo_broadcast_next_after_dimensions,
     get_attr_chlo_broadcast_next_after_dimensions,
     Domain::Any,
@@ -489,7 +771,10 @@ broadcast_op!(
 broadcast_op!(
     BroadcastPolygammaOp,
     "chlo.broadcast_polygamma",
-    chlo_broadcast_polygamma_dimensions,
+    "Polygamma function with order in `lhs`, argument in `rhs`, broadcasting, and identical element types.",
+    "chlo_broadcast_polygamma_dimensions",
+    broadcast_polygamma_op_attr_names,
+    ATTR_KEY_CHLO_BROADCAST_POLYGAMMA_DIMENSIONS,
     set_attr_chlo_broadcast_polygamma_dimensions,
     get_attr_chlo_broadcast_polygamma_dimensions,
     Domain::Any,
@@ -499,7 +784,10 @@ broadcast_op!(
 broadcast_op!(
     BroadcastPowerOp,
     "chlo.broadcast_power",
-    chlo_broadcast_power_dimensions,
+    "Elementwise `lhs` raised to `rhs`, with broadcasting and identical operand/result element types.",
+    "chlo_broadcast_power_dimensions",
+    broadcast_power_op_attr_names,
+    ATTR_KEY_CHLO_BROADCAST_POWER_DIMENSIONS,
     set_attr_chlo_broadcast_power_dimensions,
     get_attr_chlo_broadcast_power_dimensions,
     Domain::Any,
@@ -509,7 +797,10 @@ broadcast_op!(
 broadcast_op!(
     BroadcastRemainderOp,
     "chlo.broadcast_remainder",
-    chlo_broadcast_remainder_dimensions,
+    "Elementwise remainder of `lhs / rhs`, with broadcasting and identical operand/result element types.",
+    "chlo_broadcast_remainder_dimensions",
+    broadcast_remainder_op_attr_names,
+    ATTR_KEY_CHLO_BROADCAST_REMAINDER_DIMENSIONS,
     set_attr_chlo_broadcast_remainder_dimensions,
     get_attr_chlo_broadcast_remainder_dimensions,
     Domain::Any,
@@ -519,7 +810,10 @@ broadcast_op!(
 broadcast_op!(
     BroadcastShiftLeftOp,
     "chlo.broadcast_shift_left",
-    chlo_broadcast_shift_left_dimensions,
+    "Elementwise left shift of `lhs` by `rhs` bits, with broadcasting and identical element types.",
+    "chlo_broadcast_shift_left_dimensions",
+    broadcast_shift_left_op_attr_names,
+    ATTR_KEY_CHLO_BROADCAST_SHIFT_LEFT_DIMENSIONS,
     set_attr_chlo_broadcast_shift_left_dimensions,
     get_attr_chlo_broadcast_shift_left_dimensions,
     Domain::Any,
@@ -529,7 +823,10 @@ broadcast_op!(
 broadcast_op!(
     BroadcastShiftRightArithmeticOp,
     "chlo.broadcast_shift_right_arithmetic",
-    chlo_broadcast_shift_right_arithmetic_dimensions,
+    "Sign-extending right shift of `lhs` by `rhs` bits, with broadcasting and identical element types.",
+    "chlo_broadcast_shift_right_arithmetic_dimensions",
+    broadcast_shift_right_arithmetic_op_attr_names,
+    ATTR_KEY_CHLO_BROADCAST_SHIFT_RIGHT_ARITHMETIC_DIMENSIONS,
     set_attr_chlo_broadcast_shift_right_arithmetic_dimensions,
     get_attr_chlo_broadcast_shift_right_arithmetic_dimensions,
     Domain::Any,
@@ -539,7 +836,10 @@ broadcast_op!(
 broadcast_op!(
     BroadcastShiftRightLogicalOp,
     "chlo.broadcast_shift_right_logical",
-    chlo_broadcast_shift_right_logical_dimensions,
+    "Zero-filling right shift of `lhs` by `rhs` bits, with broadcasting and identical element types.",
+    "chlo_broadcast_shift_right_logical_dimensions",
+    broadcast_shift_right_logical_op_attr_names,
+    ATTR_KEY_CHLO_BROADCAST_SHIFT_RIGHT_LOGICAL_DIMENSIONS,
     set_attr_chlo_broadcast_shift_right_logical_dimensions,
     get_attr_chlo_broadcast_shift_right_logical_dimensions,
     Domain::Any,
@@ -549,7 +849,10 @@ broadcast_op!(
 broadcast_op!(
     BroadcastSubtractOp,
     "chlo.broadcast_subtract",
-    chlo_broadcast_subtract_dimensions,
+    "Elementwise `lhs - rhs` with broadcasting and identical operand/result element types.",
+    "chlo_broadcast_subtract_dimensions",
+    broadcast_subtract_op_attr_names,
+    ATTR_KEY_CHLO_BROADCAST_SUBTRACT_DIMENSIONS,
     set_attr_chlo_broadcast_subtract_dimensions,
     get_attr_chlo_broadcast_subtract_dimensions,
     Domain::Any,
@@ -559,7 +862,10 @@ broadcast_op!(
 broadcast_op!(
     BroadcastZetaOp,
     "chlo.broadcast_zeta",
-    chlo_broadcast_zeta_dimensions,
+    "Hurwitz zeta function with exponent in `lhs` and shift in `rhs`, broadcasting, and identical floating-point element types.",
+    "chlo_broadcast_zeta_dimensions",
+    broadcast_zeta_op_attr_names,
+    ATTR_KEY_CHLO_BROADCAST_ZETA_DIMENSIONS,
     set_attr_chlo_broadcast_zeta_dimensions,
     get_attr_chlo_broadcast_zeta_dimensions,
     Domain::Float,
@@ -569,7 +875,10 @@ broadcast_op!(
 broadcast_op!(
     BroadcastAndOp,
     "chlo.broadcast_and",
-    chlo_broadcast_and_dimensions,
+    "Elementwise logical or bitwise conjunction of predicate or integer tensors with broadcasting.",
+    "chlo_broadcast_and_dimensions",
+    broadcast_and_op_attr_names,
+    ATTR_KEY_CHLO_BROADCAST_AND_DIMENSIONS,
     set_attr_chlo_broadcast_and_dimensions,
     get_attr_chlo_broadcast_and_dimensions,
     Domain::PredOrInt,
@@ -579,7 +888,10 @@ broadcast_op!(
 broadcast_op!(
     BroadcastOrOp,
     "chlo.broadcast_or",
-    chlo_broadcast_or_dimensions,
+    "Elementwise logical or bitwise disjunction of predicate or integer tensors with broadcasting.",
+    "chlo_broadcast_or_dimensions",
+    broadcast_or_op_attr_names,
+    ATTR_KEY_CHLO_BROADCAST_OR_DIMENSIONS,
     set_attr_chlo_broadcast_or_dimensions,
     get_attr_chlo_broadcast_or_dimensions,
     Domain::PredOrInt,
@@ -589,7 +901,10 @@ broadcast_op!(
 broadcast_op!(
     BroadcastXorOp,
     "chlo.broadcast_xor",
-    chlo_broadcast_xor_dimensions,
+    "Elementwise logical or bitwise exclusive disjunction of predicate or integer tensors with broadcasting.",
+    "chlo_broadcast_xor_dimensions",
+    broadcast_xor_op_attr_names,
+    ATTR_KEY_CHLO_BROADCAST_XOR_DIMENSIONS,
     set_attr_chlo_broadcast_xor_dimensions,
     get_attr_chlo_broadcast_xor_dimensions,
     Domain::PredOrInt,
@@ -605,9 +920,17 @@ fn complex_of(ctx: &Context, element: TypeHandle) -> Option<TypeHandle> {
         .map(|c| c.native(ctx))
 }
 
+/// Forms complex elements from real `lhs` and imaginary `rhs` components.
+///
+/// Operands must have matching `f32` or `f64` elements. Shapes use NumPy
+/// broadcasting unless an explicit lower-rank-to-higher-rank mapping is supplied.
 #[pliron_op(name="chlo.broadcast_complex",format="$0 `,` $1 attr_dict `:` typesig",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(chlo_broadcast_complex_dimensions:VecAttr))]
 pub struct BroadcastComplexOp;
 impl BroadcastComplexOp {
+    /// Allocates a complex construction with an explicit output type, without verification.
+    ///
+    /// `dimensions` maps the lower-rank operand's axes into the higher-rank
+    /// operand, or selects NumPy broadcasting when absent.
     pub fn new(
         ctx: &mut Context,
         lhs: Value,
@@ -630,6 +953,14 @@ impl BroadcastComplexOp {
         }
         op
     }
+    /// Infers a complex output type from the real and imaginary tensors.
+    ///
+    /// Incompatible or indeterminate broadcast shapes yield an unranked result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless both operands have the same floating-point
+    /// element type and that type has an HLO complex counterpart (`f32` or `f64`).
     pub fn new_inferred(
         ctx: &mut Context,
         lhs: Value,
@@ -643,12 +974,15 @@ impl BroadcastComplexOp {
         let ty = infer_broadcast_binary(ctx, &a, &b, dimensions.as_deref(), Some(element), NAME)?;
         Ok(Self::new(ctx, lhs, rhs, ty, dimensions))
     }
+    /// Returns the real-component tensor.
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the imaginary-component tensor.
     pub fn rhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
+    /// Copies the explicit axis mapping, or returns `None` if absent or malformed.
     pub fn broadcast_dimensions(&self, ctx: &Context) -> Option<Vec<i64>> {
         let a = self.get_attr_chlo_broadcast_complex_dimensions(ctx)?;
         read_signed_list(&a)
@@ -688,17 +1022,48 @@ impl Verify for BroadcastComplexOp {
     }
 }
 
-#[pliron_op(name="chlo.broadcast_compare",format="$0 `,` $1 attr_dict `:` typesig",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(chlo_broadcast_compare_dimensions:VecAttr,chlo_comparison_direction:ComparisonDirectionAttr,chlo_comparison_type:ComparisonTypeAttr))]
+/// Optional configuration for [`BroadcastCompareOp`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BroadcastCompareOptions {
+    /// Lower-rank-to-higher-rank axis mapping; `None` selects NumPy broadcasting.
+    pub broadcast_dimensions: Option<Vec<i64>>,
+    /// Comparison relation to apply.
+    pub direction: ComparisonDirection,
+    /// Explicit comparison semantics, stored under CHLO's `comparison_type` wire name.
+    ///
+    /// `None` leaves the choice to the dialect's operand-dependent semantics.
+    pub comparison_kind: Option<ComparisonKind>,
+}
+
+impl BroadcastCompareOptions {
+    /// Creates options for a comparison without explicit broadcast dimensions or kind.
+    pub const fn new(direction: ComparisonDirection) -> Self {
+        Self {
+            broadcast_dimensions: None,
+            direction,
+            comparison_kind: None,
+        }
+    }
+}
+
+/// Broadcasts two tensors and compares each pair of elements, producing `i1` predicates.
+///
+/// [`BroadcastCompareOptions`] controls the relation, axis mapping, and optional
+/// comparison semantics. The serialized attribute name is `comparison_type`,
+/// even though the Rust API calls the setting `comparison_kind`.
+#[pliron_op(name="chlo.broadcast_compare",format="$0 `,` $1 attr_dict `:` typesig",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(chlo_broadcast_compare_dimensions:VecAttr,chlo_comparison_direction:ComparisonDirectionAttr,chlo_comparison_type:ComparisonKindAttr))]
 pub struct BroadcastCompareOp;
 impl BroadcastCompareOp {
+    /// Allocates a comparison with the supplied predicate tensor type, without verification.
+    ///
+    /// Stores the required direction and only those optional attributes present
+    /// in `options`. Call `verify` to check operand and result compatibility.
     pub fn new(
         ctx: &mut Context,
         lhs: Value,
         rhs: Value,
         result: TypeHandle,
-        dimensions: Option<Vec<i64>>,
-        direction: ComparisonDirection,
-        compare_type: Option<ComparisonType>,
+        options: BroadcastCompareOptions,
     ) -> Self {
         let op = Self {
             op: Operation::new(
@@ -710,51 +1075,62 @@ impl BroadcastCompareOp {
                 0,
             ),
         };
-        if let Some(d) = dimensions {
+        if let Some(d) = options.broadcast_dimensions {
             op.set_attr_chlo_broadcast_compare_dimensions(ctx, signed_list(ctx, &d));
         }
-        op.set_attr_chlo_comparison_direction(ctx, ComparisonDirectionAttr::new(direction));
-        if let Some(t) = compare_type {
-            op.set_attr_chlo_comparison_type(ctx, ComparisonTypeAttr::new(t));
+        op.set_attr_chlo_comparison_direction(ctx, ComparisonDirectionAttr::new(options.direction));
+        if let Some(t) = options.comparison_kind {
+            op.set_attr_chlo_comparison_type(ctx, ComparisonKindAttr::new(t));
         }
         op
     }
+    /// Infers an `i1` tensor with the operands' broadcast shape.
+    ///
+    /// Incompatible or indeterminate broadcast shapes yield an unranked result.
+    /// This checks type inference requirements, not whether the chosen comparison
+    /// semantics are meaningful for the operand element type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for non-HLO tensors or incompatible operand element types.
     pub fn new_inferred(
         ctx: &mut Context,
         lhs: Value,
         rhs: Value,
-        dimensions: Option<Vec<i64>>,
-        direction: ComparisonDirection,
-        compare_type: Option<ComparisonType>,
+        options: BroadcastCompareOptions,
     ) -> Result<Self> {
         const NAME: &str = "chlo.broadcast_compare";
         let a = typed(ctx, lhs.get_type(ctx), Domain::Any, false, NAME)?;
         let b = typed(ctx, rhs.get_type(ctx), Domain::Any, false, NAME)?;
-        let ty = infer_broadcast_binary(ctx, &a, &b, dimensions.as_deref(), Some(i1(ctx)), NAME)?;
-        Ok(Self::new(
+        let ty = infer_broadcast_binary(
             ctx,
-            lhs,
-            rhs,
-            ty,
-            dimensions,
-            direction,
-            compare_type,
-        ))
+            &a,
+            &b,
+            options.broadcast_dimensions.as_deref(),
+            Some(i1(ctx)),
+            NAME,
+        )?;
+        Ok(Self::new(ctx, lhs, rhs, ty, options))
     }
+    /// Returns the left-hand tensor being compared.
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the right-hand tensor being compared.
     pub fn rhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
+    /// Copies the explicit axis mapping, or returns `None` if absent or malformed.
     pub fn broadcast_dimensions(&self, ctx: &Context) -> Option<Vec<i64>> {
         let a = self.get_attr_chlo_broadcast_compare_dimensions(ctx)?;
         read_signed_list(&a)
     }
+    /// Reads the required comparison relation, or returns `None` if missing or malformed.
     pub fn comparison_direction(&self, ctx: &Context) -> Option<ComparisonDirection> {
         Some(self.get_attr_chlo_comparison_direction(ctx)?.value)
     }
-    pub fn comparison_type(&self, ctx: &Context) -> Option<ComparisonType> {
+    /// Reads explicit comparison semantics without inventing a default for an absent attribute.
+    pub fn comparison_kind(&self, ctx: &Context) -> Option<ComparisonKind> {
         Some(self.get_attr_chlo_comparison_type(ctx)?.value)
     }
 }
@@ -804,9 +1180,14 @@ fn infer_select(
     ))
 }
 
+/// Selects elements from two tensors using a broadcast predicate tensor.
+///
+/// The predicate is a ranked `i1` tensor. Both value tensors have identical
+/// element types and all three operands use trailing-axis NumPy broadcasting.
 #[pliron_op(name="chlo.broadcast_select",format="$0 `,` $1 `,` $2 attr_dict `:` typesig",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct BroadcastSelectOp;
 impl BroadcastSelectOp {
+    /// Allocates a selection with the supplied result type, without verification.
     pub fn new(
         ctx: &mut Context,
         pred: Value,
@@ -825,6 +1206,14 @@ impl BroadcastSelectOp {
             ),
         }
     }
+    /// Infers the broadcast output shape and copies the value operands' element type.
+    ///
+    /// Incompatible or indeterminate broadcast shapes yield an unranked result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a nonranked or nonpredicate condition, invalid HLO
+    /// value tensors, or different element types on the true and false branches.
     pub fn new_inferred(
         ctx: &mut Context,
         pred: Value,
@@ -838,12 +1227,15 @@ impl BroadcastSelectOp {
         let ty = infer_select(ctx, &p, &t, &f, NAME)?;
         Ok(Self::new(ctx, pred, on_true, on_false, ty))
     }
+    /// Returns the condition tensor whose true elements select [`Self::on_true`].
     pub fn predicate(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the tensor selected where the broadcast predicate is true.
     pub fn on_true(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
+    /// Returns the tensor selected where the broadcast predicate is false.
     pub fn on_false(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(2)
     }
@@ -876,8 +1268,9 @@ impl Verify for BroadcastSelectOp {
         )?;
         let result_ty = ir.get_result(0).get_type(ctx);
         let result = typed(ctx, result_ty, Domain::Any, false, NAME)?;
-        let inferred = infer_select(ctx, &p, &t, &f, NAME)
-            .map_err(|_| fail(ctx, &ir, NAME, "mismatched operand types"))?;
+        let inferred = infer_select(ctx, &p, &t, &f, NAME).map_err(|error| {
+            failure_with_source(ctx, &ir, NAME, "mismatched operand types", error)
+        })?;
         let inferred = inference::shaped(ctx, inferred)
             .ok_or_else(|| fail(ctx, &ir, NAME, "inferred type is not a tensor"))?;
         if !inference::compatible_shape(&inferred, &result) {
@@ -993,10 +1386,19 @@ fn constant_like_type(
         .ok_or_else(|| invalid("chlo.constant_like", "operand must be a tensor"))
 }
 
+/// A statically shaped constant tensor backed by a typed dense or sparse elements attribute.
+///
+/// The payload is stored in `value` and must have exactly the result type.
+/// Use [`Self::from_value`] for arbitrary supported elements attributes, or
+/// [`Self::new_inferred`] for a dense payload supplied as raw words.
 #[pliron_op(name="chlo.constant",format="attr_dict `:` type($0)",interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<0>,pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ConstantOp;
 impl ConstantOp {
-    /// Compatibility word constructor; the sole stored payload is a typed `value`.
+    /// Allocates a dense constant from raw words and an explicit result type.
+    ///
+    /// Words encode element bits, not numeric conversions. `splat` stores one
+    /// element repeated over the tensor. The sole payload is the typed `value`
+    /// attribute; call `verify` to check the static shape, element width, and count.
     pub fn new(ctx: &mut Context, result: TypeHandle, bits: Vec<u64>, splat: bool) -> Self {
         let element = result
             .deref(ctx)
@@ -1013,6 +1415,10 @@ impl ConstantOp {
         };
         Self::new_with_value(ctx, result, Box::new(value))
     }
+    /// Allocates a constant with an explicit type and payload, without verification.
+    ///
+    /// A supported `value` is a dense or sparse elements attribute with exactly
+    /// the result type. Legacy word payloads are normalized by [`Self::set_value`].
     pub fn new_with_value(ctx: &mut Context, result: TypeHandle, value: AttrObj) -> Self {
         let op = Self {
             op: Operation::new(
@@ -1027,6 +1433,12 @@ impl ConstantOp {
         op.set_value(ctx, value);
         op
     }
+    /// Derives the result type from a dense or sparse elements attribute and verifies it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsupported payloads, invalid elements data, or a type
+    /// that is not a static ranked HLO tensor in the constant element domain.
     pub fn from_value(ctx: &mut Context, value: AttrObj) -> Result<Self> {
         let ty = Self::elements_type(&value)
             .ok_or_else(|| invalid("chlo.constant", "value must be an elements attribute"))?;
@@ -1044,6 +1456,9 @@ impl ConstantOp {
                     .map(|value| value.ty)
             })
     }
+    /// Clones the stored payload attribute, or returns `None` when it is absent.
+    ///
+    /// This accessor does not validate the payload's kind or type.
     pub fn value(&self, ctx: &Context) -> Option<AttrObj> {
         self.get_operation()
             .deref(ctx)
@@ -1052,6 +1467,9 @@ impl ConstantOp {
             .get(&pliron::ident!("value"))
             .cloned()
     }
+    /// Replaces the payload, normalizing supported legacy word representations.
+    ///
+    /// Does not change the result type or verify payload/type consistency.
     pub fn set_value(&self, ctx: &Context, value: AttrObj) {
         let value = constant_elements_value(ctx, value);
         self.get_operation()
@@ -1060,6 +1478,15 @@ impl ConstantOp {
             .0
             .insert(pliron::ident!("value"), value);
     }
+    /// Builds and verifies a dense constant from its static shape, element type, and bits.
+    ///
+    /// A splat supplies one encoded element; a nonsplat supplies every element
+    /// in tensor order. Raw words are interpreted using the element's bit width.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for dynamic dimensions, unsupported element types, or
+    /// a payload whose word count or element data does not satisfy the tensor type.
     pub fn new_inferred(
         ctx: &mut Context,
         shape: Vec<i64>,
@@ -1074,6 +1501,10 @@ impl ConstantOp {
         op.verify(ctx)?;
         Ok(op)
     }
+    /// Copies raw words from a dense scalar-bits payload in storage order.
+    ///
+    /// Returns `None` for a missing payload, sparse elements, or dense elements
+    /// not represented by scalar-bits attributes. A splat is not expanded.
     pub fn bits(&self, ctx: &Context) -> Option<Vec<u64>> {
         let value = self.value(ctx)?;
         let dense = value.downcast_ref::<stablehlo::attributes::DenseElementsAttr>()?;
@@ -1087,6 +1518,7 @@ impl ConstantOp {
         }
         Some(bits)
     }
+    /// Returns the dense payload's splat flag, or `None` for absent or nondense data.
     pub fn is_splat(&self, ctx: &Context) -> Option<bool> {
         self.value(ctx)?
             .downcast_ref::<stablehlo::attributes::DenseElementsAttr>()
@@ -1143,9 +1575,18 @@ impl pliron::opts::constants::ConstFoldInterface for ConstantOp {
     }
 }
 
+/// Repeats a scalar constant over the shape and encoding of an operand tensor.
+///
+/// Unlike [`ConstantOp`], the output shape may be dynamic or unranked. The
+/// output element type comes from the scalar payload, not the shape operand.
 #[pliron_op(name="chlo.constant_like",format="$0 attr_dict `:` typesig",interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ConstantLikeOp;
 impl ConstantLikeOp {
+    /// Allocates a scalar-bits fill with an explicit output type, without verification.
+    ///
+    /// `value_bits` encodes one scalar of `element`. `operand` contributes the
+    /// shape, not element values; `result` must have that shape and the scalar's
+    /// element type.
     pub fn new(
         ctx: &mut Context,
         value_bits: Vec<u64>,
@@ -1163,6 +1604,10 @@ impl ConstantLikeOp {
             result,
         )
     }
+    /// Allocates a fill from a scalar attribute and explicit type, without verification.
+    ///
+    /// The scalar payload must have an accepted HLO element type. Call `verify`
+    /// to check its representation and the output's compatibility with `operand`.
     pub fn new_with_value(
         ctx: &mut Context,
         value: AttrObj,
@@ -1182,6 +1627,9 @@ impl ConstantLikeOp {
         op.set_value(ctx, value);
         op
     }
+    /// Clones the stored scalar payload, or returns `None` if it is absent.
+    ///
+    /// The attribute's validity is checked by `verify`, not by this accessor.
     pub fn value(&self, ctx: &Context) -> Option<AttrObj> {
         self.get_operation()
             .deref(ctx)
@@ -1190,6 +1638,7 @@ impl ConstantLikeOp {
             .get(&pliron::ident!("value"))
             .cloned()
     }
+    /// Replaces the scalar payload without changing or verifying the output type.
     pub fn set_value(&self, ctx: &Context, value: AttrObj) {
         self.get_operation()
             .deref_mut(ctx)
@@ -1197,6 +1646,12 @@ impl ConstantLikeOp {
             .0
             .insert(pliron::ident!("value"), value);
     }
+    /// Infers the fill type from a scalar payload and shape operand, then verifies it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid or unsupported scalar payload, a non-HLO
+    /// shape operand, or an invalid inferred tensor type.
     pub fn from_value(ctx: &mut Context, value: AttrObj, operand: Value) -> Result<Self> {
         let element = constant_scalar_type(ctx, &value)?;
         let ty = constant_like_type(ctx, operand.get_type(ctx), element)?;
@@ -1204,6 +1659,12 @@ impl ConstantLikeOp {
         op.verify(ctx)?;
         Ok(op)
     }
+    /// Infers and verifies a fill using one raw scalar and the operand's tensor shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation errors as [`Self::from_value`], including
+    /// invalid scalar word counts or an unsupported operand/element type.
     pub fn new_inferred(
         ctx: &mut Context,
         value_bits: Vec<u64>,
@@ -1219,6 +1680,7 @@ impl ConstantLikeOp {
             operand,
         )
     }
+    /// Returns the tensor supplying the fill shape and encoding.
     pub fn operand(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -1331,14 +1793,43 @@ fn infer_top_k(ctx: &Context, operand: &Shaped, k: i64) -> Result<(TypeHandle, T
     ))
 }
 
+/// Configuration for [`TopKOp`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TopKOptions {
+    /// Number of values to return along the final dimension.
+    ///
+    /// A negative value produces a dynamic final dimension during type inference;
+    /// a known final input dimension must be at least a nonnegative `k`.
+    pub k: i64,
+    /// Whether equal values retain their original order.
+    pub is_stable: bool,
+}
+
+impl TopKOptions {
+    /// Creates top-k options with the requested count and stability.
+    ///
+    /// Does not validate `k` against an operand shape.
+    pub const fn new(k: i64, is_stable: bool) -> Self {
+        Self { k, is_stable }
+    }
+}
+
+/// Selects the largest `k` values along the final tensor dimension.
+///
+/// Produces a values tensor followed by an `i32` indices tensor with the same
+/// shape. Ranked inputs must have at least one axis. Equal values retain their
+/// original order when the stability option is enabled.
 #[pliron_op(name="chlo.top_k",format="$0 attr_dict `:` typesig",interfaces=[pliron::builtin::op_interfaces::NResultsInterface<2>],attributes=(chlo_top_k_k:IntegerAttr,chlo_top_k_is_stable:BoolAttr))]
 pub struct TopKOp;
 impl TopKOp {
+    /// Allocates top-k with explicit values and indices types, without verification.
+    ///
+    /// Result ordering is `(values, indices)`. Call `verify` to check the operand,
+    /// count, shape compatibility, and index element type.
     pub fn new(
         ctx: &mut Context,
         operand: Value,
-        k: i64,
-        is_stable: bool,
+        options: TopKOptions,
         values: TypeHandle,
         indices: TypeHandle,
     ) -> Self {
@@ -1360,28 +1851,35 @@ impl TopKOp {
                     64,
                     pliron::builtin::types::Signedness::Signless,
                 ),
-                APInt::from_i64(k, bw(64)),
+                APInt::from_i64(options.k, bw(64)),
             ),
         );
-        op.set_attr_chlo_top_k_is_stable(ctx, BoolAttr::new(is_stable));
+        op.set_attr_chlo_top_k_is_stable(ctx, BoolAttr::new(options.is_stable));
         op
     }
-    pub fn new_inferred(
-        ctx: &mut Context,
-        operand: Value,
-        k: i64,
-        is_stable: bool,
-    ) -> Result<Self> {
+    /// Infers values and `i32` indices types and allocates top-k.
+    ///
+    /// Replaces the final dimension by `k`, or by a dynamic dimension for negative
+    /// `k`. An unranked operand produces unranked results.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a non-HLO operand, a ranked scalar, or a known final
+    /// dimension smaller than `k`.
+    pub fn new_inferred(ctx: &mut Context, operand: Value, options: TopKOptions) -> Result<Self> {
         let input = typed(ctx, operand.get_type(ctx), Domain::Any, false, "chlo.top_k")?;
-        let (values, indices) = infer_top_k(ctx, &input, k)?;
-        Ok(Self::new(ctx, operand, k, is_stable, values, indices))
+        let (values, indices) = infer_top_k(ctx, &input, options.k)?;
+        Ok(Self::new(ctx, operand, options, values, indices))
     }
+    /// Returns the tensor searched along its final dimension.
     pub fn operand(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the selected values tensor (result zero).
     pub fn values(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_result(0)
     }
+    /// Returns the `i32` source-index tensor (result one).
     pub fn indices(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_result(1)
     }
@@ -1395,12 +1893,14 @@ impl TopKOp {
         }
         attr.value().to_string_decimal(true).parse().ok()
     }
-    /// `is_stable`, defaulting to `true` when the attribute is omitted.
-    pub fn is_stable(&self, ctx: &Context) -> Option<bool> {
-        Some(
-            self.get_attr_chlo_top_k_is_stable(ctx)
-                .is_none_or(|v| bool::from((*v).clone())),
-        )
+    /// Returns the stability flag, defaulting to `true` without a typed boolean attribute.
+    ///
+    /// This convenience accessor is infallible and does not validate the raw
+    /// attribute dictionary. Use the generated typed getter when the distinction
+    /// between an explicit value and the default matters.
+    pub fn is_stable(&self, ctx: &Context) -> bool {
+        self.get_attr_chlo_top_k_is_stable(ctx)
+            .is_none_or(|v| bool::from((*v).clone()))
     }
 }
 impl Verify for TopKOp {
@@ -1422,8 +1922,9 @@ impl Verify for TopKOp {
         let k = self
             .k(ctx)
             .ok_or_else(|| fail(ctx, &ir, NAME, "k attribute is missing or malformed"))?;
-        let (want_values, want_indices) = infer_top_k(ctx, &operand, k)
-            .map_err(|_| fail(ctx, &ir, NAME, "operand is incompatible with k"))?;
+        let (want_values, want_indices) = infer_top_k(ctx, &operand, k).map_err(|error| {
+            failure_with_source(ctx, &ir, NAME, "operand is incompatible with k", error)
+        })?;
         if !inference::compatible_types(ctx, want_values, values)
             || !inference::compatible_types(ctx, want_indices, indices)
         {
@@ -1438,17 +1939,58 @@ impl Verify for TopKOp {
     }
 }
 
+/// Configuration for [`RaggedDotOp`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RaggedDotOptions {
+    /// Paired batch/contracting axes plus the left ragged and right group axes.
+    pub dimension_numbers: RaggedDotDimensionNumbersAttr,
+    /// Precision requests in operand order; ragged dot accepts at most two entries.
+    ///
+    /// `None` omits the attribute; `Some(vec![])` explicitly stores an empty
+    /// configuration. Both use the dialect's default precision.
+    pub precision_config: Option<Vec<Precision>>,
+}
+
+impl RaggedDotOptions {
+    /// Creates ragged-dot options with default precision.
+    pub fn new(dimension_numbers: RaggedDotDimensionNumbersAttr) -> Self {
+        Self {
+            dimension_numbers,
+            precision_config: None,
+        }
+    }
+
+    /// Stores an explicit precision configuration and returns the updated options.
+    ///
+    /// An empty vector stores an empty attribute rather than omitting it.
+    /// The operation, not this method, checks that there are at most two entries.
+    #[must_use]
+    pub fn with_precision_config(mut self, precision_config: Vec<Precision>) -> Self {
+        self.precision_config = Some(precision_config);
+        self
+    }
+}
+
+/// Grouped dot product with a ragged left-hand dimension.
+///
+/// Dimension numbers determine batching, contraction, and grouping. `group_sizes`
+/// is a ranked integer tensor describing the ragged partition. Inference uses the
+/// left operand's element type; verification checks output shape compatibility
+/// without requiring the explicit output element type to match the operands.
 #[pliron_op(name="chlo.ragged_dot",format="$0 `,` $1 `,` $2 attr_dict `:` typesig",interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(chlo_ragged_dot_dimension_numbers:RaggedDotDimensionNumbersAttr,chlo_precision_config:PrecisionConfigAttr))]
 pub struct RaggedDotOp;
 impl RaggedDotOp {
+    /// Allocates ragged dot with an explicit result type, without verification.
+    ///
+    /// Stores the dimension numbers and any explicit precision configuration.
+    /// Call `verify` to validate the dimension geometry and result compatibility.
     pub fn new(
         ctx: &mut Context,
         lhs: Value,
         rhs: Value,
         group_sizes: Value,
         result: TypeHandle,
-        dimensions: RaggedDotDimensionNumbersAttr,
-        precision_config: Option<Vec<Precision>>,
+        options: RaggedDotOptions,
     ) -> Self {
         let op = Self {
             op: Operation::new(
@@ -1460,58 +2002,71 @@ impl RaggedDotOp {
                 0,
             ),
         };
-        op.set_attr_chlo_ragged_dot_dimension_numbers(ctx, dimensions);
-        if let Some(values) = precision_config {
+        op.set_attr_chlo_ragged_dot_dimension_numbers(ctx, options.dimension_numbers);
+        if let Some(values) = options.precision_config {
             op.set_attr_chlo_precision_config(ctx, crate::attributes::precision_config(values));
         }
         op
     }
+    /// Infers a ranked result from operand geometry and the dimension numbers.
+    ///
+    /// The output uses the left operand's element type and no tensor encoding.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid operand domains,
+    /// unranked dot operands, invalid or repeated axes, incompatible batch or
+    /// contraction sizes, inconsistent ragged/group geometry, invalid group-size
+    /// shapes, or a precision configuration with more than two entries.
     pub fn new_inferred(
         ctx: &mut Context,
         lhs: Value,
         rhs: Value,
         group_sizes: Value,
-        dimensions: RaggedDotDimensionNumbersAttr,
-        precision_config: Option<Vec<Precision>>,
+        options: RaggedDotOptions,
     ) -> Result<Self> {
         let (shape, element) = ragged_dot_shape(
             ctx,
             lhs.get_type(ctx),
             rhs.get_type(ctx),
             group_sizes.get_type(ctx),
-            &dimensions,
-            precision_config.as_ref().map_or(0, Vec::len),
+            &options.dimension_numbers,
+            options.precision_config.as_ref().map_or(0, Vec::len),
         )?;
         let result = inference::shaped_type(ctx, Some(shape), element, VecAttr::new(vec![]));
-        Ok(Self::new(
-            ctx,
-            lhs,
-            rhs,
-            group_sizes,
-            result,
-            dimensions,
-            precision_config,
-        ))
+        Ok(Self::new(ctx, lhs, rhs, group_sizes, result, options))
     }
+    /// Returns the left-hand tensor, which contains the ragged axis.
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the right-hand tensor, including a group axis when required by the geometry.
     pub fn rhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
+    /// Returns the integer tensor describing each ragged group's size.
     pub fn group_sizes(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(2)
     }
+    /// Clones the dimension mappings, or returns `None` if missing or incorrectly typed.
     pub fn dimension_numbers(&self, ctx: &Context) -> Option<RaggedDotDimensionNumbersAttr> {
         self.get_attr_chlo_ragged_dot_dimension_numbers(ctx)
             .map(|v| (*v).clone())
     }
+    /// Clones the explicit precision attribute without applying a default.
+    ///
+    /// Returns `None` when the attribute is absent or incorrectly typed.
     pub fn precision_config_attr(&self, ctx: &Context) -> Option<PrecisionConfigAttr> {
         self.get_attr_chlo_precision_config(ctx)
             .map(|v| (*v).clone())
     }
+    /// Copies explicit precision requests in operand order.
+    ///
+    /// `None` means no correctly typed attribute was found; `Some(vec![])`
+    /// means an empty configuration was explicitly stored.
     pub fn precision_config(&self, ctx: &Context) -> Option<Vec<Precision>> {
-        read_precision_config(&*self.get_attr_chlo_precision_config(ctx)?)
+        let attr = self.get_attr_chlo_precision_config(ctx)?;
+        Some(read_precision_config(&attr))
     }
 }
 /// Upstream `inferRaggedDotOp`: result dimensions and lhs element type.
@@ -1540,7 +2095,13 @@ fn ragged_dot_shape(
             "lhs, rhs and group_sizes must be ranked tensors",
         ));
     };
-    let (lb, rb, lc, rc, lr, rg) = d.dimensions();
+    let dimensions = d.dimensions();
+    let lb = dimensions.lhs_batching_dimensions;
+    let rb = dimensions.rhs_batching_dimensions;
+    let lc = dimensions.lhs_contracting_dimensions;
+    let rc = dimensions.rhs_contracting_dimensions;
+    let lr = dimensions.lhs_ragged_dimensions;
+    let rg = dimensions.rhs_group_dimensions;
     if lb.len() != rb.len() {
         return Err(invalid(
             NAME,
@@ -1873,9 +2434,28 @@ fn scan_compatible(ctx: &Context, actual: TypeHandle, expected: TypeHandle) -> b
     compatible_tensors(ctx, actual, expected)
 }
 
+/// Scans tensor slices while threading loop-carried tensors through an isolated body.
+///
+/// Operands are ordered as scan inputs followed by initial carries. The body
+/// receives sliced inputs followed by carries and terminates with
+/// `stablehlo.return`, yielding per-step outputs followed by updated carries.
+/// Results are stacked outputs followed by final carries. The body cannot
+/// capture values from outside the operation.
 #[pliron_op(name="chlo.scan",format="operands(CharSpace(`,`)) attr_dict `{` region($0) `}` `:` typesig",interfaces=[pliron::builtin::op_interfaces::IsolatedFromAboveInterface],attributes=(chlo_scan_dimension:IntegerAttr,chlo_scan_dim_size:IntegerAttr,chlo_scan_is_reverse:BoolAttr,chlo_scan_is_associative:BoolAttr,chlo_scan_operand_segment_sizes:VecAttr,chlo_scan_result_segment_sizes:VecAttr))]
 pub struct ScanOp;
 impl ScanOp {
+    /// Allocates a scan with explicit result types and an unterminated entry block.
+    ///
+    /// `dimension` is the zero-based scanned axis. `scan_dim_size` supplies an
+    /// explicit iteration count when needed; input axis sizes otherwise determine
+    /// it. `is_reverse` traverses that axis backwards, while `is_associative`
+    /// optionally records whether reassociation is permitted.
+    ///
+    /// `results` contains stacked output types followed by one carry type per
+    /// `init`. The entry block is created with sliced input arguments followed
+    /// by carry arguments. If slicing fails, this unchecked constructor keeps the
+    /// original input type as a placeholder. Populate the block and its return,
+    /// then call `verify`; this constructor performs no validation.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         ctx: &mut Context,
@@ -1947,6 +2527,21 @@ impl ScanOp {
     ///
     /// Operands and returned values must be ranked. The closure may adjust the
     /// generated argument types, including to compatible unranked tensor types.
+    /// Inputs are sliced along the zero-based `dimension`; `scan_dim_size` may
+    /// supply the iteration count and `is_reverse` selects backwards traversal.
+    /// `is_associative` records an optional reassociation permission.
+    ///
+    /// The closure must populate the isolated entry block and terminate it with
+    /// `stablehlo.return`, returning per-step outputs followed by one updated
+    /// carry per `init`. Inference inserts the scan axis into output shapes and
+    /// preserves compatible carry types. The completed operation is verified.
+    ///
+    /// # Errors
+    ///
+    /// Propagates closure errors and returns an error for invalid scan parameters,
+    /// unsupported tensor types, an invalid body or return, incompatible carries,
+    /// or output types that cannot be inferred. Allocation is not transactional:
+    /// an error after body construction can leave allocated IR in `ctx`.
     #[allow(clippy::too_many_arguments)]
     pub fn new_inferred(
         ctx: &mut Context,
@@ -2035,6 +2630,10 @@ impl ScanOp {
         verify_pure_structure(&last.deref(ctx), "chlo.scan")?;
         Ok(last.deref(ctx).operands().collect())
     }
+    /// Reads the scanned axis as an unsigned integer.
+    ///
+    /// Returns `None` if the attribute is absent, not an integer, or not
+    /// representable as `u64`. Full attribute constraints are checked by `verify`.
     pub fn dimension(&self, ctx: &Context) -> Option<u64> {
         self.get_attr_chlo_scan_dimension(ctx)?
             .value()
@@ -2042,6 +2641,9 @@ impl ScanOp {
             .parse()
             .ok()
     }
+    /// Reads the traversal direction, defaulting to `Some(false)` when omitted.
+    ///
+    /// Returns `None` when an explicitly stored attribute is not a boolean.
     pub fn is_reverse(&self, ctx: &Context) -> Option<bool> {
         if !self
             .get_operation()
@@ -2055,10 +2657,16 @@ impl ScanOp {
         self.get_attr_chlo_scan_is_reverse(ctx)
             .map(|v| bool::from((*v).clone()))
     }
+    /// Reads the explicit reassociation permission, or `None` if absent or malformed.
+    ///
+    /// No default permission is synthesized.
     pub fn is_associative(&self, ctx: &Context) -> Option<bool> {
         self.get_attr_chlo_scan_is_associative(ctx)
             .map(|v| bool::from((*v).clone()))
     }
+    /// Reads the optional explicit iteration count without inferring it from the inputs.
+    ///
+    /// Returns `None` for an absent, incorrectly typed, or unrepresentable attribute.
     pub fn scan_dim_size(&self, ctx: &Context) -> Option<u64> {
         self.get_attr_chlo_scan_dim_size(ctx)?
             .value()
@@ -2066,6 +2674,10 @@ impl ScanOp {
             .parse()
             .ok()
     }
+    /// Returns the first block when exactly one body region exists.
+    ///
+    /// Returns `None` for a missing/multiple region or an empty region. This does
+    /// not check that the region has only one block or a valid terminator.
     pub fn entry_block(
         &self,
         ctx: &Context,
@@ -2077,6 +2689,10 @@ impl ScanOp {
         }
         ir.get_region(0).deref(ctx).iter(ctx).next()
     }
+    /// Copies scan inputs using the first operand-segment count.
+    ///
+    /// Returns `None` when that count cannot be read as a nonnegative `usize`.
+    /// Segment consistency and operand count are checked by `verify`, not here.
     pub fn inputs(&self, ctx: &Context) -> Option<Vec<Value>> {
         let n = read_signed_list(
             self.get_attr_chlo_scan_operand_segment_sizes(ctx)
@@ -2091,6 +2707,10 @@ impl ScanOp {
                 .collect(),
         )
     }
+    /// Copies initial carry operands after the scan-input segment.
+    ///
+    /// Returns `None` when the input segment count cannot be decoded.
+    /// This accessor does not validate either segment's declared length.
     pub fn inits(&self, ctx: &Context) -> Option<Vec<Value>> {
         let n = read_signed_list(
             self.get_attr_chlo_scan_operand_segment_sizes(ctx)
