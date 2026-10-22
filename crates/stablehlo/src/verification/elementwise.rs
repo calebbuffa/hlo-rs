@@ -14,22 +14,21 @@ pub(crate) fn verify_elementwise(
 ) -> Result<()> {
     crate::verification::verify_elementwise(op, ctx, mnemonic, arity)?;
     let ir = op.get_operation().deref(ctx);
-    if owns_result_accuracy(op, ctx) {
-        if let Some(attribute) = ir
+    if owns_result_accuracy(op, ctx)
+        && let Some(attribute) = ir
             .attributes
             .0
-            .get(&Identifier::new("stablehlo_result_accuracy"))
-        {
-            let Some(attribute) = attribute.downcast_ref::<crate::attributes::ResultAccuracyAttr>()
-            else {
-                return crate::verification::invalid(
-                    op,
-                    ctx,
-                    "result_accuracy must use the StableHLO result_accuracy attribute",
-                );
-            };
-            attribute.verify(ctx)?;
-        }
+            .get(&Identifier::new(crate::attributes::keys::RESULT_ACCURACY))
+    {
+        let Some(attribute) = attribute.downcast_ref::<crate::attributes::ResultAccuracyAttr>()
+        else {
+            return crate::verification::invalid(
+                op,
+                ctx,
+                "result_accuracy must use the StableHLO result_accuracy attribute",
+            );
+        };
+        attribute.verify(ctx)?;
     }
     let types = ir
         .operands()
@@ -270,6 +269,37 @@ pub(crate) fn element_types_compatible(ctx: &Context, a: TypeHandle, b: TypeHand
         && a.expressed_type(ctx) == b.expressed_type(ctx)
         && a.quantization_dimension().is_some() == b.quantization_dimension().is_some()
 }
+
+pub(crate) fn compatible_quantized_add_result(
+    ctx: &Context,
+    expected: TypeHandle,
+    result: TypeHandle,
+) -> bool {
+    let (Some((expected_shape, expected_element)), Some((result_shape, result_element))) = (
+        tensor_parts_any(ctx, expected),
+        tensor_parts_any(ctx, result),
+    ) else {
+        return false;
+    };
+    if expected_element == result_element
+        || !expected_element.deref(ctx).is::<QuantizedElementType>()
+        || !result_element.deref(ctx).is::<QuantizedElementType>()
+    {
+        return false;
+    }
+    let expected_object = expected_element.deref(ctx);
+    let result_object = result_element.deref(ctx);
+    let (Some(expected_quantized), Some(result_quantized)) = (
+        expected_object.downcast_ref::<QuantizedElementType>(),
+        result_object.downcast_ref::<QuantizedElementType>(),
+    ) else {
+        return false;
+    };
+    expected_quantized.axis == result_quantized.axis
+        && element_types_compatible(ctx, expected_element, result_element)
+        && compatible_shapes(&expected_shape, &result_shape)
+}
+
 fn compatible_shapes(a: &[i64], b: &[i64]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(&x, &y)| x == y || x == -1 || y == -1)
 }

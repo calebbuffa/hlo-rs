@@ -7,13 +7,19 @@ use pliron::{location::Location, verify_err};
     generate_get = true
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Quantized element metadata with optional expressed type and storage bounds.
 pub struct AnyQuantizedType {
+    /// Primitive storage type for quantized values.
     pub storage: TypeHandle,
+    /// Optional expressed floating-point type, represented by zero or one handle.
     pub expressed: Vec<TypeHandle>,
+    /// Optional lower storage bound, omitted when equal to the storage default.
     pub storage_min: Vec<Signed128Attr>,
+    /// Optional upper storage bound, omitted when equal to the storage default.
     pub storage_max: Vec<Signed128Attr>,
 }
 impl AnyQuantizedType {
+    /// Interns an unspecified quantized type, omitting explicit bounds equal to defaults.
     pub fn intern(
         ctx: &Context,
         storage: ElementType,
@@ -39,15 +45,18 @@ impl AnyQuantizedType {
         )
         .into()
     }
+    /// Returns the primitive storage element type, when recognized.
     pub fn storage_type(&self, ctx: &Context) -> Option<ElementType> {
         primitive_element(ctx, self.storage)
     }
+    /// Returns explicit storage bounds; `None` components use the storage type defaults.
     pub fn storage_range(&self) -> (Option<i128>, Option<i128>) {
         (
             self.storage_min.first().copied().map(Signed128Attr::value),
             self.storage_max.first().copied().map(Signed128Attr::value),
         )
     }
+    /// Returns the optional primitive expressed element type.
     pub fn expressed_type(&self, ctx: &Context) -> Option<ElementType> {
         self.expressed
             .first()

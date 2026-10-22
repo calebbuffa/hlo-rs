@@ -5,11 +5,17 @@ use crate::Diagnostic;
 use pliron::derive::pliron_attr;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
+/// Binary arithmetic operation encoded in an affine expression.
 pub enum AffineBinaryOp {
+    /// Adds the two operands using checked integer arithmetic.
     Add = 3,
+    /// Multiplies the operands; at most one operand may depend on dimensions.
     Mul = 4,
+    /// Divides with rounding toward negative infinity.
     FloorDiv = 5,
+    /// Divides with rounding toward positive infinity.
     CeilDiv = 6,
+    /// Returns the nonnegative modulo result for a positive divisor.
     Mod = 7,
 }
 #[pliron_attr(
@@ -18,8 +24,11 @@ pub enum AffineBinaryOp {
     verifier = "succ"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// One encoded token in the postfix representation of an affine expression.
 pub struct AffineNode {
+    /// Encoded node kind: dimension (0), symbol (1), constant (2), or binary op (3–7).
     pub kind: u8,
+    /// Dimension/symbol position or constant value; binary operators ignore it.
     pub value: i64,
 }
 #[pliron_attr(
@@ -27,12 +36,14 @@ pub struct AffineNode {
     format = "`[` vec($nodes, CharSpace(`,`)) `]`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Affine expression stored as a postfix sequence of native nodes.
 pub struct AffineExpr {
+    /// Postfix expression nodes, ordered so operands precede their operation.
     pub nodes: Vec<AffineNode>,
 }
 impl AffineExpr {
-    #[allow(non_snake_case)]
-    pub fn Dimension(position: usize) -> Self {
+    /// Creates an expression referencing a dimension by zero-based position.
+    pub fn dimension(position: usize) -> Self {
         Self {
             nodes: vec![AffineNode {
                 kind: 0,
@@ -40,8 +51,8 @@ impl AffineExpr {
             }],
         }
     }
-    #[allow(non_snake_case)]
-    pub fn Symbol(position: usize) -> Self {
+    /// Creates an expression referencing a symbol by zero-based position.
+    pub fn symbol(position: usize) -> Self {
         Self {
             nodes: vec![AffineNode {
                 kind: 1,
@@ -49,12 +60,13 @@ impl AffineExpr {
             }],
         }
     }
-    #[allow(non_snake_case)]
-    pub fn Constant(value: i64) -> Self {
+    /// Creates a constant-valued expression.
+    pub fn constant(value: i64) -> Self {
         Self {
             nodes: vec![AffineNode { kind: 2, value }],
         }
     }
+    /// Appends a postfix binary operation to the two operand expressions.
     pub fn binary(op: AffineBinaryOp, mut lhs: Self, rhs: Self) -> Self {
         lhs.nodes.extend(rhs.nodes);
         lhs.nodes.push(AffineNode {
@@ -63,6 +75,7 @@ impl AffineExpr {
         });
         lhs
     }
+    /// Checks expression structure, operand positions, affine restrictions, and nesting.
     pub fn validate(&self, dimensions: usize, symbols: usize) -> Result<()> {
         let mut values = Vec::<(bool, usize)>::new();
         for node in &self.nodes {
@@ -126,6 +139,10 @@ impl AffineExpr {
         }
         Ok(())
     }
+    /// Evaluates the expression for concrete dimension and symbol values.
+    ///
+    /// Returns an error for invalid arguments, division by zero, malformed
+    /// expressions, or arithmetic overflow.
     pub fn evaluate_at(&self, dimensions: &[i64], symbols: &[i64]) -> Result<i128> {
         self.validate(dimensions.len(), symbols.len())?;
         let mut values = Vec::<i128>::new();
@@ -185,18 +202,24 @@ impl Verify for AffineExpr {
     format = "`<` $dimensions `,` $symbols `,` `[` vec($results, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Map from dimension and symbol arguments to a sequence of affine results.
 pub struct AffineMap {
+    /// Number of dimension arguments accepted by this map.
     pub dimensions: usize,
+    /// Number of symbol arguments accepted by this map.
     pub symbols: usize,
+    /// Results produced by the map, in result order.
     pub results: Vec<AffineExpr>,
 }
 impl AffineMap {
+    /// Validates every result expression against this map's argument counts.
     pub fn validate(&self) -> Result<()> {
         for result in &self.results {
             result.validate(self.dimensions, self.symbols)?;
         }
         Ok(())
     }
+    /// Evaluates all results after requiring exactly the declared argument counts.
     pub fn evaluate(&self, dimensions: &[i64], symbols: &[i64]) -> Result<Vec<i64>> {
         self.validate()?;
         arguments(self.dimensions, dimensions, false)?;
@@ -221,8 +244,11 @@ impl Verify for AffineMap {
     verifier = "succ"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Equality or nonnegative constraint over an affine expression.
 pub struct AffineConstraint {
+    /// Expression constrained to equal zero or be nonnegative.
     pub expression: AffineExpr,
+    /// When true, requires the expression to equal zero; otherwise requires it to be nonnegative.
     pub equality: bool,
 }
 #[pliron_attr(
@@ -230,18 +256,24 @@ pub struct AffineConstraint {
     format = "`<` $dimensions `,` $symbols `,` `[` vec($constraints, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Integer set defined by a conjunction of affine constraints.
 pub struct IntegerSet {
+    /// Number of dimension arguments accepted by the set.
     pub dimensions: usize,
+    /// Number of symbol arguments accepted by the set.
     pub symbols: usize,
+    /// Conjunctive constraints that determine set membership.
     pub constraints: Vec<AffineConstraint>,
 }
 impl IntegerSet {
+    /// Validates every constraint expression against the declared argument counts.
     pub fn validate(&self) -> Result<()> {
         for c in &self.constraints {
             c.expression.validate(self.dimensions, self.symbols)?;
         }
         Ok(())
     }
+    /// Returns whether all constraints hold for the supplied dimensions and symbols.
     pub fn contains(&self, dimensions: &[i64], symbols: &[i64]) -> Result<bool> {
         self.validate()?;
         arguments(self.dimensions, dimensions, false)?;

@@ -6,13 +6,21 @@ use pliron::{location::Location, verify_err};
     generate_get = false
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Quantized element type using scale and zero-point tables over blocked axes.
 pub struct SubchannelQuantizedType {
+    /// Any-quantized metadata describing the storage type and optional range.
     pub storage: TypeHandle,
+    /// Floating-point element type in which quantized values are expressed.
     pub expressed: TypeHandle,
+    /// Tensor dimensions quantized by the parameter tables.
     pub quantized_dimensions: Vec<i32>,
+    /// Positive block size corresponding to each quantized dimension.
     pub block_sizes: Vec<i64>,
+    /// Shape of the scale and zero-point parameter tables.
     pub parameter_shape: Vec<i64>,
+    /// Encoded scale values using the expressed element format.
     pub scale_bits: Vec<u64>,
+    /// Encoded zero points using the storage element format.
     pub zero_point_bits: Vec<u64>,
 }
 /// Parameter data for an interned subchannel quantized type.
@@ -108,27 +116,34 @@ impl SubchannelQuantizedType {
         )
         .into()
     }
+    /// Returns the primitive storage element type, when available.
     pub fn storage_type(&self, ctx: &Context) -> Option<ElementType> {
         self.storage
             .deref(ctx)
             .downcast_ref::<AnyQuantizedType>()?
             .storage_type(ctx)
     }
+    /// Returns the primitive expressed element type, when recognized.
     pub fn expressed_type(&self, ctx: &Context) -> Option<ElementType> {
         primitive_element(ctx, self.expressed)
     }
+    /// Returns the tensor axes associated with parameterized quantization.
     pub fn quantized_dimensions(&self) -> &[i32] {
         &self.quantized_dimensions
     }
+    /// Returns block sizes corresponding positionally to quantized dimensions.
     pub fn block_sizes(&self) -> &[i64] {
         &self.block_sizes
     }
+    /// Returns the parameter-table shape.
     pub fn parameter_shape(&self) -> &[i64] {
         &self.parameter_shape
     }
+    /// Returns exact scale bit patterns; decoding requires the expressed type format.
     pub fn scales(&self) -> &[u64] {
         &self.scale_bits
     }
+    /// Returns exact zero-point bit patterns; decoding requires the storage type format.
     pub fn zero_points(&self) -> &[u64] {
         &self.zero_point_bits
     }

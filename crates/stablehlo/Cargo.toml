@@ -3,12 +3,12 @@ name = "stablehlo"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
-license-file.workspace = true
+license.workspace = true
 description = "StableHLO dialect for pliron"
 repository = "https://github.com/calebbuffa/hlo-rs"
 documentation = "https://docs.rs/stablehlo"
 readme = "README.md"
-include = ["src/**", "README.md"]
+include = ["src/**", "README.md", "LICENSE"]
 keywords = ["stablehlo", "tensor", "ir"]
 categories = ["compilers", "data-structures"]
 

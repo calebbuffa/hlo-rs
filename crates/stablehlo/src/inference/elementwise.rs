@@ -5,6 +5,14 @@ use crate::{attributes::TypeExtensionsAttr, types::ElementType};
 use pliron::attribute::AttrObj;
 use pliron::{context::Context, result::Result, r#type::TypeHandle};
 
+/// Infers an elementwise result for the operation identified by `mnemonic`.
+///
+/// Inputs must be supported ranked tensors with compatible ranks, element
+/// types, and dimensions; dynamic dimensions (`-1`) may match known extents.
+/// The mnemonic controls the accepted element domain and result element type
+/// (for example, `is_finite` returns `i1`, while `real` on a complex tensor
+/// returns its component type). Empty inputs, unsupported mnemonics/domains,
+/// and incompatible shapes or elements return an error.
 pub fn infer_elementwise(
     ctx: &Context,
     mnemonic: &str,
@@ -215,18 +223,39 @@ fn bound_for_axis(ctx: &Context, ty: TypeHandle, axis: usize) -> Option<i64> {
         .filter(|&bound| bound >= 0)
 }
 
+/// Infers the elementwise absolute-value result type for a supported tensor.
+///
+/// The input element type must be a supported signed integer, floating-point,
+/// complex, or uniform-quantized type.
 pub fn infer_abs_type(ctx: &Context, operand: TypeHandle) -> Result<TypeHandle> {
     infer_elementwise(ctx, "abs", &[operand])
 }
+/// Infers the real-part result type of a floating-point or complex tensor.
+///
+/// A complex element type becomes its floating-point component type; a
+/// floating-point element type is preserved.
 pub fn infer_real_type(ctx: &Context, operand: TypeHandle) -> Result<TypeHandle> {
     infer_elementwise(ctx, "real", &[operand])
 }
+/// Infers the imaginary-part result type of a floating-point or complex tensor.
+///
+/// A complex element type becomes its floating-point component type; a
+/// floating-point element type is preserved.
 pub fn infer_imag_type(ctx: &Context, operand: TypeHandle) -> Result<TypeHandle> {
     infer_elementwise(ctx, "imag", &[operand])
 }
+/// Infers the `is_finite` result, preserving shape and replacing the element
+/// type with `i1`.
+///
+/// The operand must have a supported floating-point or uniform-quantized
+/// element type.
 pub fn infer_is_finite_type(ctx: &Context, operand: TypeHandle) -> Result<TypeHandle> {
     infer_elementwise(ctx, "is_finite", &[operand])
 }
+/// Infers the complex result formed from matching `f32` or `f64` components.
+///
+/// The operands must have compatible tensor shapes and identical component
+/// element types; the resulting elements are `complex<f32>` or `complex<f64>`.
 pub fn infer_complex_type(ctx: &Context, lhs: TypeHandle, rhs: TypeHandle) -> Result<TypeHandle> {
     let (shape, element, encoding) = parts(ctx, lhs)?;
     let (_other_shape, other_element, _) = parts(ctx, rhs)?;
@@ -242,11 +271,16 @@ pub fn infer_complex_type(ctx: &Context, lhs: TypeHandle, rhs: TypeHandle) -> Re
         .native(ctx);
     checked_result(ctx, result_tensor(ctx, shape, complex, encoding))
 }
+/// Infers the boolean tensor result of comparing two compatible tensors.
+///
+/// `comparison` selects the requested comparison domain; `None` leaves the
+/// comparison kind unspecified. Inputs must have compatible shapes and
+/// compatible element types. Per-axis quantized inputs are not accepted.
 pub fn infer_compare_type(
     ctx: &Context,
     lhs: TypeHandle,
     rhs: TypeHandle,
-    comparison: Option<crate::ops::CompareType>,
+    comparison: Option<crate::attributes::ComparisonType>,
 ) -> Result<TypeHandle> {
     let (ls, le, encoding) = parts(ctx, lhs)?;
     let (_rs, re, _) = parts(ctx, rhs)?;
@@ -270,21 +304,24 @@ pub fn infer_compare_type(
         (
             Some(e),
             Some(
-                crate::ops::CompareType::NoType
-                | crate::ops::CompareType::Signed
-                | crate::ops::CompareType::Unsigned,
+                crate::attributes::ComparisonType::NoType
+                | crate::attributes::ComparisonType::Signed
+                | crate::attributes::ComparisonType::Unsigned,
             ),
             false,
         ) => e.is_integer(),
-        (Some(e), Some(crate::ops::CompareType::Float), false) => {
+        (Some(e), Some(crate::attributes::ComparisonType::Float), false) => {
             e.is_float() || e.complex_component().is_some()
         }
         (
             Some(e),
-            Some(crate::ops::CompareType::TotalOrder | crate::ops::CompareType::WeakOrder),
+            Some(
+                crate::attributes::ComparisonType::TotalOrder
+                | crate::attributes::ComparisonType::WeakOrder,
+            ),
             false,
         ) => e.is_float(),
-        (_, Some(crate::ops::CompareType::WeakOrder), true) => false,
+        (_, Some(crate::attributes::ComparisonType::WeakOrder), true) => false,
         (_, Some(_), true) => true,
         _ => false,
     };
@@ -299,6 +336,11 @@ pub fn infer_compare_type(
         result_tensor(ctx, ls, ElementType::I1.native(ctx), encoding),
     )
 }
+/// Infers the result type of selecting between two value tensors.
+///
+/// The predicate must be an `i1` tensor. The value operands must have
+/// compatible elements and shapes; a non-scalar predicate must also have a
+/// shape compatible with the values. Per-axis quantized values are rejected.
 pub fn infer_select_type(
     ctx: &Context,
     predicate: TypeHandle,
@@ -330,6 +372,11 @@ pub fn infer_select_type(
     let (shape, merged_encoding) = value_result;
     checked_result(ctx, result_tensor(ctx, shape, te, merged_encoding))
 }
+/// Infers the result type of clamping `operand` between `min` and `max`.
+///
+/// Bound elements must be compatible with the operand element type, and
+/// non-scalar bounds must have shapes compatible with the operand. The result
+/// preserves the operand's shape, element type, and encoding.
 pub fn infer_clamp_type(
     ctx: &Context,
     min: TypeHandle,
@@ -359,6 +406,11 @@ pub fn infer_clamp_type(
     let _ = merge_shape_types(ctx, &witnesses)?;
     checked_result(ctx, result_tensor(ctx, shape, element, encoding))
 }
+/// Infers a conversion result with the requested primitive `element` type.
+///
+/// The input must have a supported primitive element type. Index, `tf32`, and
+/// signless integer element types are not accepted as either source or target.
+/// The result preserves shape and tensor encoding.
 pub fn infer_convert_type(
     ctx: &Context,
     operand: TypeHandle,
@@ -387,6 +439,11 @@ pub fn infer_convert_type(
         result_tensor(ctx, shape, element.native(ctx), encoding),
     )
 }
+/// Infers a uniform dequantization result using the quantized type's expressed
+/// element type.
+///
+/// The operand must be a tensor with a uniform quantized element type. The
+/// result keeps its shape and drops the tensor encoding.
 pub fn infer_uniform_dequantize_type(ctx: &Context, operand: TypeHandle) -> Result<TypeHandle> {
     let (shape, element, _) = parts(ctx, operand)?;
     let expressed = {
@@ -397,6 +454,12 @@ pub fn infer_uniform_dequantize_type(ctx: &Context, operand: TypeHandle) -> Resu
     };
     checked_result(ctx, result_tensor(ctx, shape, expressed, None))
 }
+/// Infers a uniform quantization result using the quantized element type in
+/// `result_template`.
+///
+/// The operand must be floating-point (except `tf32`) or already quantized,
+/// and its expressed type must match the template's expressed type. The
+/// operand shape is used for the result; the template shape is not copied.
 pub fn infer_uniform_quantize_type(
     ctx: &Context,
     operand: TypeHandle,
@@ -426,6 +489,13 @@ pub fn infer_uniform_quantize_type(
     }
     checked_result(ctx, result_tensor(ctx, shape, result_element, None))
 }
+/// Infers a bitcast-conversion shape and element type from an operand and a
+/// result template.
+///
+/// The element widths must divide one another, complex and non-complex domains
+/// cannot be mixed, and `index`/`tf32` are unsupported. Narrowing appends a
+/// dimension for the width ratio; widening consumes a final dimension equal
+/// to that ratio. The result uses the template element type.
 pub fn infer_bitcast_convert_type(
     ctx: &Context,
     operand: TypeHandle,

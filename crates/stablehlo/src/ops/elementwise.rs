@@ -14,6 +14,7 @@ use pliron::{
 };
 
 pliron::dict_key!(
+    /// Dictionary key used to store the optional StableHLO result-accuracy attribute.
     ATTR_KEY_STABLEHLO_RESULT_ACCURACY,
     "stablehlo_result_accuracy"
 );
@@ -22,7 +23,8 @@ macro_rules! impl_result_accuracy_accessors {
     ($($op:ty),+ $(,)?) => {
         $(
             impl $op {
-                pub fn get_attr_stablehlo_result_accuracy<'a>(
+                /// Returns the optional result-accuracy attribute when present.
+                pub fn result_accuracy<'a>(
                     &self,
                     ctx: &'a Context,
                 ) -> Option<core::cell::Ref<'a, ResultAccuracyAttr>> {
@@ -33,7 +35,8 @@ macro_rules! impl_result_accuracy_accessors {
                     .ok()
                 }
 
-                pub fn set_attr_stablehlo_result_accuracy(
+                /// Sets the result-accuracy attribute on this operation.
+                pub fn set_result_accuracy(
                     &self,
                     ctx: &Context,
                     value: ResultAccuracyAttr,
@@ -48,9 +51,11 @@ macro_rules! impl_result_accuracy_accessors {
     };
 }
 
+/// Converts the input elements to the specified result element type.
 #[pliron_op(name="stablehlo.convert",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ConvertOp;
 impl ConvertOp {
+    /// Creates a `stablehlo.convert` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -64,9 +69,11 @@ impl ConvertOp {
             ),
         }
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Builds a `stablehlo.convert` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value, to: ElementType) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -82,18 +89,23 @@ impl Verify for ConvertOp {
     }
 }
 
+/// Selects elements from the true or false operand according to the predicate.
 #[pliron_op(name="stablehlo.select",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct SelectOp;
 impl SelectOp {
+    /// Returns the predicate operand.
     pub fn predicate(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the value selected when the predicate is true.
     pub fn on_true(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
+    /// Returns the value selected when the predicate is false.
     pub fn on_false(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(2)
     }
+    /// Builds a `stablehlo.select` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, pred: Value, yes: Value, no: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -107,6 +119,7 @@ impl SelectOp {
         )?;
         Ok(Self::new(ctx, pred, yes, no, result))
     }
+    /// Creates a `stablehlo.select` operation with the supplied result type. Uses `pred`, `yes`, `no` as operands.
     #[inline]
     pub fn new(ctx: &mut Context, pred: Value, yes: Value, no: Value, result: TypeHandle) -> Self {
         Self {
@@ -127,22 +140,25 @@ impl Verify for SelectOp {
     }
 }
 
-#[pliron_op(name="stablehlo.compare",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compare_direction:ComparisonDirectionAttr,stablehlo_compare_type:ComparisonTypeAttr))]
+#[pliron_op(name="stablehlo.compare",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compare_direction:ComparisonDirection,stablehlo_compare_type:ComparisonType))]
 pub struct CompareOp;
 impl CompareOp {
+    /// Returns the left-hand operand.
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the right-hand operand.
     pub fn rhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
+    /// Builds a `stablehlo.compare` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(
         ctx: &mut Context,
         lhs: Value,
         rhs: Value,
-        direction: CompareDirection,
-        comparison: Option<CompareType>,
+        direction: ComparisonDirection,
+        comparison: Option<ComparisonType>,
     ) -> Result<Self> {
         let result = crate::ops::builder_result(
             crate::inference::infer_compare_type(
@@ -156,16 +172,17 @@ impl CompareOp {
         Ok(if let Some(comparison) = comparison {
             Self::new(ctx, lhs, rhs, result, direction, comparison)
         } else {
-            Self::new_without_type(ctx, lhs, rhs, result, direction)
+            Self::new_without_comparison_type(ctx, lhs, rhs, result, direction)
         })
     }
+    /// Creates a comparison with the supplied result type and direction, omitting the optional comparison-type attribute.
     #[inline]
-    pub fn new_without_type(
+    pub fn new_without_comparison_type(
         ctx: &mut Context,
         lhs: Value,
         rhs: Value,
         result: TypeHandle,
-        direction: CompareDirection,
+        direction: ComparisonDirection,
     ) -> Self {
         let op = Self {
             op: Operation::new(
@@ -177,17 +194,18 @@ impl CompareOp {
                 0,
             ),
         };
-        op.set_attr_stablehlo_compare_direction(ctx, comparison_direction_attr(direction));
+        op.set_attr_stablehlo_compare_direction(ctx, direction);
         op
     }
+    /// Creates a `stablehlo.compare` operation with the supplied result type. Uses `lhs`, `rhs` as operands. Configures the operation with `direction`, `comparison`.
     #[inline]
     pub fn new(
         ctx: &mut Context,
         lhs: Value,
         rhs: Value,
         result: TypeHandle,
-        direction: CompareDirection,
-        comparison: CompareType,
+        direction: ComparisonDirection,
+        comparison: ComparisonType,
     ) -> Self {
         let op = Self {
             op: Operation::new(
@@ -199,78 +217,20 @@ impl CompareOp {
                 0,
             ),
         };
-        op.set_attr_stablehlo_compare_direction(ctx, comparison_direction_attr(direction));
-        op.set_attr_stablehlo_compare_type(ctx, comparison_type_attr(comparison));
+        op.set_attr_stablehlo_compare_direction(ctx, direction);
+        op.set_attr_stablehlo_compare_type(ctx, comparison);
         op
     }
     /// Return the comparison direction, if the attribute is present and valid.
-    pub fn direction(&self, ctx: &Context) -> Option<CompareDirection> {
-        Some(
-            match self.get_attr_stablehlo_compare_direction(ctx)?.value {
-                0 => CompareDirection::Eq,
-                1 => CompareDirection::Ne,
-                2 => CompareDirection::Ge,
-                3 => CompareDirection::Gt,
-                4 => CompareDirection::Le,
-                5 => CompareDirection::Lt,
-                _ => return None,
-            },
-        )
+    pub fn direction(&self, ctx: &Context) -> Option<ComparisonDirection> {
+        self.get_attr_stablehlo_compare_direction(ctx)
+            .map(|direction| *direction)
     }
     /// Return the explicit comparison type; `None` when omitted or invalid.
-    pub fn compare_type(&self, ctx: &Context) -> Option<CompareType> {
-        Some(match self.get_attr_stablehlo_compare_type(ctx)?.value {
-            0 => CompareType::NoType,
-            1 => CompareType::Float,
-            2 => CompareType::TotalOrder,
-            3 => CompareType::Signed,
-            4 => CompareType::Unsigned,
-            5 => CompareType::WeakOrder,
-            _ => return None,
-        })
+    pub fn compare_type(&self, ctx: &Context) -> Option<ComparisonType> {
+        self.get_attr_stablehlo_compare_type(ctx)
+            .map(|comparison| *comparison)
     }
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u64)]
-pub enum CompareDirection {
-    Eq,
-    Ne,
-    Ge,
-    Gt,
-    Le,
-    Lt,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u64)]
-pub enum CompareType {
-    NoType = 0,
-    Float = 1,
-    TotalOrder = 2,
-    Signed = 3,
-    Unsigned = 4,
-    WeakOrder = 5,
-}
-fn comparison_direction_attr(value: CompareDirection) -> ComparisonDirectionAttr {
-    use crate::attributes::ComparisonDirection as D;
-    ComparisonDirectionAttr::new(match value {
-        CompareDirection::Eq => D::Eq,
-        CompareDirection::Ne => D::Ne,
-        CompareDirection::Ge => D::Ge,
-        CompareDirection::Gt => D::Gt,
-        CompareDirection::Le => D::Le,
-        CompareDirection::Lt => D::Lt,
-    })
-}
-fn comparison_type_attr(value: CompareType) -> ComparisonTypeAttr {
-    use crate::attributes::ComparisonType as T;
-    ComparisonTypeAttr::new(match value {
-        CompareType::NoType => T::NoType,
-        CompareType::Float => T::Float,
-        CompareType::TotalOrder => T::TotalOrder,
-        CompareType::Signed => T::Signed,
-        CompareType::Unsigned => T::Unsigned,
-        CompareType::WeakOrder => T::WeakOrder,
-    })
 }
 impl Verify for CompareOp {
     fn verify(&self, ctx: &Context) -> Result<()> {
@@ -278,25 +238,29 @@ impl Verify for CompareOp {
             self,
             ctx,
             self.get_attr_stablehlo_compare_direction(ctx)
-                .map(|a| u64::from(a.value)),
-            self.get_attr_stablehlo_compare_type(ctx)
-                .map(|a| u64::from(a.value)),
+                .map(|a| *a as u64),
+            self.get_attr_stablehlo_compare_type(ctx).map(|a| *a as u64),
         )
     }
 }
 
+/// Clamps each value element between the corresponding minimum and maximum elements.
 #[pliron_op(name="stablehlo.clamp",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ClampOp;
 impl ClampOp {
+    /// Returns the minimum-bound operand.
     pub fn min(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the value operand.
     pub fn value(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
+    /// Returns the maximum-bound operand.
     pub fn max(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(2)
     }
+    /// Builds a `stablehlo.clamp` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, min: Value, value: Value, max: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -310,6 +274,7 @@ impl ClampOp {
         )?;
         Ok(Self::new(ctx, min, value, max, result))
     }
+    /// Creates a `stablehlo.clamp` operation with the supplied result type. Uses `min`, `value`, `max` as operands.
     #[inline]
     pub fn new(
         ctx: &mut Context,
@@ -339,11 +304,13 @@ impl Verify for ClampOp {
 #[pliron_op(name="stablehlo.iota",format,interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<0>,pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_iota_dimension:IntegerAttr))]
 pub struct IotaOp;
 impl IotaOp {
+    /// Returns the operation's dimension attribute when it is present and representable.
     pub fn dimension(&self, ctx: &Context) -> Option<usize> {
         self.get_attr_stablehlo_iota_dimension(ctx)
             .and_then(|a| a.value().to_string_decimal(false).parse::<u64>().ok())
             .and_then(|v| usize::try_from(v).ok())
     }
+    /// Creates a `stablehlo.iota` operation with the supplied result type. Configures the operation with `dimension`.
     #[inline]
     pub fn new(ctx: &mut Context, result: TypeHandle, dimension: usize) -> Self {
         let op = Self {
@@ -371,9 +338,11 @@ impl Verify for IotaOp {
     }
 }
 
+/// Computes the elementwise absolute value of its input.
 #[pliron_op(name="stablehlo.abs",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct AbsOp;
 impl AbsOp {
+    /// Creates a `stablehlo.abs` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -387,6 +356,7 @@ impl AbsOp {
             ),
         }
     }
+    /// Builds a `stablehlo.abs` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -395,6 +365,7 @@ impl AbsOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -405,9 +376,11 @@ impl Verify for AbsOp {
     }
 }
 
+/// Computes the elementwise cube root of its input.
 #[pliron_op(name="stablehlo.cbrt",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct CbrtOp;
 impl CbrtOp {
+    /// Creates a `stablehlo.cbrt` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -421,6 +394,7 @@ impl CbrtOp {
             ),
         }
     }
+    /// Builds a `stablehlo.cbrt` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -429,6 +403,7 @@ impl CbrtOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -439,9 +414,11 @@ impl Verify for CbrtOp {
     }
 }
 
+/// Rounds each input element toward positive infinity.
 #[pliron_op(name="stablehlo.ceil",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct CeilOp;
 impl CeilOp {
+    /// Creates a `stablehlo.ceil` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -455,6 +432,7 @@ impl CeilOp {
             ),
         }
     }
+    /// Builds a `stablehlo.ceil` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -463,6 +441,7 @@ impl CeilOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -473,9 +452,11 @@ impl Verify for CeilOp {
     }
 }
 
+/// Counts the leading zero bits in each input element.
 #[pliron_op(name="stablehlo.count_leading_zeros",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct CountLeadingZerosOp;
 impl CountLeadingZerosOp {
+    /// Creates a `stablehlo.count_leading_zeros` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -489,6 +470,7 @@ impl CountLeadingZerosOp {
             ),
         }
     }
+    /// Builds a `stablehlo.count_leading_zeros` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -497,6 +479,7 @@ impl CountLeadingZerosOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -507,9 +490,11 @@ impl Verify for CountLeadingZerosOp {
     }
 }
 
+/// Computes the elementwise cosine of its input.
 #[pliron_op(name="stablehlo.cosine",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct CosineOp;
 impl CosineOp {
+    /// Creates a `stablehlo.cosine` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -523,6 +508,7 @@ impl CosineOp {
             ),
         }
     }
+    /// Builds a `stablehlo.cosine` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -531,6 +517,7 @@ impl CosineOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -541,9 +528,11 @@ impl Verify for CosineOp {
     }
 }
 
+/// Computes the elementwise natural exponential of its input.
 #[pliron_op(name="stablehlo.exponential",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ExponentialOp;
 impl ExponentialOp {
+    /// Creates a `stablehlo.exponential` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -557,6 +546,7 @@ impl ExponentialOp {
             ),
         }
     }
+    /// Builds a `stablehlo.exponential` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -565,6 +555,7 @@ impl ExponentialOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -575,9 +566,11 @@ impl Verify for ExponentialOp {
     }
 }
 
+/// Computes the elementwise natural exponential of its input minus one.
 #[pliron_op(name="stablehlo.exponential_minus_one",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ExponentialMinusOneOp;
 impl ExponentialMinusOneOp {
+    /// Creates a `stablehlo.exponential_minus_one` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -591,6 +584,7 @@ impl ExponentialMinusOneOp {
             ),
         }
     }
+    /// Builds a `stablehlo.exponential_minus_one` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -603,6 +597,7 @@ impl ExponentialMinusOneOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -613,9 +608,11 @@ impl Verify for ExponentialMinusOneOp {
     }
 }
 
+/// Raises two to the power of each input element.
 #[pliron_op(name="stablehlo.exp2",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct Exp2Op;
 impl Exp2Op {
+    /// Creates a `stablehlo.exp2` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -629,6 +626,7 @@ impl Exp2Op {
             ),
         }
     }
+    /// Builds a `stablehlo.exp2` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -637,6 +635,7 @@ impl Exp2Op {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -647,9 +646,11 @@ impl Verify for Exp2Op {
     }
 }
 
+/// Rounds each input element toward negative infinity.
 #[pliron_op(name="stablehlo.floor",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct FloorOp;
 impl FloorOp {
+    /// Creates a `stablehlo.floor` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -663,6 +664,7 @@ impl FloorOp {
             ),
         }
     }
+    /// Builds a `stablehlo.floor` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -671,6 +673,7 @@ impl FloorOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -681,9 +684,11 @@ impl Verify for FloorOp {
     }
 }
 
+/// Extracts the imaginary component of each complex input element.
 #[pliron_op(name="stablehlo.imag",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ImagOp;
 impl ImagOp {
+    /// Creates a `stablehlo.imag` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -697,6 +702,7 @@ impl ImagOp {
             ),
         }
     }
+    /// Builds a `stablehlo.imag` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -705,6 +711,7 @@ impl ImagOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -715,9 +722,11 @@ impl Verify for ImagOp {
     }
 }
 
+/// Tests whether each input element is finite.
 #[pliron_op(name="stablehlo.is_finite",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct IsFiniteOp;
 impl IsFiniteOp {
+    /// Creates a `stablehlo.is_finite` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -731,6 +740,7 @@ impl IsFiniteOp {
             ),
         }
     }
+    /// Builds a `stablehlo.is_finite` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -739,6 +749,7 @@ impl IsFiniteOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -749,9 +760,11 @@ impl Verify for IsFiniteOp {
     }
 }
 
+/// Computes the elementwise natural logarithm of its input.
 #[pliron_op(name="stablehlo.log",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct LogOp;
 impl LogOp {
+    /// Creates a `stablehlo.log` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -765,6 +778,7 @@ impl LogOp {
             ),
         }
     }
+    /// Builds a `stablehlo.log` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -773,6 +787,7 @@ impl LogOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -783,9 +798,11 @@ impl Verify for LogOp {
     }
 }
 
+/// Computes the elementwise natural logarithm of one plus its input.
 #[pliron_op(name="stablehlo.log_plus_one",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct LogPlusOneOp;
 impl LogPlusOneOp {
+    /// Creates a `stablehlo.log_plus_one` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -799,6 +816,7 @@ impl LogPlusOneOp {
             ),
         }
     }
+    /// Builds a `stablehlo.log_plus_one` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -807,6 +825,7 @@ impl LogPlusOneOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -817,9 +836,11 @@ impl Verify for LogPlusOneOp {
     }
 }
 
+/// Computes the elementwise base-two logarithm of its input.
 #[pliron_op(name="stablehlo.log2",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct Log2Op;
 impl Log2Op {
+    /// Creates a `stablehlo.log2` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -833,6 +854,7 @@ impl Log2Op {
             ),
         }
     }
+    /// Builds a `stablehlo.log2` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -841,6 +863,7 @@ impl Log2Op {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -851,9 +874,11 @@ impl Verify for Log2Op {
     }
 }
 
+/// Computes the elementwise logistic (sigmoid) function.
 #[pliron_op(name="stablehlo.logistic",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct LogisticOp;
 impl LogisticOp {
+    /// Creates a `stablehlo.logistic` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -867,6 +892,7 @@ impl LogisticOp {
             ),
         }
     }
+    /// Builds a `stablehlo.logistic` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -875,6 +901,7 @@ impl LogisticOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -885,9 +912,11 @@ impl Verify for LogisticOp {
     }
 }
 
+/// Applies elementwise logical or bitwise negation.
 #[pliron_op(name="stablehlo.not",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct NotOp;
 impl NotOp {
+    /// Creates a `stablehlo.not` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -901,6 +930,7 @@ impl NotOp {
             ),
         }
     }
+    /// Builds a `stablehlo.not` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -909,6 +939,7 @@ impl NotOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -919,9 +950,11 @@ impl Verify for NotOp {
     }
 }
 
+/// Negates each input element.
 #[pliron_op(name="stablehlo.negate",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct NegateOp;
 impl NegateOp {
+    /// Creates a `stablehlo.negate` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -935,6 +968,7 @@ impl NegateOp {
             ),
         }
     }
+    /// Builds a `stablehlo.negate` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -943,6 +977,7 @@ impl NegateOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -953,9 +988,11 @@ impl Verify for NegateOp {
     }
 }
 
+/// Counts the set bits in each input element.
 #[pliron_op(name="stablehlo.popcnt",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct PopulationCountOp;
 impl PopulationCountOp {
+    /// Creates a `stablehlo.popcnt` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -969,6 +1006,7 @@ impl PopulationCountOp {
             ),
         }
     }
+    /// Builds a `stablehlo.popcnt` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -977,6 +1015,7 @@ impl PopulationCountOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -987,9 +1026,11 @@ impl Verify for PopulationCountOp {
     }
 }
 
+/// Extracts the real component of each complex input element.
 #[pliron_op(name="stablehlo.real",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct RealOp;
 impl RealOp {
+    /// Creates a `stablehlo.real` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -1003,6 +1044,7 @@ impl RealOp {
             ),
         }
     }
+    /// Builds a `stablehlo.real` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1011,6 +1053,7 @@ impl RealOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -1021,9 +1064,11 @@ impl Verify for RealOp {
     }
 }
 
+/// Rounds each input element to the nearest integer, with ties away from zero.
 #[pliron_op(name="stablehlo.round_nearest_afz",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct RoundNearestAfzOp;
 impl RoundNearestAfzOp {
+    /// Creates a `stablehlo.round_nearest_afz` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -1037,6 +1082,7 @@ impl RoundNearestAfzOp {
             ),
         }
     }
+    /// Builds a `stablehlo.round_nearest_afz` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1045,6 +1091,7 @@ impl RoundNearestAfzOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -1055,9 +1102,11 @@ impl Verify for RoundNearestAfzOp {
     }
 }
 
+/// Rounds each input element to the nearest integer, with ties to even.
 #[pliron_op(name="stablehlo.round_nearest_even",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct RoundNearestEvenOp;
 impl RoundNearestEvenOp {
+    /// Creates a `stablehlo.round_nearest_even` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -1071,6 +1120,7 @@ impl RoundNearestEvenOp {
             ),
         }
     }
+    /// Builds a `stablehlo.round_nearest_even` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1079,6 +1129,7 @@ impl RoundNearestEvenOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -1089,9 +1140,11 @@ impl Verify for RoundNearestEvenOp {
     }
 }
 
+/// Computes the elementwise reciprocal square root of its input.
 #[pliron_op(name="stablehlo.rsqrt",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct RsqrtOp;
 impl RsqrtOp {
+    /// Creates a `stablehlo.rsqrt` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -1105,6 +1158,7 @@ impl RsqrtOp {
             ),
         }
     }
+    /// Builds a `stablehlo.rsqrt` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1113,6 +1167,7 @@ impl RsqrtOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -1123,9 +1178,11 @@ impl Verify for RsqrtOp {
     }
 }
 
+/// Returns the sign of each input element.
 #[pliron_op(name="stablehlo.sign",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct SignOp;
 impl SignOp {
+    /// Creates a `stablehlo.sign` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -1139,6 +1196,7 @@ impl SignOp {
             ),
         }
     }
+    /// Builds a `stablehlo.sign` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1147,6 +1205,7 @@ impl SignOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -1157,9 +1216,11 @@ impl Verify for SignOp {
     }
 }
 
+/// Computes the elementwise sine of its input.
 #[pliron_op(name="stablehlo.sine",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct SineOp;
 impl SineOp {
+    /// Creates a `stablehlo.sine` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -1173,6 +1234,7 @@ impl SineOp {
             ),
         }
     }
+    /// Builds a `stablehlo.sine` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1181,6 +1243,7 @@ impl SineOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -1191,9 +1254,11 @@ impl Verify for SineOp {
     }
 }
 
+/// Computes the elementwise square root of its input.
 #[pliron_op(name="stablehlo.sqrt",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct SqrtOp;
 impl SqrtOp {
+    /// Creates a `stablehlo.sqrt` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -1207,6 +1272,7 @@ impl SqrtOp {
             ),
         }
     }
+    /// Builds a `stablehlo.sqrt` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1215,6 +1281,7 @@ impl SqrtOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -1225,9 +1292,11 @@ impl Verify for SqrtOp {
     }
 }
 
+/// Computes the elementwise tangent of its input.
 #[pliron_op(name="stablehlo.tan",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct TanOp;
 impl TanOp {
+    /// Creates a `stablehlo.tan` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -1241,6 +1310,7 @@ impl TanOp {
             ),
         }
     }
+    /// Builds a `stablehlo.tan` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1249,6 +1319,7 @@ impl TanOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -1259,9 +1330,11 @@ impl Verify for TanOp {
     }
 }
 
+/// Computes the elementwise hyperbolic tangent of its input.
 #[pliron_op(name="stablehlo.tanh",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct TanhOp;
 impl TanhOp {
+    /// Creates a `stablehlo.tanh` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -1275,6 +1348,7 @@ impl TanhOp {
             ),
         }
     }
+    /// Builds a `stablehlo.tanh` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1283,6 +1357,7 @@ impl TanhOp {
         )?;
         Ok(Self::new(ctx, input, result))
     }
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
@@ -1293,9 +1368,11 @@ impl Verify for TanhOp {
     }
 }
 
+/// Adds corresponding elements of two operands.
 #[pliron_op(name="stablehlo.add",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct AddOp;
 impl AddOp {
+    /// Creates a `stablehlo.add` operation with the supplied result type. Uses `lhs`, `rhs` as operands.
     #[inline]
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, result: TypeHandle) -> Self {
         let op = Operation::new(ctx, Self::get_concrete_op_info(), vec![], vec![], vec![], 0);
@@ -1304,6 +1381,7 @@ impl AddOp {
         Operation::push_operand(op, ctx, rhs);
         Self { op }
     }
+    /// Builds a `stablehlo.add` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1316,9 +1394,11 @@ impl AddOp {
         )?;
         Ok(Self::new(ctx, lhs, rhs, result))
     }
+    /// Returns the left-hand operand.
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the right-hand operand.
     pub fn rhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
@@ -1329,9 +1409,11 @@ impl Verify for AddOp {
     }
 }
 
+/// Computes the elementwise two-argument arctangent of its operands.
 #[pliron_op(name="stablehlo.atan2",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct Atan2Op;
 impl Atan2Op {
+    /// Creates a `stablehlo.atan2` operation with the supplied result type. Uses `lhs`, `rhs` as operands.
     #[inline]
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, result: TypeHandle) -> Self {
         Self {
@@ -1345,6 +1427,7 @@ impl Atan2Op {
             ),
         }
     }
+    /// Builds a `stablehlo.atan2` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1357,9 +1440,11 @@ impl Atan2Op {
         )?;
         Ok(Self::new(ctx, lhs, rhs, result))
     }
+    /// Returns the left-hand operand.
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the right-hand operand.
     pub fn rhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
@@ -1370,9 +1455,11 @@ impl Verify for Atan2Op {
     }
 }
 
+/// Combines real and imaginary operands into complex values.
 #[pliron_op(name="stablehlo.complex",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ComplexOp;
 impl ComplexOp {
+    /// Creates a `stablehlo.complex` operation with the supplied result type. Uses `lhs`, `rhs` as operands.
     #[inline]
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, result: TypeHandle) -> Self {
         Self {
@@ -1386,6 +1473,7 @@ impl ComplexOp {
             ),
         }
     }
+    /// Builds a `stablehlo.complex` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1398,9 +1486,11 @@ impl ComplexOp {
         )?;
         Ok(Self::new(ctx, lhs, rhs, result))
     }
+    /// Returns the left-hand operand.
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the right-hand operand.
     pub fn rhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
@@ -1411,9 +1501,11 @@ impl Verify for ComplexOp {
     }
 }
 
+/// Divides corresponding elements of the left operand by the right operand.
 #[pliron_op(name="stablehlo.divide",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct DivideOp;
 impl DivideOp {
+    /// Creates a `stablehlo.divide` operation with the supplied result type. Uses `lhs`, `rhs` as operands.
     #[inline]
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, result: TypeHandle) -> Self {
         Self {
@@ -1427,6 +1519,7 @@ impl DivideOp {
             ),
         }
     }
+    /// Builds a `stablehlo.divide` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1439,9 +1532,11 @@ impl DivideOp {
         )?;
         Ok(Self::new(ctx, lhs, rhs, result))
     }
+    /// Returns the left-hand operand.
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the right-hand operand.
     pub fn rhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
@@ -1452,9 +1547,11 @@ impl Verify for DivideOp {
     }
 }
 
+/// Selects the elementwise maximum of two operands.
 #[pliron_op(name="stablehlo.maximum",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct MaximumOp;
 impl MaximumOp {
+    /// Creates a `stablehlo.maximum` operation with the supplied result type. Uses `lhs`, `rhs` as operands.
     #[inline]
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, result: TypeHandle) -> Self {
         Self {
@@ -1468,6 +1565,7 @@ impl MaximumOp {
             ),
         }
     }
+    /// Builds a `stablehlo.maximum` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1480,9 +1578,11 @@ impl MaximumOp {
         )?;
         Ok(Self::new(ctx, lhs, rhs, result))
     }
+    /// Returns the left-hand operand.
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the right-hand operand.
     pub fn rhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
@@ -1493,9 +1593,11 @@ impl Verify for MaximumOp {
     }
 }
 
+/// Selects the elementwise minimum of two operands.
 #[pliron_op(name="stablehlo.minimum",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct MinimumOp;
 impl MinimumOp {
+    /// Creates a `stablehlo.minimum` operation with the supplied result type. Uses `lhs`, `rhs` as operands.
     #[inline]
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, result: TypeHandle) -> Self {
         Self {
@@ -1509,6 +1611,7 @@ impl MinimumOp {
             ),
         }
     }
+    /// Builds a `stablehlo.minimum` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1521,9 +1624,11 @@ impl MinimumOp {
         )?;
         Ok(Self::new(ctx, lhs, rhs, result))
     }
+    /// Returns the left-hand operand.
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the right-hand operand.
     pub fn rhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
@@ -1534,9 +1639,11 @@ impl Verify for MinimumOp {
     }
 }
 
+/// Multiplies corresponding elements of two operands.
 #[pliron_op(name="stablehlo.multiply",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct MultiplyOp;
 impl MultiplyOp {
+    /// Creates a `stablehlo.multiply` operation with the supplied result type. Uses `lhs`, `rhs` as operands.
     #[inline]
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, result: TypeHandle) -> Self {
         let op = Operation::new(ctx, Self::get_concrete_op_info(), vec![], vec![], vec![], 0);
@@ -1545,6 +1652,7 @@ impl MultiplyOp {
         Operation::push_operand(op, ctx, rhs);
         Self { op }
     }
+    /// Builds a `stablehlo.multiply` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1557,9 +1665,11 @@ impl MultiplyOp {
         )?;
         Ok(Self::new(ctx, lhs, rhs, result))
     }
+    /// Returns the left-hand operand.
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the right-hand operand.
     pub fn rhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
@@ -1570,9 +1680,11 @@ impl Verify for MultiplyOp {
     }
 }
 
+/// Raises each element of the left operand to the corresponding power in the right operand.
 #[pliron_op(name="stablehlo.power",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct PowerOp;
 impl PowerOp {
+    /// Creates a `stablehlo.power` operation with the supplied result type. Uses `lhs`, `rhs` as operands.
     #[inline]
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, result: TypeHandle) -> Self {
         Self {
@@ -1586,6 +1698,7 @@ impl PowerOp {
             ),
         }
     }
+    /// Builds a `stablehlo.power` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1598,9 +1711,11 @@ impl PowerOp {
         )?;
         Ok(Self::new(ctx, lhs, rhs, result))
     }
+    /// Returns the left-hand operand.
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the right-hand operand.
     pub fn rhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
@@ -1611,9 +1726,11 @@ impl Verify for PowerOp {
     }
 }
 
+/// Computes the elementwise remainder of its operands.
 #[pliron_op(name="stablehlo.remainder",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct RemainderOp;
 impl RemainderOp {
+    /// Creates a `stablehlo.remainder` operation with the supplied result type. Uses `lhs`, `rhs` as operands.
     #[inline]
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, result: TypeHandle) -> Self {
         Self {
@@ -1627,6 +1744,7 @@ impl RemainderOp {
             ),
         }
     }
+    /// Builds a `stablehlo.remainder` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1639,9 +1757,11 @@ impl RemainderOp {
         )?;
         Ok(Self::new(ctx, lhs, rhs, result))
     }
+    /// Returns the left-hand operand.
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the right-hand operand.
     pub fn rhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
@@ -1652,9 +1772,11 @@ impl Verify for RemainderOp {
     }
 }
 
+/// Shifts each left operand element left by the corresponding right operand amount.
 #[pliron_op(name="stablehlo.shift_left",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ShiftLeftOp;
 impl ShiftLeftOp {
+    /// Creates a `stablehlo.shift_left` operation with the supplied result type. Uses `lhs`, `rhs` as operands.
     #[inline]
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, result: TypeHandle) -> Self {
         Self {
@@ -1668,6 +1790,7 @@ impl ShiftLeftOp {
             ),
         }
     }
+    /// Builds a `stablehlo.shift_left` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1680,9 +1803,11 @@ impl ShiftLeftOp {
         )?;
         Ok(Self::new(ctx, lhs, rhs, result))
     }
+    /// Returns the left-hand operand.
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the right-hand operand.
     pub fn rhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
@@ -1693,9 +1818,11 @@ impl Verify for ShiftLeftOp {
     }
 }
 
+/// Performs an arithmetic right shift by the corresponding shift amounts.
 #[pliron_op(name="stablehlo.shift_right_arithmetic",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ShiftRightArithmeticOp;
 impl ShiftRightArithmeticOp {
+    /// Creates a `stablehlo.shift_right_arithmetic` operation with the supplied result type. Uses `lhs`, `rhs` as operands.
     #[inline]
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, result: TypeHandle) -> Self {
         Self {
@@ -1709,6 +1836,7 @@ impl ShiftRightArithmeticOp {
             ),
         }
     }
+    /// Builds a `stablehlo.shift_right_arithmetic` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1721,9 +1849,11 @@ impl ShiftRightArithmeticOp {
         )?;
         Ok(Self::new(ctx, lhs, rhs, result))
     }
+    /// Returns the left-hand operand.
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the right-hand operand.
     pub fn rhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
@@ -1734,9 +1864,11 @@ impl Verify for ShiftRightArithmeticOp {
     }
 }
 
+/// Performs a logical right shift by the corresponding shift amounts.
 #[pliron_op(name="stablehlo.shift_right_logical",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ShiftRightLogicalOp;
 impl ShiftRightLogicalOp {
+    /// Creates a `stablehlo.shift_right_logical` operation with the supplied result type. Uses `lhs`, `rhs` as operands.
     #[inline]
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, result: TypeHandle) -> Self {
         Self {
@@ -1750,6 +1882,7 @@ impl ShiftRightLogicalOp {
             ),
         }
     }
+    /// Builds a `stablehlo.shift_right_logical` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1762,9 +1895,11 @@ impl ShiftRightLogicalOp {
         )?;
         Ok(Self::new(ctx, lhs, rhs, result))
     }
+    /// Returns the left-hand operand.
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the right-hand operand.
     pub fn rhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
@@ -1775,9 +1910,11 @@ impl Verify for ShiftRightLogicalOp {
     }
 }
 
+/// Subtracts the right operand from the left operand elementwise.
 #[pliron_op(name="stablehlo.subtract",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct SubtractOp;
 impl SubtractOp {
+    /// Creates a `stablehlo.subtract` operation with the supplied result type. Uses `lhs`, `rhs` as operands.
     #[inline]
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, result: TypeHandle) -> Self {
         Self {
@@ -1791,6 +1928,7 @@ impl SubtractOp {
             ),
         }
     }
+    /// Builds a `stablehlo.subtract` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1803,9 +1941,11 @@ impl SubtractOp {
         )?;
         Ok(Self::new(ctx, lhs, rhs, result))
     }
+    /// Returns the left-hand operand.
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the right-hand operand.
     pub fn rhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
@@ -1816,9 +1956,11 @@ impl Verify for SubtractOp {
     }
 }
 
+/// Applies elementwise logical or bitwise conjunction.
 #[pliron_op(name="stablehlo.and",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct AndOp;
 impl AndOp {
+    /// Creates a `stablehlo.and` operation with the supplied result type. Uses `lhs`, `rhs` as operands.
     #[inline]
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, result: TypeHandle) -> Self {
         Self {
@@ -1832,6 +1974,7 @@ impl AndOp {
             ),
         }
     }
+    /// Builds a `stablehlo.and` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1844,9 +1987,11 @@ impl AndOp {
         )?;
         Ok(Self::new(ctx, lhs, rhs, result))
     }
+    /// Returns the left-hand operand.
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the right-hand operand.
     pub fn rhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
@@ -1857,9 +2002,11 @@ impl Verify for AndOp {
     }
 }
 
+/// Applies elementwise logical or bitwise disjunction.
 #[pliron_op(name="stablehlo.or",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct OrOp;
 impl OrOp {
+    /// Creates a `stablehlo.or` operation with the supplied result type. Uses `lhs`, `rhs` as operands.
     #[inline]
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, result: TypeHandle) -> Self {
         Self {
@@ -1873,6 +2020,7 @@ impl OrOp {
             ),
         }
     }
+    /// Builds a `stablehlo.or` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1881,9 +2029,11 @@ impl OrOp {
         )?;
         Ok(Self::new(ctx, lhs, rhs, result))
     }
+    /// Returns the left-hand operand.
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the right-hand operand.
     pub fn rhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
@@ -1894,9 +2044,11 @@ impl Verify for OrOp {
     }
 }
 
+/// Applies elementwise exclusive-or.
 #[pliron_op(name="stablehlo.xor",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct XorOp;
 impl XorOp {
+    /// Creates a `stablehlo.xor` operation with the supplied result type. Uses `lhs`, `rhs` as operands.
     #[inline]
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, result: TypeHandle) -> Self {
         Self {
@@ -1910,6 +2062,7 @@ impl XorOp {
             ),
         }
     }
+    /// Builds a `stablehlo.xor` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1922,9 +2075,11 @@ impl XorOp {
         )?;
         Ok(Self::new(ctx, lhs, rhs, result))
     }
+    /// Returns the left-hand operand.
     pub fn lhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Returns the right-hand operand.
     pub fn rhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
@@ -1935,12 +2090,15 @@ impl Verify for XorOp {
     }
 }
 
+/// Reinterprets the input bit pattern using the requested result element type.
 #[pliron_op(name="stablehlo.bitcast_convert",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct BitcastConvertOp;
 impl BitcastConvertOp {
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Creates a `stablehlo.bitcast_convert` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -1954,6 +2112,7 @@ impl BitcastConvertOp {
             ),
         }
     }
+    /// Builds a `stablehlo.bitcast_convert` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value, to: ElementType) -> Result<Self> {
         let template = TensorType::scalar(ctx, to);
@@ -1973,9 +2132,11 @@ impl Verify for BitcastConvertOp {
 #[pliron_op(name="stablehlo.reduce_precision",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_exponent_bits:IntegerAttr,stablehlo_mantissa_bits:IntegerAttr))]
 pub struct ReducePrecisionOp;
 impl ReducePrecisionOp {
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Creates a `stablehlo.reduce_precision` operation with the supplied result type. Uses `input` as its operand. Configures the operation with `exponent_bits`, `mantissa_bits`.
     #[inline]
     pub fn new(
         ctx: &mut Context,
@@ -1998,6 +2159,7 @@ impl ReducePrecisionOp {
         op.set_attr_stablehlo_mantissa_bits(ctx, signed_i32_attr(ctx, mantissa_bits));
         op
     }
+    /// Builds a `stablehlo.reduce_precision` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(
         ctx: &mut Context,
@@ -2028,12 +2190,15 @@ impl Verify for ReducePrecisionOp {
     }
 }
 
+/// Quantizes floating-point values using the quantization parameters encoded by their element type.
 #[pliron_op(name="stablehlo.uniform_quantize",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct UniformQuantizeOp;
 impl UniformQuantizeOp {
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Creates a `stablehlo.uniform_quantize` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -2047,6 +2212,7 @@ impl UniformQuantizeOp {
             ),
         }
     }
+    /// Builds a `stablehlo.uniform_quantize` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(
         ctx: &mut Context,
@@ -2070,12 +2236,15 @@ impl Verify for UniformQuantizeOp {
     }
 }
 
+/// Converts uniformly quantized values to floating-point values.
 #[pliron_op(name="stablehlo.uniform_dequantize",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct UniformDequantizeOp;
 impl UniformDequantizeOp {
+    /// Returns the input operand.
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Creates a `stablehlo.uniform_dequantize` operation with the supplied result type. Uses `input` as its operand.
     #[inline]
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
@@ -2089,6 +2258,7 @@ impl UniformDequantizeOp {
             ),
         }
     }
+    /// Builds a `stablehlo.uniform_dequantize` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(

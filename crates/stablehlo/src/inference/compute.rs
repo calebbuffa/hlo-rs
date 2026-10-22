@@ -1,13 +1,16 @@
 //! Shape inference for the compute and reduction families.
 use crate::Diagnostic;
 use crate::{
-    attributes::{ConvDimensionNumbersAttr, DotDimensionNumbersAttr, FftTypeAttr},
+    attributes::{
+        ConvDimensionNumbersAttr, DotDimensionNumbersAttr, FftTypeAttr, RngAlgorithmAttr,
+        RngDistributionAttr,
+    },
     types::{ElementType, TensorType},
 };
 use pliron::{context::Context, result::Result, r#type::TypeHandle};
 
-fn ranked(ctx: &Context, ty: TypeHandle) -> Option<TensorType> {
-    ty.deref(ctx).downcast_ref::<TensorType>().cloned()
+fn ranked<'a>(ctx: &'a Context, ty: TypeHandle) -> Option<std::cell::Ref<'a, TensorType>> {
+    std::cell::Ref::filter_map(ty.deref(ctx), |ty| ty.downcast_ref::<TensorType>()).ok()
 }
 fn merge(a: i64, b: i64) -> Option<i64> {
     if a >= 0 && b >= 0 && a != b {
@@ -99,6 +102,11 @@ pub fn infer_dot_general_type(
     );
     Ok(result(ctx, shape, result_element))
 }
+/// Infers the result shape of a dot between rank-one or rank-two tensors.
+///
+/// The left operand's final axis contracts with the right operand's first
+/// axis. Their extents must be compatible; `result_element` supplies the
+/// output element type. Higher-rank operands are rejected.
 pub fn infer_dot_type(
     ctx: &Context,
     lhs: TypeHandle,
@@ -120,15 +128,30 @@ pub fn infer_dot_type(
 }
 
 #[derive(Clone, Copy, Debug)]
+/// Shape-related options used to infer a convolution result type.
 pub struct ConvolutionOptions<'a> {
+    /// Input, kernel, and output batch/feature/spatial axis assignments.
     pub dimensions: &'a ConvDimensionNumbersAttr,
+    /// Optional positive stride per spatial axis; omitted or empty means one.
     pub strides: Option<&'a [i64]>,
+    /// Optional low/high padding pair per spatial axis; omitted or empty means zero.
     pub padding: Option<&'a [[i64; 2]]>,
+    /// Optional positive input dilation per spatial axis; omitted or empty means one.
     pub lhs_dilation: Option<&'a [i64]>,
+    /// Optional positive kernel dilation per spatial axis; omitted or empty means one.
     pub rhs_dilation: Option<&'a [i64]>,
+    /// Positive number of feature groups, dividing the relevant feature extents.
     pub feature_group_count: i64,
+    /// Positive number of batch groups, dividing the input batch extent.
     pub batch_group_count: i64,
 }
+/// Infers a convolution output shape from ranked input and kernel tensors.
+///
+/// Axis assignments must be complete permutations. The feature and batch
+/// group counts must be positive and cannot both exceed one. Optional strides,
+/// dilations, and padding must match the spatial rank; known dimensions must
+/// satisfy group divisibility. `result_element` supplies the output element
+/// type. Invalid dimensions or arithmetic overflow return an error.
 pub fn infer_convolution_type(
     ctx: &Context,
     lhs: TypeHandle,
@@ -265,6 +288,13 @@ pub fn infer_convolution_type(
     Ok(result(ctx, shape, result_element))
 }
 
+/// Infers the result shape and element type for an FFT operation.
+///
+/// `length` must contain one to three positive transform lengths and cannot
+/// exceed the input rank. The supported input/output domains depend on
+/// `fft_type`: complex FFTs preserve complex elements, real-to-complex maps
+/// `f32`/`f64` to `C64`/`C128`, and complex-to-real maps back. Incompatible
+/// types or known transform extents are rejected.
 pub fn infer_fft_type(
     ctx: &Context,
     input: TypeHandle,
@@ -277,21 +307,22 @@ pub fn infer_fft_type(
         return Err(Diagnostic::InvalidDimensions.into());
     }
     let e = primitive(ctx, t.element);
-    let element = match (fft_type.value, e) {
-        (0, Some(ElementType::C64)) | (1, Some(ElementType::C64)) => t.element,
-        (0, Some(ElementType::C128)) | (1, Some(ElementType::C128)) => t.element,
-        (2, Some(ElementType::F32)) => ElementType::C64.native(ctx),
-        (2, Some(ElementType::F64)) => ElementType::C128.native(ctx),
-        (3, Some(ElementType::C64)) => ElementType::F32.native(ctx),
-        (3, Some(ElementType::C128)) => ElementType::F64.native(ctx),
+    let element = match (fft_type, e) {
+        (FftTypeAttr::Fft | FftTypeAttr::Ifft, Some(ElementType::C64 | ElementType::C128)) => {
+            t.element
+        }
+        (FftTypeAttr::Rfft, Some(ElementType::F32)) => ElementType::C64.native(ctx),
+        (FftTypeAttr::Rfft, Some(ElementType::F64)) => ElementType::C128.native(ctx),
+        (FftTypeAttr::Irfft, Some(ElementType::C64)) => ElementType::F32.native(ctx),
+        (FftTypeAttr::Irfft, Some(ElementType::C128)) => ElementType::F64.native(ctx),
         _ => return Err(Diagnostic::IncompatibleElement.into()),
     };
     let mut shape = t.dimensions.clone();
-    if matches!(fft_type.value, 2 | 3) {
+    if matches!(fft_type, FftTypeAttr::Rfft | FftTypeAttr::Irfft) {
         let start = shape.len() - length.len();
         for (i, &len) in length.iter().enumerate() {
             let axis = start + i;
-            let expected = if fft_type.value == 3 && i + 1 == length.len() {
+            let expected = if fft_type == FftTypeAttr::Irfft && i + 1 == length.len() {
                 len / 2 + 1
             } else {
                 len
@@ -300,7 +331,7 @@ pub fn infer_fft_type(
                 return Err(Diagnostic::IncompatibleShape.into());
             }
             if i + 1 == length.len() {
-                shape[axis] = if fft_type.value == 2 {
+                shape[axis] = if fft_type == FftTypeAttr::Rfft {
                     len / 2 + 1
                 } else {
                     len
@@ -311,6 +342,10 @@ pub fn infer_fft_type(
     Ok(result(ctx, shape, element))
 }
 
+/// Validates a batched matrix input for Cholesky and returns its type unchanged.
+///
+/// The input must be ranked with rank at least two; its final two dimensions
+/// must be compatible.
 pub fn infer_cholesky_type(ctx: &Context, input: TypeHandle) -> Result<TypeHandle> {
     let t = ranked(ctx, input).ok_or_else(|| Diagnostic::UnsupportedType.into_error())?;
     let n = t.rank();
@@ -319,6 +354,11 @@ pub fn infer_cholesky_type(ctx: &Context, input: TypeHandle) -> Result<TypeHandl
     }
     Ok(input)
 }
+/// Infers the triangular-solve result, which has the right-hand-side type.
+///
+/// Both operands must have equal rank of at least two and equal element types.
+/// Their batch dimensions and the matrix dimension selected by `left_side`
+/// must be compatible.
 pub fn infer_triangular_solve_type(
     ctx: &Context,
     a: TypeHandle,
@@ -345,6 +385,12 @@ pub fn infer_triangular_solve_type(
     Ok(b)
 }
 
+/// Validates inference-mode batch-normalization tensors and returns the
+/// operand type unchanged.
+///
+/// `feature` must be an axis of the operand. Scale, offset, mean, and variance
+/// must use the operand element type and be compatible feature vectors; the
+/// final auxiliary tensor may instead match the full operand rank.
 pub fn infer_batch_norm_inference_type(
     ctx: &Context,
     operand: TypeHandle,
@@ -357,6 +403,11 @@ pub fn infer_batch_norm_inference_type(
     validate_batch_norm(ctx, operand, &[scale, offset, mean, variance], feature)?;
     Ok(operand)
 }
+/// Infers training-mode batch-normalization outputs: normalized operand and
+/// two feature-statistic vectors.
+///
+/// The feature axis must exist; scale and offset must be compatible feature
+/// vectors with the operand's element type.
 pub fn infer_batch_norm_training_types(
     ctx: &Context,
     operand: TypeHandle,
@@ -379,6 +430,11 @@ pub fn infer_batch_norm_training_types(
     let f = TensorType::get(ctx, vec![feature_size], t.element).into();
     Ok(vec![operand, f, f])
 }
+/// Infers batch-normalization gradient outputs for the operand, scale, and
+/// offset gradients.
+///
+/// The feature axis must exist. Scale, mean, and variance must match its
+/// feature extent; `grad` must match the operand shape and element type.
 pub fn infer_batch_norm_grad_types(
     ctx: &Context,
     operand: TypeHandle,
@@ -432,6 +488,12 @@ fn validate_batch_norm(
     Ok(())
 }
 
+/// Infers each reduce result by removing the selected dimensions from the
+/// input shape and using the corresponding scalar accumulator element type.
+///
+/// At least one input is required. The input and accumulator counts must
+/// match, reduction axes must be unique and in range, input ranks and shapes
+/// must be compatible, and every accumulator must be rank zero.
 pub fn infer_reduce_types(
     ctx: &Context,
     inputs: &[TypeHandle],
@@ -486,6 +548,11 @@ pub fn infer_reduce_types(
     Ok(output)
 }
 
+/// Validates the tensors sorted together and returns their types unchanged.
+///
+/// At least one ranked input is required. `dimension` may be a valid
+/// nonnegative axis or a negative axis in `[-rank, -1]`; all operands must
+/// have compatible shapes and ranks.
 pub fn infer_sort_types(
     ctx: &Context,
     inputs: &[TypeHandle],
@@ -515,6 +582,12 @@ pub fn infer_sort_types(
     }
     Ok(inputs.to_vec())
 }
+/// Infers a mapped result by applying the scalar computation result element
+/// type to the input shape.
+///
+/// Inputs must be nonempty ranked tensors with compatible shapes. `axes` must
+/// enumerate every axis in identity order (`0..rank`), and the computation
+/// result must be a scalar tensor.
 pub fn infer_map_type(
     ctx: &Context,
     inputs: &[TypeHandle],
@@ -551,17 +624,12 @@ pub fn infer_map_type(
     Ok(result(ctx, t.dimensions.clone(), scalar.element))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RngDistributionAttr {
-    Uniform,
-    Normal,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RngAlgorithmAttr {
-    Default,
-    ThreeFry,
-    Philox,
-}
+/// Validates random-bit-generator state and output types and returns them in
+/// state-then-output order.
+///
+/// The state must be a rank-one `ui64` tensor and the output must have an
+/// integer element type. Known state lengths are restricted by the selected
+/// algorithm.
 pub fn infer_rng_bit_generator_types(
     ctx: &Context,
     state: TypeHandle,
@@ -592,6 +660,11 @@ pub fn infer_rng_bit_generator_types(
     }
     Ok(vec![state, output])
 }
+/// Infers the output tensor type of a random operation from its explicit shape.
+///
+/// Lower and upper bounds must have compatible ranks, shapes, and element
+/// types. Normal distribution bounds must be floating point. Every requested
+/// output extent must be nonnegative; the output uses the bound element type.
 pub fn infer_rng_type(
     ctx: &Context,
     lower: TypeHandle,
@@ -618,16 +691,32 @@ pub fn infer_rng_type(
     Ok(result(ctx, shape.to_vec(), b.element))
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Window geometry used to infer reduce-window result types.
+pub struct ReduceWindowInferenceOptions<'a> {
+    /// Positive window size for each input dimension.
+    pub window_dimensions: &'a [i64],
+    /// Optional stride for each dimension; omitted values default to one.
+    pub strides: Option<&'a [i64]>,
+    /// Optional input dilation for each dimension; omitted values default to one.
+    pub base_dilations: Option<&'a [i64]>,
+    /// Optional window dilation for each dimension; omitted values default to one.
+    pub window_dilations: Option<&'a [i64]>,
+    /// Optional low/high padding pair for each dimension.
+    pub padding: Option<&'a [[i64; 2]]>,
+}
+
+/// Infers reduce-window outputs for paired input and scalar accumulator types.
+///
+/// Inputs must be nonempty and paired one-to-one with accumulators. Window
+/// dimensions must be positive and match input rank; optional strides and
+/// dilations must either be empty/omitted or have that rank, and their known
+/// values must be positive. Padding, when provided, must also match the rank.
+/// Each result uses the computed window shape and its accumulator element.
 pub fn infer_reduce_window_types(
     ctx: &Context,
     inputs: &[TypeHandle],
     accumulators: &[TypeHandle],
-    window_dimensions: &[i64],
-    window_strides: Option<&[i64]>,
-    base_dilations: Option<&[i64]>,
-    window_dilations: Option<&[i64]>,
-    padding: Option<&[[i64; 2]]>,
+    options: ReduceWindowInferenceOptions<'_>,
 ) -> Result<Vec<TypeHandle>> {
     let first_input = *inputs.first().ok_or_else(|| {
         Diagnostic::EmptyOperands {
@@ -641,22 +730,26 @@ pub fn infer_reduce_window_types(
     }
     let first = ranked(ctx, first_input).ok_or_else(|| Diagnostic::UnsupportedType.into_error())?;
     let rank = first.rank();
-    if window_dimensions.len() != rank || window_dimensions.iter().any(|&x| x <= 0) {
+    if options.window_dimensions.len() != rank || options.window_dimensions.iter().any(|&x| x <= 0)
+    {
         return Err(Diagnostic::InvalidDimensions.into());
     }
-    let strides = window_strides.unwrap_or(&[]);
-    let base = base_dilations.unwrap_or(&[]);
-    let dilation = window_dilations.unwrap_or(&[]);
+    let strides = options.strides.unwrap_or(&[]);
+    let base = options.base_dilations.unwrap_or(&[]);
+    let dilation = options.window_dilations.unwrap_or(&[]);
     if !strides.is_empty() && strides.len() != rank
         || !base.is_empty() && base.len() != rank
         || !dilation.is_empty() && dilation.len() != rank
-        || padding.is_some_and(|p| p.len() != rank)
+        || options.padding.is_some_and(|p| p.len() != rank)
     {
         return Err(Diagnostic::InvalidDimensions.into());
     }
     let mut shape = Vec::new();
-    for (i, (&size, &window_dimension)) in
-        first.dimensions.iter().zip(window_dimensions).enumerate()
+    for (i, (&size, &window_dimension)) in first
+        .dimensions
+        .iter()
+        .zip(options.window_dimensions)
+        .enumerate()
     {
         if size < 0 {
             shape.push(-1);
@@ -668,7 +761,8 @@ pub fn infer_reduce_window_types(
         if b <= 0 || d <= 0 || s <= 0 {
             return Err(Diagnostic::InvalidDimensions.into());
         }
-        let p = padding
+        let p = options
+            .padding
             .and_then(|values| values.get(i))
             .copied()
             .unwrap_or([0, 0]);
@@ -703,6 +797,12 @@ pub fn infer_reduce_window_types(
     }
     Ok(outputs)
 }
+/// Infers the select-and-scatter result, preserving the input type.
+///
+/// The source must match the input element type and rank, the accumulator must
+/// be scalar, and positive window dimensions must match the input rank. Source
+/// extents are checked against the padded window result; incompatible ranks,
+/// strides, padding, or extents return an error.
 pub fn infer_select_and_scatter_type(
     ctx: &Context,
     input: TypeHandle,
@@ -734,11 +834,13 @@ pub fn infer_select_and_scatter_type(
         ctx,
         &[input],
         &[result(ctx, vec![], x.element)],
-        window_dimensions,
-        strides,
-        None,
-        None,
-        Some(&padding),
+        ReduceWindowInferenceOptions {
+            window_dimensions,
+            strides,
+            base_dilations: None,
+            window_dilations: None,
+            padding: Some(&padding),
+        },
     )?;
     let stride_values = strides.filter(|values| !values.is_empty()).unwrap_or(&ones);
     if stride_values.len() != x.rank() {
@@ -770,5 +872,5 @@ pub fn infer_select_and_scatter_type(
             }
         }
     }
-    Ok(result(ctx, x.dimensions, a.element))
+    Ok(result(ctx, x.dimensions.clone(), a.element))
 }

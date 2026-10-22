@@ -6,16 +6,24 @@ use pliron::{location::Location, verify_err};
     generate_get = true
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Ranked vector type with per-dimension scalability metadata.
 pub struct VectorType {
+    /// Primitive integer or floating-point element type.
     pub element: TypeHandle,
+    /// Positive extent for each vector dimension.
     pub dimensions: Vec<i64>,
+    /// Whether the corresponding dimension may scale at runtime.
     pub scalable: Vec<bool>,
 }
 impl VectorType {
+    /// Constructs a vector whose dimensions are all fixed.
     pub fn fixed(ctx: &Context, element: ElementType, dimensions: Vec<i64>) -> TypeHandle {
         let scalable = vec![false; dimensions.len()];
         Self::get(ctx, element.native(ctx), dimensions, scalable).into()
     }
+    /// Constructs a vector with explicit per-dimension scalable flags.
+    ///
+    /// Verification requires `scalable.len()` to equal the vector rank.
     pub fn new_scalable(
         ctx: &Context,
         element: ElementType,
@@ -24,18 +32,23 @@ impl VectorType {
     ) -> TypeHandle {
         Self::get(ctx, element.native(ctx), dimensions, scalable).into()
     }
+    /// Returns the primitive element type, when recognized.
     pub fn element(&self, ctx: &Context) -> Option<ElementType> {
         primitive_element(ctx, self.element)
     }
+    /// Returns the vector's dimension extents.
     pub fn dimensions(&self) -> &[i64] {
         &self.dimensions
     }
+    /// Returns the scalable flag corresponding to each dimension.
     pub fn scalable_dimensions(&self) -> &[bool] {
         &self.scalable
     }
+    /// Returns whether at least one dimension is scalable.
     pub fn is_scalable(&self) -> bool {
         self.scalable.iter().any(|&v| v)
     }
+    /// Returns the number of dimensions in the vector.
     pub fn rank(&self) -> usize {
         self.dimensions.len()
     }
@@ -65,13 +78,19 @@ impl Verify for VectorType {
     generate_get = true
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Ranked buffer type with optional layout and memory-space attributes.
 pub struct BufferType {
+    /// Element type stored in this buffer, possibly another shaped type.
     pub element: TypeHandle,
+    /// Ranked buffer extents; `-1` denotes a dynamic dimension.
     pub dimensions: Vec<i64>,
+    /// Optional layout attribute, stored as zero or one entry.
     pub layout: VecAttr,
+    /// Optional memory-space attribute, stored as zero or one entry.
     pub memory_space: VecAttr,
 }
 impl BufferType {
+    /// Constructs a ranked buffer without an explicit layout or memory space.
     pub fn without_layout(ctx: &Context, element: TypeHandle, dimensions: Vec<i64>) -> TypeHandle {
         Self::get(
             ctx,
@@ -82,18 +101,23 @@ impl BufferType {
         )
         .into()
     }
+    /// Returns the nested element type handle.
     pub fn element_type(&self) -> TypeHandle {
         self.element
     }
+    /// Returns the ranked extents in dimension order.
     pub fn dimensions(&self) -> &[i64] {
         &self.dimensions
     }
+    /// Returns the optional layout attribute.
     pub fn layout(&self) -> Option<&AttrObj> {
         self.layout.0.first()
     }
+    /// Returns the optional memory-space attribute.
     pub fn memory_space(&self) -> Option<&AttrObj> {
         self.memory_space.0.first()
     }
+    /// Returns an interned buffer with `layout`; identity affine layouts are omitted.
     pub fn with_layout(&self, ctx: &Context, layout: AttrObj) -> TypeHandle {
         let identity = layout
             .downcast_ref::<crate::attributes::AffineMap>()
@@ -102,7 +126,7 @@ impl BufferType {
                     && map.symbols == 0
                     && map.results.len() == map.dimensions
                     && map.results.iter().enumerate().all(|(index, result)| {
-                        *result == crate::attributes::AffineExpr::Dimension(index)
+                        *result == crate::attributes::AffineExpr::dimension(index)
                     })
             });
         Self::get(
@@ -114,6 +138,7 @@ impl BufferType {
         )
         .into()
     }
+    /// Returns an interned buffer with `space`; the default zero space is omitted.
     pub fn with_memory_space(&self, ctx: &Context, space: AttrObj) -> TypeHandle {
         let default = is_default_memory_space(ctx, &space);
         Self::get(
@@ -137,20 +162,27 @@ impl Verify for BufferType {
     generate_get = true
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Buffer type whose rank is not statically specified.
 pub struct UnrankedBufferType {
+    /// Element type stored in this buffer, possibly another shaped type.
     pub element: TypeHandle,
+    /// Optional memory-space attribute, stored as zero or one entry.
     pub memory_space: VecAttr,
 }
 impl UnrankedBufferType {
+    /// Constructs an unranked buffer without an explicit memory space.
     pub fn without_memory_space(ctx: &Context, element: TypeHandle) -> TypeHandle {
         Self::get(ctx, element, VecAttr::new(vec![])).into()
     }
+    /// Returns the nested element type handle.
     pub fn element_type(&self) -> TypeHandle {
         self.element
     }
+    /// Returns the optional memory-space attribute.
     pub fn memory_space(&self) -> Option<&AttrObj> {
         self.memory_space.0.first()
     }
+    /// Returns an interned unranked buffer with `space`; the default zero space is omitted.
     pub fn with_memory_space(&self, ctx: &Context, space: AttrObj) -> TypeHandle {
         let default = is_default_memory_space(ctx, &space);
         Self::get(
@@ -160,6 +192,7 @@ impl UnrankedBufferType {
         )
         .into()
     }
+    /// Returns the primitive scalar element type, when recognized.
     pub fn scalar_element(&self, ctx: &Context) -> Option<ElementType> {
         primitive_element(ctx, self.element)
     }
@@ -301,7 +334,9 @@ fn verify_buffers(
     generate_get = true
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Deferred collection of ranked tensor values.
 pub struct FutureType {
+    /// Ranked tensor result types represented by this future.
     pub elements: Vec<TypeHandle>,
 }
 impl Verify for FutureType {
@@ -324,6 +359,7 @@ impl Verify for FutureType {
 }
 macro_rules! unit_type {
     ($name:ident,$mnemonic:literal) => {
+        #[doc = concat!("Unit marker type for the `", $mnemonic, "` type.")]
         #[pliron_type(name=$mnemonic,format,generate_get=true,verifier="succ")]
         #[derive(Debug, Clone, PartialEq, Eq, Hash)]
         pub struct $name;

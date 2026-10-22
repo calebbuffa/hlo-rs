@@ -18,6 +18,7 @@ use pliron::{
 #[pliron_op(name="stablehlo.broadcast_in_dim",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_broadcast_dimensions:VecAttr))]
 pub struct BroadcastInDimOp;
 impl BroadcastInDimOp {
+    /// Creates a `stablehlo.broadcast_in_dim` operation with the supplied result type. Uses `input` as its operand. Configures the operation with `dimensions`.
     pub fn new(
         ctx: &mut Context,
         input: Value,
@@ -38,12 +39,14 @@ impl BroadcastInDimOp {
         op.set_attr_stablehlo_broadcast_dimensions(ctx, dimensions);
         op
     }
+    /// Returns the dimensions encoded by this operation, or `None` if the attribute is missing or malformed.
     pub fn dimensions(&self, ctx: &Context) -> Option<Vec<usize>> {
         read_integer_list(&*self.get_attr_stablehlo_broadcast_dimensions(ctx)?)?
             .into_iter()
             .map(|v| usize::try_from(v).ok())
             .collect()
     }
+    /// Builds a `stablehlo.broadcast_in_dim` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     pub fn new_inferred(
         ctx: &mut Context,
         input: Value,
@@ -76,18 +79,16 @@ impl Verify for BroadcastInDimOp {
         ) else {
             return invalid(self, ctx, "broadcast types or dimensions are invalid");
         };
+        let mut seen = vec![false; dst.len()];
         if se != de
             || dims.len() != src.len()
-            || dims.iter().any(|&d| d >= dst.len())
-            || dims.windows(2).any(|w| w[0] >= w[1])
+            || dims
+                .iter()
+                .any(|&d| d >= dst.len() || std::mem::replace(&mut seen[d], true))
             || dims
                 .iter()
                 .zip(&src)
-                .any(|(&axis, &size)| size > 1 && dst[axis] >= 0 && size != dst[axis])
-            || dims
-                .iter()
-                .zip(&src)
-                .any(|(&axis, &size)| size == 1 && dst[axis] == 0)
+                .any(|(&axis, &size)| size >= 0 && size != 1 && dst[axis] >= 0 && size != dst[axis])
         {
             return invalid(self, ctx, "invalid broadcast dimensions or shapes");
         }
@@ -95,9 +96,11 @@ impl Verify for BroadcastInDimOp {
     }
 }
 
+/// Changes the shape of an input tensor without changing its element sequence.
 #[pliron_op(name="stablehlo.reshape",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ReshapeOp;
 impl ReshapeOp {
+    /// Creates a `stablehlo.reshape` operation with the supplied result type. Uses `input` as its operand.
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle) -> Self {
         Self {
             op: Operation::new(
@@ -110,6 +113,7 @@ impl ReshapeOp {
             ),
         }
     }
+    /// Builds a `stablehlo.reshape` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     pub fn new_inferred(ctx: &mut Context, input: Value, shape: &[i64]) -> Result<Self> {
         let (_, element) = crate::ops::builder_option(
             shape_elem(ctx, input.get_type(ctx)),
@@ -166,6 +170,7 @@ impl Verify for ReshapeOp {
 #[pliron_op(name="stablehlo.transpose",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_transpose_permutation:VecAttr))]
 pub struct TransposeOp;
 impl TransposeOp {
+    /// Builds a `stablehlo.transpose` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     pub fn new_inferred(ctx: &mut Context, input: Value, permutation: Vec<usize>) -> Result<Self> {
         let ty = crate::ops::builder_result(
             crate::inference::infer_transpose(ctx, input.get_type(ctx), &permutation),
@@ -173,6 +178,7 @@ impl TransposeOp {
         )?;
         Ok(Self::new(ctx, input, ty, permutation))
     }
+    /// Creates a `stablehlo.transpose` operation with the supplied result type. Uses `input` as its operand. Configures the operation with `permutation`.
     pub fn new(
         ctx: &mut Context,
         input: Value,
@@ -193,6 +199,7 @@ impl TransposeOp {
         op.set_attr_stablehlo_transpose_permutation(ctx, permutation);
         op
     }
+    /// Returns the dimension permutation encoded by this operation, if available.
     pub fn permutation(&self, ctx: &Context) -> Option<Vec<usize>> {
         read_integer_list(&*self.get_attr_stablehlo_transpose_permutation(ctx)?)?
             .into_iter()
@@ -241,6 +248,7 @@ impl Verify for TransposeOp {
 #[pliron_op(name="stablehlo.broadcast",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_broadcast_sizes:VecAttr))]
 pub struct BroadcastOp;
 impl BroadcastOp {
+    /// Creates a `stablehlo.broadcast` operation with the supplied result type. Uses `input` as its operand. Configures the operation with `sizes`.
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle, sizes: Vec<i64>) -> Self {
         let op = Self {
             op: Operation::new(
@@ -255,6 +263,7 @@ impl BroadcastOp {
         op.set_attr_stablehlo_broadcast_sizes(ctx, signed_list(ctx, sizes));
         op
     }
+    /// Builds a `stablehlo.broadcast` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     pub fn new_inferred(ctx: &mut Context, input: Value, sizes: Vec<i64>) -> Result<Self> {
         let ty = crate::ops::builder_result(
             crate::inference::infer_broadcast(ctx, input.get_type(ctx), &sizes),
@@ -262,6 +271,7 @@ impl BroadcastOp {
         )?;
         Ok(Self::new(ctx, input, ty, sizes))
     }
+    /// Returns the slice or broadcast sizes encoded by this operation, if available.
     pub fn sizes(&self, ctx: &Context) -> Option<Vec<i64>> {
         signed_integer_list(&*self.get_attr_stablehlo_broadcast_sizes(ctx)?)
     }
@@ -295,6 +305,7 @@ impl Verify for BroadcastOp {
 #[pliron_op(name="stablehlo.reverse",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_reverse_dimensions:VecAttr))]
 pub struct ReverseOp;
 impl ReverseOp {
+    /// Creates a `stablehlo.reverse` operation with the supplied result type. Uses `input` as its operand. Configures the operation with `dimensions`.
     pub fn new(
         ctx: &mut Context,
         input: Value,
@@ -317,12 +328,14 @@ impl ReverseOp {
         );
         op
     }
+    /// Returns the dimensions encoded by this operation, or `None` if the attribute is missing or malformed.
     pub fn dimensions(&self, ctx: &Context) -> Option<Vec<usize>> {
         read_integer_list(&*self.get_attr_stablehlo_reverse_dimensions(ctx)?)?
             .into_iter()
             .map(|x| usize::try_from(x).ok())
             .collect()
     }
+    /// Builds a reverse operation using the input type as its result type. This builder returns the operation in `Result` for API consistency.
     pub fn new_inferred(ctx: &mut Context, input: Value, dimensions: Vec<usize>) -> Result<Self> {
         Ok(Self::new(ctx, input, input.get_type(ctx), dimensions))
     }
@@ -359,6 +372,7 @@ impl Verify for ReverseOp {
 #[pliron_op(name="stablehlo.dynamic_broadcast_in_dim",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dynamic_broadcast_dimensions:VecAttr,stablehlo_dynamic_broadcast_known_expanding:VecAttr,stablehlo_dynamic_broadcast_known_nonexpanding:VecAttr))]
 pub struct DynamicBroadcastInDimOp;
 impl DynamicBroadcastInDimOp {
+    /// Creates a `stablehlo.dynamic_broadcast_in_dim` operation with the supplied result type. Uses `input`, `output_dimensions` as operands. Configures the operation with `dimensions`, `known_expanding`, `known_nonexpanding`.
     pub fn new(
         ctx: &mut Context,
         input: Value,
@@ -392,6 +406,7 @@ impl DynamicBroadcastInDimOp {
         );
         op
     }
+    /// Builds a `stablehlo.dynamic_broadcast_in_dim` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     pub fn new_inferred(
         ctx: &mut Context,
         input: Value,
@@ -424,6 +439,14 @@ impl Verify for DynamicBroadcastInDimOp {
         if ir.get_num_operands() != 2 || ir.get_num_results() != 1 {
             return invalid(self, ctx, "dynamic_broadcast_in_dim arity mismatch");
         }
+        let optional_axes = |name: &'static str| match ir
+            .attributes
+            .0
+            .get(&pliron::identifier::Identifier::new(name))
+        {
+            None => Some(Vec::new()),
+            Some(value) => value.downcast_ref::<VecAttr>().and_then(read_integer_list),
+        };
         let (
             Some((src, src_elem)),
             Some((dst, dst_elem)),
@@ -438,12 +461,8 @@ impl Verify for DynamicBroadcastInDimOp {
             self.get_attr_stablehlo_dynamic_broadcast_dimensions(ctx)
                 .as_deref()
                 .and_then(read_integer_list),
-            self.get_attr_stablehlo_dynamic_broadcast_known_expanding(ctx)
-                .as_deref()
-                .and_then(read_integer_list),
-            self.get_attr_stablehlo_dynamic_broadcast_known_nonexpanding(ctx)
-                .as_deref()
-                .and_then(read_integer_list),
+            optional_axes(crate::attributes::keys::DYNAMIC_BROADCAST_KNOWN_EXPANDING),
+            optional_axes(crate::attributes::keys::DYNAMIC_BROADCAST_KNOWN_NONEXPANDING),
         )
         else {
             return invalid(
@@ -467,16 +486,13 @@ impl Verify for DynamicBroadcastInDimOp {
             );
         }
         let mut mapped = vec![false; dst.len()];
-        let mut previous = None;
         for (&axis, &size) in dimensions.iter().zip(&src) {
             let Ok(axis) = usize::try_from(axis) else {
                 return invalid(self, ctx, "dynamic broadcast axis is negative");
             };
             if axis >= dst.len()
                 || mapped[axis]
-                || previous.is_some_and(|previous| axis <= previous)
-                || size > 1 && dst[axis] >= 0 && size != dst[axis]
-                || size == 1 && dst[axis] == 0
+                || size >= 0 && size != 1 && dst[axis] >= 0 && size != dst[axis]
             {
                 return invalid(
                     self,
@@ -485,20 +501,12 @@ impl Verify for DynamicBroadcastInDimOp {
                 );
             }
             mapped[axis] = true;
-            previous = Some(axis)
         }
         let validate_axes = |values: &[u64]| {
-            let mut seen = vec![false; dst.len()];
-            let mut prev = None;
+            let mut seen = vec![false; src.len()];
             values.iter().all(|&v| {
                 usize::try_from(v).ok().is_some_and(|axis| {
-                    axis < dst.len()
-                        && !std::mem::replace(&mut seen[axis], true)
-                        && prev.is_none_or(|previous| axis > previous)
-                        && {
-                            prev = Some(axis);
-                            true
-                        }
+                    axis < src.len() && !std::mem::replace(&mut seen[axis], true)
                 })
             })
         };
@@ -516,9 +524,11 @@ impl Verify for DynamicBroadcastInDimOp {
     }
 }
 
+/// Reshapes an input tensor using a runtime-provided result shape.
 #[pliron_op(name="stablehlo.dynamic_reshape",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct DynamicReshapeOp;
 impl DynamicReshapeOp {
+    /// Creates a `stablehlo.dynamic_reshape` operation with the supplied result type. Uses `input`, `output_shape` as operands.
     pub fn new(ctx: &mut Context, input: Value, output_shape: Value, result: TypeHandle) -> Self {
         Self {
             op: Operation::new(
@@ -531,6 +541,7 @@ impl DynamicReshapeOp {
             ),
         }
     }
+    /// Builds a `stablehlo.dynamic_reshape` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     pub fn new_inferred(ctx: &mut Context, input: Value, output_shape: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
             crate::inference::infer_dynamic_reshape_type(
@@ -623,6 +634,7 @@ fn compatible_native_shape(ctx: &Context, a: TypeHandle, b: TypeHandle) -> bool 
 #[pliron_op(name="stablehlo.get_dimension_size",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_get_dimension_size_dimension:IntegerAttr))]
 pub struct GetDimensionSizeOp;
 impl GetDimensionSizeOp {
+    /// Creates a `stablehlo.get_dimension_size` operation with the supplied result type. Uses `input` as its operand. Configures the operation with `dimension`.
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle, dimension: usize) -> Self {
         let op = Self {
             op: Operation::new(
@@ -640,6 +652,7 @@ impl GetDimensionSizeOp {
         );
         op
     }
+    /// Builds a `stablehlo.get_dimension_size` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     pub fn new_inferred(ctx: &mut Context, input: Value, dimension: usize) -> Result<Self> {
         let (s, _) = crate::ops::builder_option(
             shape_elem(ctx, input.get_type(ctx)),
@@ -660,6 +673,7 @@ impl GetDimensionSizeOp {
             dimension,
         ))
     }
+    /// Returns the operation's dimension attribute when it is present and representable.
     pub fn dimension(&self, ctx: &Context) -> Option<usize> {
         usize::try_from(
             self.get_attr_stablehlo_get_dimension_size_dimension(ctx)?
@@ -702,6 +716,7 @@ impl Verify for GetDimensionSizeOp {
 #[pliron_op(name="stablehlo.set_dimension_size",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_set_dimension_size_dimension:IntegerAttr))]
 pub struct SetDimensionSizeOp;
 impl SetDimensionSizeOp {
+    /// Creates a `stablehlo.set_dimension_size` operation with the supplied result type. Uses `input`, `size` as operands. Configures the operation with `dimension`.
     pub fn new(
         ctx: &mut Context,
         input: Value,
@@ -725,6 +740,7 @@ impl SetDimensionSizeOp {
         );
         op
     }
+    /// Builds a `stablehlo.set_dimension_size` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     pub fn new_inferred(
         ctx: &mut Context,
         input: Value,
@@ -742,6 +758,7 @@ impl SetDimensionSizeOp {
         )?;
         Ok(Self::new(ctx, input, size, result, dimension))
     }
+    /// Returns the operation's dimension attribute when it is present and representable.
     pub fn dimension(&self, ctx: &Context) -> Option<usize> {
         usize::try_from(
             self.get_attr_stablehlo_set_dimension_size_dimension(ctx)?

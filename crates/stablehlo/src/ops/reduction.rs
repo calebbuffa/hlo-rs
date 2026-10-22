@@ -141,6 +141,7 @@ fn region_for_reduce_ir(ctx: &Context, ir: &Operation, region: Ptr<Region>) -> b
 #[pliron_op(name="stablehlo.reduce",format,attributes=(stablehlo_reduce_dimensions:VecAttr))]
 pub struct ReduceOp;
 impl ReduceOp {
+    /// Creates a `stablehlo.reduce` operation with the supplied result types. Uses `inputs`, `inits` as operands. Configures the operation with `dimensions`.
     pub fn new(
         ctx: &mut Context,
         inputs: Vec<Value>,
@@ -163,6 +164,7 @@ impl ReduceOp {
         op.set_attr_stablehlo_reduce_dimensions(ctx, ints(ctx, dimensions));
         op
     }
+    /// Returns the region containing the reduction computation.
     pub fn reducer_region(&self, ctx: &Context) -> Ptr<Region> {
         self.get_operation().deref(ctx).get_region(0)
     }
@@ -239,7 +241,22 @@ impl Verify for ReduceOp {
 
 #[pliron_op(name="stablehlo.reduce_window",format,attributes=(stablehlo_reduction_window:VecAttr,stablehlo_reduction_strides:VecAttr,stablehlo_reduction_base_dilations:VecAttr,stablehlo_reduction_window_dilations:VecAttr,stablehlo_reduction_padding:VecAttr))]
 pub struct ReduceWindowOp;
+
+/// Optional stride, dilation, and padding settings for a windowed reduction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReduceWindowOptions {
+    /// Window stride for each input dimension.
+    pub strides: Vec<u64>,
+    /// Dilation applied to the input.
+    pub base_dilations: Vec<u64>,
+    /// Dilation applied to the reduction window.
+    pub window_dilations: Vec<u64>,
+    /// Low/high padding pairs, flattened in dimension order.
+    pub padding: Vec<i64>,
+}
+
 impl ReduceWindowOp {
+    /// Creates a `stablehlo.reduce_window` operation with the supplied result types. Uses `inputs`, `inits` as operands. Configures the operation with `window`.
     pub fn new(
         ctx: &mut Context,
         inputs: Vec<Value>,
@@ -266,25 +283,18 @@ impl ReduceWindowOp {
         op.set_attr_stablehlo_reduction_padding(ctx, signed_list(ctx, []));
         op
     }
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_window_attributes(
-        ctx: &mut Context,
-        inputs: Vec<Value>,
-        inits: Vec<Value>,
-        results: Vec<TypeHandle>,
-        window: Vec<u64>,
-        strides: Vec<u64>,
-        base_dilations: Vec<u64>,
-        window_dilations: Vec<u64>,
-        padding: Vec<i64>,
-    ) -> Self {
-        let op = Self::new(ctx, inputs, inits, results, window);
-        op.set_attr_stablehlo_reduction_strides(ctx, ints(ctx, strides));
-        op.set_attr_stablehlo_reduction_base_dilations(ctx, ints(ctx, base_dilations));
-        op.set_attr_stablehlo_reduction_window_dilations(ctx, ints(ctx, window_dilations));
-        op.set_attr_stablehlo_reduction_padding(ctx, signed_list(ctx, padding));
-        op
+    /// Sets optional stride, dilation, and padding settings.
+    pub fn with_window_options(self, ctx: &Context, options: ReduceWindowOptions) -> Self {
+        self.set_attr_stablehlo_reduction_strides(ctx, ints(ctx, options.strides));
+        self.set_attr_stablehlo_reduction_base_dilations(ctx, ints(ctx, options.base_dilations));
+        self.set_attr_stablehlo_reduction_window_dilations(
+            ctx,
+            ints(ctx, options.window_dilations),
+        );
+        self.set_attr_stablehlo_reduction_padding(ctx, signed_list(ctx, options.padding));
+        self
     }
+    /// Returns the region containing the reduction computation.
     pub fn reducer_region(&self, ctx: &Context) -> Ptr<Region> {
         self.get_operation().deref(ctx).get_region(0)
     }
@@ -380,11 +390,13 @@ impl Verify for ReduceWindowOp {
             ctx,
             &inputs,
             &accumulators,
-            &dims,
-            (!strides.is_empty()).then_some(strides.as_slice()),
-            (!base.is_empty()).then_some(base.as_slice()),
-            (!dilation.is_empty()).then_some(dilation.as_slice()),
-            padding.as_deref(),
+            crate::inference::ReduceWindowInferenceOptions {
+                window_dimensions: &dims,
+                strides: (!strides.is_empty()).then_some(strides.as_slice()),
+                base_dilations: (!base.is_empty()).then_some(base.as_slice()),
+                window_dilations: (!dilation.is_empty()).then_some(dilation.as_slice()),
+                padding: padding.as_deref(),
+            },
         )
         .ok() else {
             return invalid(self, ctx, "reduce_window inference failed");
@@ -444,7 +456,18 @@ impl Verify for ReduceWindowOp {
 
 #[pliron_op(name="stablehlo.select_and_scatter",format,attributes=(stablehlo_reduction_select_window:VecAttr,stablehlo_reduction_select_strides:VecAttr,stablehlo_reduction_select_padding:VecAttr))]
 pub struct SelectAndScatterOp;
+
+/// Optional stride and padding settings for select-and-scatter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectAndScatterOptions {
+    /// Window stride for each input dimension.
+    pub strides: Vec<u64>,
+    /// Low/high padding pairs, flattened in dimension order.
+    pub padding: Vec<i64>,
+}
+
 impl SelectAndScatterOp {
+    /// Creates a `stablehlo.select_and_scatter` operation with the supplied result type. Uses `input`, `source`, `init` as operands. Configures the operation with `window`.
     pub fn new(
         ctx: &mut Context,
         input: Value,
@@ -468,25 +491,17 @@ impl SelectAndScatterOp {
         op.set_attr_stablehlo_reduction_select_padding(ctx, signed_list(ctx, []));
         op
     }
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_window_attributes(
-        ctx: &mut Context,
-        input: Value,
-        source: Value,
-        init: Value,
-        result: TypeHandle,
-        window: Vec<u64>,
-        strides: Vec<u64>,
-        padding: Vec<i64>,
-    ) -> Self {
-        let op = Self::new(ctx, input, source, init, result, window);
-        op.set_attr_stablehlo_reduction_select_strides(ctx, ints(ctx, strides));
-        op.set_attr_stablehlo_reduction_select_padding(ctx, signed_list(ctx, padding));
-        op
+    /// Sets optional stride and padding settings.
+    pub fn with_window_options(self, ctx: &Context, options: SelectAndScatterOptions) -> Self {
+        self.set_attr_stablehlo_reduction_select_strides(ctx, ints(ctx, options.strides));
+        self.set_attr_stablehlo_reduction_select_padding(ctx, signed_list(ctx, options.padding));
+        self
     }
+    /// Returns the region used to select elements for scatter.
     pub fn select_region(&self, ctx: &Context) -> Ptr<Region> {
         self.get_operation().deref(ctx).get_region(0)
     }
+    /// Returns the region used to combine scattered updates.
     pub fn scatter_region(&self, ctx: &Context) -> Ptr<Region> {
         self.get_operation().deref(ctx).get_region(1)
     }
@@ -604,6 +619,7 @@ impl Verify for SelectAndScatterOp {
 #[pliron_op(name="stablehlo.sort",format,attributes=(stablehlo_reduction_sort_dimension:IntegerAttr,stablehlo_reduction_sort_stable:BoolAttr))]
 pub struct SortOp;
 impl SortOp {
+    /// Creates a `stablehlo.sort` operation with the supplied result types. Uses `inputs` as operands. Configures the operation with `dimension`, `stable`.
     pub fn new(
         ctx: &mut Context,
         inputs: Vec<Value>,
@@ -628,6 +644,7 @@ impl SortOp {
         op.set_attr_stablehlo_reduction_sort_stable(ctx, BoolAttr::new(stable));
         op
     }
+    /// Returns the region containing the sorting comparator.
     pub fn comparator_region(&self, ctx: &Context) -> Ptr<Region> {
         self.get_operation().deref(ctx).get_region(0)
     }
@@ -709,6 +726,7 @@ impl Verify for SortOp {
 #[pliron_op(name="stablehlo.map",format,attributes=(stablehlo_reduction_map_dimensions:VecAttr))]
 pub struct MapOp;
 impl MapOp {
+    /// Creates a `stablehlo.map` operation with the supplied result type. Uses `inputs` as operands. Configures the operation with `dimensions`.
     pub fn new(
         ctx: &mut Context,
         inputs: Vec<Value>,
@@ -728,6 +746,7 @@ impl MapOp {
         op.set_attr_stablehlo_reduction_map_dimensions(ctx, ints(ctx, dimensions));
         op
     }
+    /// Returns the mapped computation region.
     pub fn computation_region(&self, ctx: &Context) -> Ptr<Region> {
         self.get_operation().deref(ctx).get_region(0)
     }

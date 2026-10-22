@@ -7,6 +7,7 @@ use pliron::{
     common_traits::Verify,
     context::Context,
     derive::pliron_op,
+    identifier::Identifier,
     op::Op,
     operation::Operation,
     result::Result,
@@ -47,6 +48,23 @@ fn read_signed_ints(a: Option<std::cell::Ref<'_, VecAttr>>) -> Option<Vec<i64>> 
             .collect()
     })
 }
+fn precision_values(ctx: &Context, values: impl IntoIterator<Item = Precision>) -> VecAttr {
+    ints(ctx, values.into_iter().map(|precision| precision as u64))
+}
+fn read_precision_values(attr: &VecAttr) -> Option<Vec<Precision>> {
+    crate::attributes::read_integer_list(attr)?
+        .into_iter()
+        .map(|value| match value {
+            0 => Some(Precision::Default),
+            1 => Some(Precision::High),
+            2 => Some(Precision::Highest),
+            _ => None,
+        })
+        .collect()
+}
+fn read_precision_attribute(attr: Option<std::cell::Ref<'_, VecAttr>>) -> Option<Vec<Precision>> {
+    read_precision_values(attr.as_deref()?)
+}
 fn compatible_dim(lhs: i64, rhs: i64) -> bool {
     lhs < 0 || rhs < 0 || lhs == rhs
 }
@@ -61,11 +79,14 @@ fn parts_ty(ctx: &Context, ty: TypeHandle) -> Option<(Vec<i64>, TypeHandle)> {
     let t = d.downcast_ref::<TensorType>()?;
     Some((t.dimensions.clone(), t.element))
 }
-fn quantized_element(ctx: &Context, element: TypeHandle) -> Option<QuantizedElementType> {
-    element
-        .deref(ctx)
-        .downcast_ref::<QuantizedElementType>()
-        .cloned()
+fn quantized_element<'a>(
+    ctx: &'a Context,
+    element: TypeHandle,
+) -> Option<std::cell::Ref<'a, QuantizedElementType>> {
+    std::cell::Ref::filter_map(element.deref(ctx), |element| {
+        element.downcast_ref::<QuantizedElementType>()
+    })
+    .ok()
 }
 fn convolution_element_compatible(
     ctx: &Context,
@@ -151,20 +172,19 @@ fn dot_element_compatible(
     }
 }
 
-#[pliron_op(name="stablehlo.dot_general",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dot_dimensions:DotDimensionNumbersAttr,stablehlo_dot_precision:VecAttr))]
+#[pliron_op(name="stablehlo.dot_general",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dot_dimensions:DotDimensionNumbersAttr,stablehlo_dot_precision:VecAttr,stablehlo_dot_algorithm:DotAlgorithmAttr))]
 pub struct DotGeneralOp;
 impl DotGeneralOp {
-    #[allow(clippy::too_many_arguments)]
+    /// Creates a `stablehlo.dot_general` operation with explicit dimension numbers.
+    ///
+    /// Precision defaults to the StableHLO default and can be set with
+    /// [`with_precision`](Self::with_precision).
     pub fn new(
         ctx: &mut Context,
         lhs: Value,
         rhs: Value,
         result: TypeHandle,
-        lhs_contract: Vec<u64>,
-        rhs_contract: Vec<u64>,
-        lhs_batch: Vec<u64>,
-        rhs_batch: Vec<u64>,
-        precision: Vec<u64>,
+        dimensions: DotDimensionNumbersAttr,
     ) -> Self {
         let op = Self {
             op: Operation::new(
@@ -176,40 +196,56 @@ impl DotGeneralOp {
                 0,
             ),
         };
-        op.set_attr_stablehlo_dot_dimensions(
-            ctx,
-            DotDimensionNumbersAttr {
-                lhs_contracting_dimensions: lhs_contract
-                    .into_iter()
-                    .map(|axis| i64::try_from(axis).unwrap_or(i64::MAX))
-                    .collect(),
-                rhs_contracting_dimensions: rhs_contract
-                    .into_iter()
-                    .map(|axis| i64::try_from(axis).unwrap_or(i64::MAX))
-                    .collect(),
-                lhs_batching_dimensions: lhs_batch
-                    .into_iter()
-                    .map(|axis| i64::try_from(axis).unwrap_or(i64::MAX))
-                    .collect(),
-                rhs_batching_dimensions: rhs_batch
-                    .into_iter()
-                    .map(|axis| i64::try_from(axis).unwrap_or(i64::MAX))
-                    .collect(),
-            },
-        );
-        op.set_attr_stablehlo_dot_precision(ctx, ints(ctx, precision));
+        op.set_attr_stablehlo_dot_dimensions(ctx, dimensions);
+        op.set_attr_stablehlo_dot_precision(ctx, precision_values(ctx, []));
         op
     }
-    /// Return the batching and contracting dimension numbers.
-    pub fn dimension_numbers(&self, ctx: &Context) -> Option<DotDimensionNumbersAttr> {
+    /// Creates a `stablehlo.dot_general` operation with an inferred result shape.
+    ///
+    /// The caller supplies the result element type because it may differ from
+    /// either operand's element type.
+    pub fn new_inferred(
+        ctx: &mut Context,
+        lhs: Value,
+        rhs: Value,
+        dimensions: DotDimensionNumbersAttr,
+        result_element: TypeHandle,
+    ) -> Result<Self> {
+        let lhs_type = lhs.get_type(ctx);
+        let rhs_type = rhs.get_type(ctx);
+        let result = crate::inference::infer_dot_general_type(
+            ctx,
+            lhs_type,
+            rhs_type,
+            &dimensions,
+            result_element,
+        )?;
+        Ok(Self::new(ctx, lhs, rhs, result, dimensions))
+    }
+    /// Borrow the batching and contracting dimension numbers, if present.
+    pub fn dimension_numbers<'a>(
+        &self,
+        ctx: &'a Context,
+    ) -> Option<std::cell::Ref<'a, DotDimensionNumbersAttr>> {
         self.get_attr_stablehlo_dot_dimensions(ctx)
-            .map(|attr| attr.clone())
     }
     /// Return the per-operand precision configuration values.
-    pub fn precision(&self, ctx: &Context) -> Option<Vec<u64>> {
-        self.get_attr_stablehlo_dot_precision(ctx)
-            .as_deref()
-            .and_then(crate::attributes::read_integer_list)
+    pub fn precision(&self, ctx: &Context) -> Option<Vec<Precision>> {
+        read_precision_attribute(self.get_attr_stablehlo_dot_precision(ctx))
+    }
+    /// Sets the per-operand precision configuration during construction.
+    pub fn with_precision(self, ctx: &Context, precision: Vec<Precision>) -> Self {
+        self.set_attr_stablehlo_dot_precision(ctx, precision_values(ctx, precision));
+        self
+    }
+    /// Attach an optional dot algorithm to this operation.
+    pub fn with_algorithm(self, ctx: &Context, algorithm: DotAlgorithmAttr) -> Self {
+        self.set_attr_stablehlo_dot_algorithm(ctx, algorithm);
+        self
+    }
+    /// Borrow the optional dot algorithm.
+    pub fn algorithm<'a>(&self, ctx: &'a Context) -> Option<std::cell::Ref<'a, DotAlgorithmAttr>> {
+        self.get_attr_stablehlo_dot_algorithm(ctx)
     }
 }
 impl Verify for DotGeneralOp {
@@ -225,16 +261,52 @@ impl Verify for DotGeneralOp {
         ) else {
             return invalid(self, ctx, "dot_general tensors must be ranked");
         };
-        let (Some(dimensions), Some(p)) = (
-            self.get_attr_stablehlo_dot_dimensions(ctx),
-            read_ints(self.get_attr_stablehlo_dot_precision(ctx)),
-        ) else {
+        let Some(dimensions) = self.get_attr_stablehlo_dot_dimensions(ctx) else {
+            return invalid(self, ctx, "dot_general dimensions are required");
+        };
+        let algorithm = ir
+            .attributes
+            .0
+            .get(&Identifier::new(crate::attributes::keys::DOT_ALGORITHM));
+        let algorithm = if let Some(algorithm) = algorithm {
+            let Some(algorithm) = algorithm.downcast_ref::<DotAlgorithmAttr>() else {
+                return invalid(
+                    self,
+                    ctx,
+                    "dot_general algorithm must use the StableHLO dot_algorithm attribute",
+                );
+            };
+            algorithm.verify(ctx)?;
+            Some(algorithm)
+        } else {
+            None
+        };
+        let precision_attribute = ir
+            .attributes
+            .0
+            .get(&Identifier::new(crate::attributes::keys::DOT_PRECISION));
+        let p = if let Some(precision_attribute) = precision_attribute {
+            let Some(precision_attribute) = precision_attribute.downcast_ref::<VecAttr>() else {
+                return invalid(
+                    self,
+                    ctx,
+                    "dot_general precision must use an integer-list attribute",
+                );
+            };
+            let Some(precision) = read_precision_values(precision_attribute) else {
+                return invalid(self, ctx, "dot_general precision configuration is invalid");
+            };
+            precision
+        } else {
+            Vec::new()
+        };
+        if algorithm.is_some() && p.iter().any(|&precision| precision != Precision::Default) {
             return invalid(
                 self,
                 ctx,
-                "dot_general dimensions and precision are required",
+                "dot_general algorithm requires DEFAULT precision configuration",
             );
-        };
+        }
         let (Some(lc), Some(rc), Some(lb), Some(rb)) = (
             dimensions
                 .lhs_contracting_dimensions
@@ -275,7 +347,7 @@ impl Verify for DotGeneralOp {
             || lc.len() != rc.len()
             || lb.len() != rb.len()
             || p.len() > 2
-            || p.iter().any(|&x| x > 2)
+            || p.len() > 2
             || !axes_ok(l.len(), &lb, &lc)
             || !axes_ok(r.len(), &rb, &rc)
             || lc
@@ -322,7 +394,7 @@ impl Verify for DotGeneralOp {
         if shape.len() != o.len()
             || shape
                 .iter()
-                .zip(o.iter())
+                .zip(&o)
                 .any(|(&a, &b)| a >= 0 && b >= 0 && a != b)
         {
             return invalid(self, ctx, "dot_general result shape is invalid");
@@ -334,12 +406,13 @@ impl Verify for DotGeneralOp {
 #[pliron_op(name="stablehlo.dot",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_dot_precision:VecAttr))]
 pub struct DotOp;
 impl DotOp {
+    /// Creates a `stablehlo.dot` operation with the supplied result type. Uses `lhs`, `rhs` as operands. Configures the operation with `precision`.
     pub fn new(
         ctx: &mut Context,
         lhs: Value,
         rhs: Value,
         result: TypeHandle,
-        precision: Vec<u64>,
+        precision: Vec<Precision>,
     ) -> Self {
         let op = Self {
             op: Operation::new(
@@ -351,7 +424,7 @@ impl DotOp {
                 0,
             ),
         };
-        op.set_attr_stablehlo_compute_dot_precision(ctx, ints(ctx, precision));
+        op.set_attr_stablehlo_compute_dot_precision(ctx, precision_values(ctx, precision));
         op
     }
 }
@@ -368,14 +441,28 @@ impl Verify for DotOp {
         ) else {
             return invalid(self, ctx, "dot requires ranked tensors");
         };
-        let Some(p) = read_ints(self.get_attr_stablehlo_compute_dot_precision(ctx)) else {
-            return invalid(self, ctx, "dot precision is required");
+        let p = if let Some(attribute) = ir.attributes.0.get(&Identifier::new(
+            crate::attributes::keys::COMPUTE_DOT_PRECISION,
+        )) {
+            let Some(precision) = attribute
+                .downcast_ref::<VecAttr>()
+                .and_then(read_precision_values)
+            else {
+                return invalid(
+                    self,
+                    ctx,
+                    "dot precision must use an integer-list attribute",
+                );
+            };
+            precision
+        } else {
+            Vec::new()
         };
         if !(1..=2).contains(&a.len())
             || !(1..=2).contains(&b.len())
             || !dot_element_compatible(ctx, ae, be, oe, &[0])
             || p.len() > 2
-            || p.iter().any(|&x| x > 2)
+            || p.len() > 2
             || !compatible_dim(a[a.len() - 1], b[0])
         {
             return invalid(
@@ -391,11 +478,7 @@ impl Verify for DotOp {
         if b.len() == 2 {
             s.push(b[1])
         }
-        if s.len() != o.len()
-            || s.iter()
-                .zip(o.iter())
-                .any(|(&x, &y)| x >= 0 && y >= 0 && x != y)
-        {
+        if s.len() != o.len() || s.iter().zip(&o).any(|(&x, &y)| x >= 0 && y >= 0 && x != y) {
             return invalid(self, ctx, "dot result shape is invalid");
         };
         Ok(())
@@ -405,6 +488,7 @@ impl Verify for DotOp {
 #[pliron_op(name="stablehlo.einsum",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_einsum_equation:StringAttr))]
 pub struct EinsumOp;
 impl EinsumOp {
+    /// Creates a `stablehlo.einsum` operation with the supplied result type. Uses `lhs`, `rhs` as operands. Configures the operation with `equation`.
     pub fn new(
         ctx: &mut Context,
         lhs: Value,
@@ -450,6 +534,7 @@ impl Verify for EinsumOp {
 #[pliron_op(name="stablehlo.unary_einsum",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_unary_einsum_equation:StringAttr))]
 pub struct UnaryEinsumOp;
 impl UnaryEinsumOp {
+    /// Creates a `stablehlo.unary_einsum` operation with the supplied result type. Uses `input` as its operand. Configures the operation with `equation`.
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle, equation: String) -> Self {
         let op = Self {
             op: Operation::new(
@@ -488,22 +573,38 @@ impl Verify for UnaryEinsumOp {
 
 #[pliron_op(name="stablehlo.convolution",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_conv_dims:ConvDimensionNumbersAttr,stablehlo_compute_conv_strides:VecAttr,stablehlo_compute_conv_padding:VecAttr,stablehlo_compute_conv_lhs_dilation:VecAttr,stablehlo_compute_conv_rhs_dilation:VecAttr,stablehlo_compute_conv_groups:VecAttr,stablehlo_compute_conv_reversal:VecAttr,stablehlo_compute_conv_precision:VecAttr))]
 pub struct ConvolutionOp;
+
+/// Dimension and window settings for a convolution operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConvolutionOptions {
+    /// Input, kernel, and output batch, feature, and spatial axes.
+    pub dimensions: ConvDimensionNumbersAttr,
+    /// Window stride for each spatial axis.
+    pub strides: Vec<u64>,
+    /// Low/high padding pairs, flattened in spatial-axis order.
+    pub padding: Vec<i64>,
+    /// Dilation applied to the input.
+    pub lhs_dilation: Vec<u64>,
+    /// Dilation applied to the kernel.
+    pub rhs_dilation: Vec<u64>,
+    /// Number of feature groups.
+    pub feature_group_count: u64,
+    /// Number of batch groups.
+    pub batch_group_count: u64,
+    /// Whether each spatial window axis is reversed.
+    pub window_reversal: Vec<bool>,
+    /// Precision configuration for the input operands.
+    pub precision: Vec<Precision>,
+}
+
 impl ConvolutionOp {
-    #[allow(clippy::too_many_arguments)]
+    /// Creates a `stablehlo.convolution` operation with explicit options.
     pub fn new(
         ctx: &mut Context,
         lhs: Value,
         rhs: Value,
         result: TypeHandle,
-        dimensions: ConvDimensionNumbersAttr,
-        strides: Vec<u64>,
-        padding: Vec<i64>,
-        lhs_dilation: Vec<u64>,
-        rhs_dilation: Vec<u64>,
-        feature_groups: u64,
-        batch_groups: u64,
-        reversal: Vec<bool>,
-        precision: Vec<u64>,
+        options: ConvolutionOptions,
     ) -> Self {
         let op = Self {
             op: Operation::new(
@@ -515,17 +616,23 @@ impl ConvolutionOp {
                 0,
             ),
         };
-        op.set_attr_stablehlo_compute_conv_dims(ctx, dimensions);
-        op.set_attr_stablehlo_compute_conv_strides(ctx, ints(ctx, strides));
-        op.set_attr_stablehlo_compute_conv_padding(ctx, signed_list(ctx, padding));
-        op.set_attr_stablehlo_compute_conv_lhs_dilation(ctx, ints(ctx, lhs_dilation));
-        op.set_attr_stablehlo_compute_conv_rhs_dilation(ctx, ints(ctx, rhs_dilation));
-        op.set_attr_stablehlo_compute_conv_groups(ctx, ints(ctx, [feature_groups, batch_groups]));
+        op.set_attr_stablehlo_compute_conv_dims(ctx, options.dimensions);
+        op.set_attr_stablehlo_compute_conv_strides(ctx, ints(ctx, options.strides));
+        op.set_attr_stablehlo_compute_conv_padding(ctx, signed_list(ctx, options.padding));
+        op.set_attr_stablehlo_compute_conv_lhs_dilation(ctx, ints(ctx, options.lhs_dilation));
+        op.set_attr_stablehlo_compute_conv_rhs_dilation(ctx, ints(ctx, options.rhs_dilation));
+        op.set_attr_stablehlo_compute_conv_groups(
+            ctx,
+            ints(
+                ctx,
+                [options.feature_group_count, options.batch_group_count],
+            ),
+        );
         op.set_attr_stablehlo_compute_conv_reversal(
             ctx,
-            ints(ctx, reversal.into_iter().map(u64::from)),
+            ints(ctx, options.window_reversal.into_iter().map(u64::from)),
         );
-        op.set_attr_stablehlo_compute_conv_precision(ctx, ints(ctx, precision));
+        op.set_attr_stablehlo_compute_conv_precision(ctx, precision_values(ctx, options.precision));
         op
     }
 }
@@ -560,7 +667,7 @@ impl Verify for ConvolutionOp {
             read_ints(self.get_attr_stablehlo_compute_conv_rhs_dilation(ctx)),
             read_ints(self.get_attr_stablehlo_compute_conv_groups(ctx)),
             read_ints(self.get_attr_stablehlo_compute_conv_reversal(ctx)),
-            read_ints(self.get_attr_stablehlo_compute_conv_precision(ctx)),
+            read_precision_attribute(self.get_attr_stablehlo_compute_conv_precision(ctx)),
         )
         else {
             return invalid(self, ctx, "convolution window attributes missing");
@@ -623,7 +730,7 @@ impl Verify for ConvolutionOp {
             || reversal.len() != rank - 2
             || reversal.iter().any(|&x| x > 1)
             || precision.len() > 2
-            || precision.iter().any(|&x| x > 2)
+            || precision.len() > 2
             || g[0] > 1 && g[1] > 1
             || a[d.input_feature_dimension as usize] >= 0
                 && a[d.input_feature_dimension as usize] % (g[0] as i64) != 0
@@ -636,12 +743,12 @@ impl Verify for ConvolutionOp {
                 "invalid convolution dimensions, groups, precision, or window attributes",
             );
         };
-        let Some(lhs_dims) = parts(ctx, ir.get_operand(0)).map(|x| x.0) else {
+        if parts(ctx, ir.get_operand(0)).is_none() {
             return invalid(self, ctx, "convolution lhs type invalid");
-        };
-        let Some(rhs_dims) = parts(ctx, ir.get_operand(1)).map(|x| x.0) else {
+        }
+        if parts(ctx, ir.get_operand(1)).is_none() {
             return invalid(self, ctx, "convolution rhs type invalid");
-        };
+        }
         let strides_i = strides
             .iter()
             .map(|&x| i64::try_from(x).ok())
@@ -684,19 +791,39 @@ impl Verify for ConvolutionOp {
             || expected
                 .0
                 .iter()
-                .zip(&o)
+                .zip(o.iter())
                 .any(|(&x, &y)| x >= 0 && y >= 0 && x != y)
         {
             return invalid(self, ctx, "convolution result shape is invalid");
         };
-        let _ = (lhs_dims, rhs_dims);
         Ok(())
     }
 }
 
 #[pliron_op(name="stablehlo.dynamic_conv",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_dynamic_conv_dims:ConvDimensionNumbersAttr,stablehlo_compute_dynamic_conv_strides:VecAttr,stablehlo_compute_dynamic_conv_lhs_dilation:VecAttr,stablehlo_compute_dynamic_conv_rhs_dilation:VecAttr,stablehlo_compute_dynamic_conv_groups:VecAttr,stablehlo_compute_dynamic_conv_reversal:VecAttr,stablehlo_compute_dynamic_conv_precision:VecAttr))]
 pub struct DynamicConvOp;
+
+/// Optional window settings for a dynamic convolution operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynamicConvolutionOptions {
+    /// Window stride for each spatial axis.
+    pub strides: Vec<u64>,
+    /// Dilation applied to the input.
+    pub lhs_dilation: Vec<u64>,
+    /// Dilation applied to the kernel.
+    pub rhs_dilation: Vec<u64>,
+    /// Number of feature groups.
+    pub feature_group_count: u64,
+    /// Number of batch groups.
+    pub batch_group_count: u64,
+    /// Whether each spatial window axis is reversed.
+    pub window_reversal: Vec<bool>,
+    /// Precision configuration for the input operands.
+    pub precision: Vec<Precision>,
+}
+
 impl DynamicConvOp {
+    /// Creates a `stablehlo.dynamic_conv` operation with the supplied result type. Uses `lhs`, `rhs`, `padding` as operands. Configures the operation with `dimensions`.
     pub fn new(
         ctx: &mut Context,
         lhs: Value,
@@ -721,39 +848,36 @@ impl DynamicConvOp {
         op.set_attr_stablehlo_compute_dynamic_conv_rhs_dilation(ctx, ints(ctx, []));
         op.set_attr_stablehlo_compute_dynamic_conv_groups(ctx, ints(ctx, [1, 1]));
         op.set_attr_stablehlo_compute_dynamic_conv_reversal(ctx, ints(ctx, []));
-        op.set_attr_stablehlo_compute_dynamic_conv_precision(ctx, ints(ctx, []));
+        op.set_attr_stablehlo_compute_dynamic_conv_precision(ctx, precision_values(ctx, []));
         op
     }
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_window_attributes(
-        ctx: &mut Context,
-        lhs: Value,
-        rhs: Value,
-        padding: Value,
-        result: TypeHandle,
-        dimensions: ConvDimensionNumbersAttr,
-        strides: Vec<u64>,
-        lhs_dilation: Vec<u64>,
-        rhs_dilation: Vec<u64>,
-        feature_groups: u64,
-        batch_groups: u64,
-        reversal: Vec<bool>,
-        precision: Vec<u64>,
-    ) -> Self {
-        let op = Self::new(ctx, lhs, rhs, padding, result, dimensions);
-        op.set_attr_stablehlo_compute_dynamic_conv_strides(ctx, ints(ctx, strides));
-        op.set_attr_stablehlo_compute_dynamic_conv_lhs_dilation(ctx, ints(ctx, lhs_dilation));
-        op.set_attr_stablehlo_compute_dynamic_conv_rhs_dilation(ctx, ints(ctx, rhs_dilation));
-        op.set_attr_stablehlo_compute_dynamic_conv_groups(
+    /// Sets optional stride, dilation, grouping, reversal, and precision settings.
+    pub fn with_window_options(self, ctx: &Context, options: DynamicConvolutionOptions) -> Self {
+        self.set_attr_stablehlo_compute_dynamic_conv_strides(ctx, ints(ctx, options.strides));
+        self.set_attr_stablehlo_compute_dynamic_conv_lhs_dilation(
             ctx,
-            ints(ctx, [feature_groups, batch_groups]),
+            ints(ctx, options.lhs_dilation),
         );
-        op.set_attr_stablehlo_compute_dynamic_conv_reversal(
+        self.set_attr_stablehlo_compute_dynamic_conv_rhs_dilation(
             ctx,
-            ints(ctx, reversal.into_iter().map(u64::from)),
+            ints(ctx, options.rhs_dilation),
         );
-        op.set_attr_stablehlo_compute_dynamic_conv_precision(ctx, ints(ctx, precision));
-        op
+        self.set_attr_stablehlo_compute_dynamic_conv_groups(
+            ctx,
+            ints(
+                ctx,
+                [options.feature_group_count, options.batch_group_count],
+            ),
+        );
+        self.set_attr_stablehlo_compute_dynamic_conv_reversal(
+            ctx,
+            ints(ctx, options.window_reversal.into_iter().map(u64::from)),
+        );
+        self.set_attr_stablehlo_compute_dynamic_conv_precision(
+            ctx,
+            precision_values(ctx, options.precision),
+        );
+        self
     }
 }
 impl Verify for DynamicConvOp {
@@ -811,7 +935,7 @@ impl Verify for DynamicConvOp {
             read_ints(self.get_attr_stablehlo_compute_dynamic_conv_rhs_dilation(ctx)),
             read_ints(self.get_attr_stablehlo_compute_dynamic_conv_groups(ctx)),
             read_ints(self.get_attr_stablehlo_compute_dynamic_conv_reversal(ctx)),
-            read_ints(self.get_attr_stablehlo_compute_dynamic_conv_precision(ctx)),
+            read_precision_attribute(self.get_attr_stablehlo_compute_dynamic_conv_precision(ctx)),
         )
         else {
             return invalid(self, ctx, "dynamic_conv window attributes are missing");
@@ -829,7 +953,7 @@ impl Verify for DynamicConvOp {
             || !reversal.is_empty()
                 && (reversal.len() != spatial_rank || reversal.iter().any(|&value| value > 1))
             || precision.len() > 2
-            || precision.iter().any(|&value| value > 2)
+            || precision.len() > 2
             || groups.iter().any(|&value| value > i64::MAX as u64)
         {
             return invalid(
@@ -872,6 +996,7 @@ impl Verify for DynamicConvOp {
 #[pliron_op(name="stablehlo.fft",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_fft_type:FftTypeAttr,stablehlo_compute_fft_length:VecAttr))]
 pub struct FftOp;
 impl FftOp {
+    /// Creates a `stablehlo.fft` operation with the supplied result type. Uses `input` as its operand. Configures the operation with `kind`, `length`.
     pub fn new(
         ctx: &mut Context,
         input: Value,
@@ -911,7 +1036,7 @@ impl Verify for FftOp {
         ) else {
             return invalid(self, ctx, "fft attributes missing");
         };
-        if l.is_empty() || l.len() > 3 || l.len() > s.len() || l.contains(&0) || k.value > 3 {
+        if l.is_empty() || l.len() > 3 || l.len() > s.len() || l.contains(&0) {
             return invalid(self, ctx, "fft type or lengths invalid");
         };
         let Some(lengths) = l
@@ -921,14 +1046,11 @@ impl Verify for FftOp {
         else {
             return invalid(self, ctx, "fft lengths overflow");
         };
-        let Some(expected) = crate::inference::infer_fft_type(
-            ctx,
-            ir.get_operand(0).get_type(ctx),
-            (*k).clone(),
-            &lengths,
-        )
-        .ok()
-        .and_then(|ty| parts_ty(ctx, ty)) else {
+        let Some(expected) =
+            crate::inference::infer_fft_type(ctx, ir.get_operand(0).get_type(ctx), *k, &lengths)
+                .ok()
+                .and_then(|ty| parts_ty(ctx, ty))
+        else {
             return invalid(self, ctx, "fft inference failed");
         };
         if expected.0.len() != o.len()
@@ -949,6 +1071,7 @@ impl Verify for FftOp {
 #[pliron_op(name="stablehlo.cholesky",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_cholesky_lower:BoolAttr))]
 pub struct CholeskyOp;
 impl CholeskyOp {
+    /// Creates a `stablehlo.cholesky` operation with the supplied result type. Uses `input` as its operand. Configures the operation with `lower`.
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle, lower: bool) -> Self {
         let op = Self {
             op: Operation::new(
@@ -994,17 +1117,39 @@ impl Verify for CholeskyOp {
 
 #[pliron_op(name="stablehlo.triangular_solve",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_triangular_flags:VecAttr))]
 pub struct TriangularSolveOp;
+
+/// Transpose applied to the triangular matrix before solving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransposeMode {
+    /// Use the matrix as-is.
+    None,
+    /// Use the matrix transpose.
+    Transpose,
+    /// Use the conjugate transpose.
+    Adjoint,
+}
+
+/// Solve-side, triangle, diagonal, and transpose settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TriangularSolveOptions {
+    /// Solve from the left when true, or from the right when false.
+    pub left_side: bool,
+    /// Use the lower triangle when true, or the upper triangle when false.
+    pub lower: bool,
+    /// Treat the diagonal as all ones when true.
+    pub unit_diagonal: bool,
+    /// Matrix transpose mode.
+    pub transpose: TransposeMode,
+}
+
 impl TriangularSolveOp {
-    #[allow(clippy::too_many_arguments)]
+    /// Creates a `stablehlo.triangular_solve` operation with explicit options.
     pub fn new(
         ctx: &mut Context,
         a: Value,
         b: Value,
         result: TypeHandle,
-        left_side: bool,
-        lower: bool,
-        unit_diagonal: bool,
-        transpose: u64,
+        options: TriangularSolveOptions,
     ) -> Self {
         let op = Self {
             op: Operation::new(
@@ -1021,10 +1166,14 @@ impl TriangularSolveOp {
             ints(
                 ctx,
                 [
-                    left_side as u64,
-                    lower as u64,
-                    unit_diagonal as u64,
-                    transpose,
+                    u64::from(options.left_side),
+                    u64::from(options.lower),
+                    u64::from(options.unit_diagonal),
+                    match options.transpose {
+                        TransposeMode::None => 0,
+                        TransposeMode::Transpose => 1,
+                        TransposeMode::Adjoint => 2,
+                    },
                 ],
             ),
         );
@@ -1086,30 +1235,58 @@ impl Verify for TriangularSolveOp {
 
 #[pliron_op(name="stablehlo.batch_norm_inference",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_bn_options:VecAttr))]
 pub struct BatchNormInferenceOp;
+
+/// Feature-axis and epsilon settings shared by StableHLO batch normalization.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BatchNormOptions {
+    /// Axis containing the feature channels.
+    pub feature_index: u64,
+    /// Positive finite epsilon added to the variance.
+    pub epsilon: f64,
+}
+
+/// Operands to `stablehlo.batch_norm_inference`.
+pub struct BatchNormInferenceOperands {
+    /// Input tensor to normalize.
+    pub x: Value,
+    /// Per-feature scale.
+    pub scale: Value,
+    /// Per-feature offset.
+    pub offset: Value,
+    /// Per-feature estimated mean.
+    pub mean: Value,
+    /// Per-feature estimated variance.
+    pub variance: Value,
+}
+
 impl BatchNormInferenceOp {
-    #[allow(clippy::too_many_arguments)]
+    /// Creates a `stablehlo.batch_norm_inference` operation with named operands and options.
     pub fn new(
         ctx: &mut Context,
-        x: Value,
-        scale: Value,
-        offset: Value,
-        mean: Value,
-        variance: Value,
+        operands: BatchNormInferenceOperands,
         result: TypeHandle,
-        feature_index: u64,
-        epsilon_bits: u64,
+        options: BatchNormOptions,
     ) -> Self {
         let op = Self {
             op: Operation::new(
                 ctx,
                 Self::get_concrete_op_info(),
                 vec![result],
-                vec![x, scale, offset, mean, variance],
+                vec![
+                    operands.x,
+                    operands.scale,
+                    operands.offset,
+                    operands.mean,
+                    operands.variance,
+                ],
                 vec![],
                 0,
             ),
         };
-        op.set_attr_stablehlo_compute_bn_options(ctx, ints(ctx, [feature_index, epsilon_bits]));
+        op.set_attr_stablehlo_compute_bn_options(
+            ctx,
+            ints(ctx, [options.feature_index, options.epsilon.to_bits()]),
+        );
         op
     }
 }
@@ -1128,15 +1305,14 @@ impl Verify for BatchNormInferenceOp {
 #[pliron_op(name="stablehlo.batch_norm_training",format,attributes=(stablehlo_compute_bn_training_options:VecAttr))]
 pub struct BatchNormTrainingOp;
 impl BatchNormTrainingOp {
-    #[allow(clippy::too_many_arguments)]
+    /// Creates a `stablehlo.batch_norm_training` operation with explicit options.
     pub fn new(
         ctx: &mut Context,
         x: Value,
         scale: Value,
         offset: Value,
         results: Vec<TypeHandle>,
-        feature_index: u64,
-        epsilon_bits: u64,
+        options: BatchNormOptions,
     ) -> Self {
         let op = Self {
             op: Operation::new(
@@ -1150,7 +1326,7 @@ impl BatchNormTrainingOp {
         };
         op.set_attr_stablehlo_compute_bn_training_options(
             ctx,
-            ints(ctx, [feature_index, epsilon_bits]),
+            ints(ctx, [options.feature_index, options.epsilon.to_bits()]),
         );
         op
     }
@@ -1169,32 +1345,48 @@ impl Verify for BatchNormTrainingOp {
 }
 #[pliron_op(name="stablehlo.batch_norm_grad",format,attributes=(stablehlo_compute_bn_grad_options:VecAttr))]
 pub struct BatchNormGradOp;
+
+/// Operands to `stablehlo.batch_norm_grad`.
+pub struct BatchNormGradOperands {
+    /// Input tensor whose gradient is computed.
+    pub x: Value,
+    /// Per-feature scale.
+    pub scale: Value,
+    /// Per-feature estimated mean.
+    pub mean: Value,
+    /// Per-feature estimated variance.
+    pub variance: Value,
+    /// Gradient of the batch-normalization output.
+    pub grad: Value,
+}
+
 impl BatchNormGradOp {
-    #[allow(clippy::too_many_arguments)]
+    /// Creates a `stablehlo.batch_norm_grad` operation with named operands and options.
     pub fn new(
         ctx: &mut Context,
-        x: Value,
-        scale: Value,
-        mean: Value,
-        variance: Value,
-        grad: Value,
+        operands: BatchNormGradOperands,
         results: Vec<TypeHandle>,
-        feature_index: u64,
-        epsilon_bits: u64,
+        options: BatchNormOptions,
     ) -> Self {
         let op = Self {
             op: Operation::new(
                 ctx,
                 Self::get_concrete_op_info(),
                 results,
-                vec![x, scale, mean, variance, grad],
+                vec![
+                    operands.x,
+                    operands.scale,
+                    operands.mean,
+                    operands.variance,
+                    operands.grad,
+                ],
                 vec![],
                 0,
             ),
         };
         op.set_attr_stablehlo_compute_bn_grad_options(
             ctx,
-            ints(ctx, [feature_index, epsilon_bits]),
+            ints(ctx, [options.feature_index, options.epsilon.to_bits()]),
         );
         op
     }
@@ -1289,6 +1481,7 @@ fn verify_bn(
 #[pliron_op(name="stablehlo.rng",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_rng_distribution:RngDistributionAttr))]
 pub struct RngOp;
 impl RngOp {
+    /// Creates a `stablehlo.rng` operation with the supplied result type. Uses `lower`, `upper`, `shape` as operands. Configures the operation with `distribution`.
     pub fn new(
         ctx: &mut Context,
         lower: Value,
@@ -1333,14 +1526,13 @@ impl Verify for RngOp {
         else {
             return invalid(self, ctx, "rng requires ranked bounds, shape, and result");
         };
-        if distribution.value > 1
-            || le != ue
+        if le != ue
             || le != re
             || shape.len() != 1
             || shape[0] < 0
             || result.len() != shape[0] as usize
             || !crate::types::primitive_element(ctx, se).is_some_and(|e| e.is_integer())
-            || distribution.value == 1
+            || matches!(*distribution, RngDistributionAttr::Normal)
                 && !crate::types::primitive_element(ctx, re).is_some_and(|e| e.is_float())
             || lower.len() != upper.len()
             || lower
@@ -1361,6 +1553,7 @@ impl Verify for RngOp {
 #[pliron_op(name="stablehlo.rng_bit_generator",format,attributes=(stablehlo_compute_rng_bit_algorithm:RngAlgorithmAttr))]
 pub struct RngBitGeneratorOp;
 impl RngBitGeneratorOp {
+    /// Creates a `stablehlo.rng_bit_generator` operation with the supplied result types. Uses `state` as its operand. Configures the operation with `algorithm`.
     pub fn new(
         ctx: &mut Context,
         state: Value,
@@ -1410,9 +1603,11 @@ impl Verify for RngBitGeneratorOp {
             || element != state_element
             || crate::types::primitive_element(ctx, element) != Some(ElementType::Ui64)
             || crate::types::primitive_element(ctx, data_element).is_none_or(|e| !e.is_integer())
-            || algorithm.value > 2
-            || algorithm.value == 1 && state[0] >= 0 && state[0] != 2
-            || algorithm.value == 2 && state[0] >= 0 && state[0] != 2 && state[0] != 3
+            || match *algorithm {
+                RngAlgorithmAttr::Default => false,
+                RngAlgorithmAttr::ThreeFry => state[0] >= 0 && state[0] != 2,
+                RngAlgorithmAttr::Philox => state[0] >= 0 && state[0] != 2 && state[0] != 3,
+            }
         {
             return invalid(self, ctx, "rng_bit_generator state or result types invalid");
         };

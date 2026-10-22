@@ -9,6 +9,10 @@ fn ranked_parts(ctx: &Context, ty: TypeHandle) -> Option<(Vec<i64>, TypeHandle)>
     Some((tensor.dimensions.clone(), tensor.element))
 }
 
+/// Infers a tuple type containing the supplied element types in order.
+///
+/// Every element type is verified; invalid or unsupported types return an
+/// error. An empty input produces the empty tuple type.
 pub fn infer_tuple_type(ctx: &Context, operands: &[TypeHandle]) -> Result<TypeHandle> {
     for &ty in operands {
         ty.deref(ctx)
@@ -17,6 +21,10 @@ pub fn infer_tuple_type(ctx: &Context, operands: &[TypeHandle]) -> Result<TypeHa
     }
     Ok(TupleType::get(ctx, operands.to_vec()).into())
 }
+/// Returns the type at `index` in a tuple operand.
+///
+/// Negative indices, indices outside the tuple, and non-tuple operands return
+/// an error.
 pub fn infer_get_tuple_element_type(
     ctx: &Context,
     operand: TypeHandle,
@@ -31,6 +39,8 @@ pub fn infer_get_tuple_element_type(
         .and_then(|i| tuple.elements.get(i).copied())
         .ok_or_else(|| Diagnostic::InvalidDimensions.into_error())
 }
+/// Returns the operand types unchanged after checking that each is a valid
+/// StableHLO value type.
 pub fn infer_optimization_barrier_types(
     ctx: &Context,
     operands: &[TypeHandle],
@@ -38,6 +48,8 @@ pub fn infer_optimization_barrier_types(
     check_values(ctx, operands)?;
     Ok(operands.to_vec())
 }
+/// Returns the loop-carried types unchanged after validating them as value
+/// types.
 pub fn infer_while_types(ctx: &Context, operands: &[TypeHandle]) -> Result<Vec<TypeHandle>> {
     check_values(ctx, operands)?;
     Ok(operands.to_vec())
@@ -53,6 +65,11 @@ fn check_values(ctx: &Context, types: &[TypeHandle]) -> Result<()> {
     }
     Ok(())
 }
+/// Joins the result types of the true and false branches.
+///
+/// The predicate must be a scalar `i1` tensor. Each branch must return the
+/// same number of results; corresponding ranked tensors must have equal element
+/// types and compatible ranks/dimensions. Dynamic dimensions remain dynamic.
 pub fn infer_if_types(
     ctx: &Context,
     predicate: TypeHandle,
@@ -64,6 +81,10 @@ pub fn infer_if_types(
     }
     join(ctx, &[true_results, false_results])
 }
+/// Joins the result types returned by a case operation's branches.
+///
+/// The index must be a scalar `i32` tensor. Branch result counts and
+/// corresponding types must be compatible; at least one branch is required.
 pub fn infer_case_types(
     ctx: &Context,
     index: TypeHandle,
@@ -120,6 +141,9 @@ fn join(ctx: &Context, branches: &[&[TypeHandle]]) -> Result<Vec<TypeHandle>> {
     Ok(outputs)
 }
 
+/// Returns the ranked tensor operand type for a collective permute.
+///
+/// Non-ranked-tensor operands are rejected; otherwise the type is unchanged.
 pub fn infer_collective_permute_type(ctx: &Context, operand: TypeHandle) -> Result<TypeHandle> {
     if ranked_parts(ctx, operand).is_none() {
         Err(Diagnostic::UnsupportedType.into())
@@ -127,6 +151,12 @@ pub fn infer_collective_permute_type(ctx: &Context, operand: TypeHandle) -> Resu
         Ok(operand)
     }
 }
+/// Infers result types for a collective broadcast.
+///
+/// With `dynamic_root == false`, every operand is data and must be a ranked
+/// tensor. With `dynamic_root == true`, the final operand is a rank-one `i32`
+/// root-index tensor whose length equals the number of data operands; it is
+/// omitted from the returned types. At least one data operand is required.
 pub fn infer_collective_broadcast_types(
     ctx: &Context,
     operands: &[TypeHandle],
@@ -154,6 +184,12 @@ pub fn infer_collective_broadcast_types(
     Ok(data.to_vec())
 }
 
+/// Infers all-reduce results using a scalar accumulator type.
+///
+/// Each operand must be a ranked tensor. The accumulator element must support
+/// the same reduction domain: integer signedness must match and its width may
+/// not be narrower, floating-point width may not be narrower, and complex
+/// widening is limited to `C64` to `C64`/`C128` or `C128` to `C128`.
 pub fn infer_all_reduce_types(
     ctx: &Context,
     operands: &[TypeHandle],
@@ -195,6 +231,12 @@ pub fn infer_all_reduce_types(
         })
         .collect()
 }
+/// Infers a single reduce-scatter result by applying accumulator conversion
+/// followed by a scatter along `dimension`.
+///
+/// `group_size` must be positive and the known extent on that axis must divide
+/// evenly by it. Invalid axes, incompatible accumulator types, or overflow
+/// return an error.
 pub fn infer_reduce_scatter_type(
     ctx: &Context,
     operand: TypeHandle,
@@ -208,6 +250,10 @@ pub fn infer_reduce_scatter_type(
         .next()
         .ok_or_else(|| Diagnostic::UnsupportedType.into_error())
 }
+/// Infers all-gather result tensors by multiplying `dimension` by `group_size`.
+///
+/// The group size must be positive and the axis must exist. Dynamic extents
+/// remain dynamic; a known-extent multiplication that overflows is rejected.
 pub fn infer_all_gather_types(
     ctx: &Context,
     operands: &[TypeHandle],
@@ -236,6 +282,11 @@ pub fn infer_all_gather_types(
         })
         .collect()
 }
+/// Infers reduce-scatter result tensors by dividing `dimension` by
+/// `group_size`.
+///
+/// The group size must be positive, the axis must exist, and a known extent
+/// must be evenly divisible. Dynamic extents remain dynamic.
 pub fn infer_reduce_scatter_types(
     ctx: &Context,
     operands: &[TypeHandle],
@@ -267,6 +318,12 @@ pub fn infer_reduce_scatter_types(
         })
         .collect()
 }
+/// Infers all-to-all results by dividing each tensor's `split` extent and
+/// multiplying its `concat` extent by `count`.
+///
+/// `count` must be positive and both axes must be in range. A known split
+/// extent must be evenly divisible by `count`; dynamic dimensions remain
+/// dynamic and concat overflow is reported.
 pub fn infer_all_to_all_types(
     ctx: &Context,
     operands: &[TypeHandle],

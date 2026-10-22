@@ -19,6 +19,7 @@ use pliron::{
 #[pliron_op(name="stablehlo.gather",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_gather_dimension_numbers:GatherDimensionNumbersAttr,stablehlo_gather_slice_sizes:VecAttr))]
 pub struct GatherOp;
 impl GatherOp {
+    /// Creates a `stablehlo.gather` operation with the supplied result type. Uses `operand`, `indices` as operands. Configures the operation with `dimensions`, `slice_sizes`.
     pub fn new(
         ctx: &mut Context,
         operand: Value,
@@ -41,6 +42,7 @@ impl GatherOp {
         op.set_attr_stablehlo_gather_slice_sizes(ctx, vec_i64(ctx, slice_sizes));
         op
     }
+    /// Builds a `stablehlo.gather` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     pub fn new_inferred(
         ctx: &mut Context,
         operand: Value,
@@ -68,10 +70,14 @@ impl GatherOp {
             slice_sizes,
         ))
     }
-    pub fn dimensions(&self, ctx: &Context) -> Option<GatherDimensionNumbersAttr> {
+    /// Borrows the dimensions encoded by this operation, if the attribute is present and well formed.
+    pub fn dimensions<'a>(
+        &self,
+        ctx: &'a Context,
+    ) -> Option<std::cell::Ref<'a, GatherDimensionNumbersAttr>> {
         self.get_attr_stablehlo_gather_dimension_numbers(ctx)
-            .map(|x| (*x).clone())
     }
+    /// Returns the slice sizes encoded by this operation, if available.
     pub fn slice_sizes(&self, ctx: &Context) -> Option<Vec<i64>> {
         self.get_attr_stablehlo_gather_slice_sizes(ctx)
             .and_then(|x| read_i64(&x))
@@ -120,6 +126,7 @@ impl Verify for GatherOp {
 #[pliron_op(name="stablehlo.dynamic_gather",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dynamic_gather_dimension_numbers:GatherDimensionNumbersAttr))]
 pub struct DynamicGatherOp;
 impl DynamicGatherOp {
+    /// Creates a `stablehlo.dynamic_gather` operation with the supplied result type. Uses `operand`, `indices`, `slice_sizes` as operands. Configures the operation with `dimensions`.
     pub fn new(
         ctx: &mut Context,
         operand: Value,
@@ -141,10 +148,14 @@ impl DynamicGatherOp {
         op.set_attr_stablehlo_dynamic_gather_dimension_numbers(ctx, dimensions);
         op
     }
-    pub fn dimensions(&self, ctx: &Context) -> Option<GatherDimensionNumbersAttr> {
+    /// Borrows the dimensions encoded by this operation, if the attribute is present and well formed.
+    pub fn dimensions<'a>(
+        &self,
+        ctx: &'a Context,
+    ) -> Option<std::cell::Ref<'a, GatherDimensionNumbersAttr>> {
         self.get_attr_stablehlo_dynamic_gather_dimension_numbers(ctx)
-            .map(|x| (*x).clone())
     }
+    /// Builds a `stablehlo.dynamic_gather` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     pub fn new_inferred(
         ctx: &mut Context,
         operand: Value,
@@ -240,6 +251,7 @@ impl Verify for DynamicGatherOp {
 #[pliron_op(name="stablehlo.scatter",format,attributes=(stablehlo_scatter_dimension_numbers:ScatterDimensionNumbersAttr))]
 pub struct ScatterOp;
 impl ScatterOp {
+    /// Creates a `stablehlo.scatter` operation. Uses `inputs`, `indices`, `updates` as operands. Configures the operation with `dimensions`.
     pub fn new(
         ctx: &mut Context,
         inputs: Vec<Value>,
@@ -267,6 +279,7 @@ impl ScatterOp {
         op.set_attr_stablehlo_scatter_dimension_numbers(ctx, dimensions);
         op
     }
+    /// Builds a `stablehlo.scatter` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     pub fn new_inferred(
         ctx: &mut Context,
         inputs: Vec<Value>,
@@ -297,10 +310,14 @@ impl ScatterOp {
         }
         Ok(Self::new(ctx, inputs, indices, updates, dimensions))
     }
-    pub fn dimensions(&self, ctx: &Context) -> Option<ScatterDimensionNumbersAttr> {
+    /// Borrows the dimensions encoded by this operation, if the attribute is present and well formed.
+    pub fn dimensions<'a>(
+        &self,
+        ctx: &'a Context,
+    ) -> Option<std::cell::Ref<'a, ScatterDimensionNumbersAttr>> {
         self.get_attr_stablehlo_scatter_dimension_numbers(ctx)
-            .map(|x| (*x).clone())
     }
+    /// Returns the update computation region.
     pub fn update_region(&self, ctx: &Context) -> Ptr<Region> {
         self.get_operation().deref(ctx).get_region(0)
     }
@@ -373,6 +390,7 @@ impl Verify for ScatterOp {
 #[pliron_op(name="stablehlo.torch_index_select",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_torch_index_select_dimension:IntegerAttr,stablehlo_torch_index_select_batch_dims:IntegerAttr))]
 pub struct TorchIndexSelectOp;
 impl TorchIndexSelectOp {
+    /// Creates a `stablehlo.torch_index_select` operation with the supplied result type. Uses `input`, `indices` as operands. Configures the operation with `dimension`.
     pub fn new(
         ctx: &mut Context,
         input: Value,
@@ -382,6 +400,7 @@ impl TorchIndexSelectOp {
     ) -> Self {
         Self::new_with_batch_dims(ctx, input, indices, result, dimension, 0)
     }
+    /// Creates a `stablehlo.torch_index_select` operation with an explicit result type and the supplied batch-dimension configuration.
     pub fn new_with_batch_dims(
         ctx: &mut Context,
         input: Value,
@@ -410,6 +429,7 @@ impl TorchIndexSelectOp {
         );
         op
     }
+    /// Builds a `stablehlo.torch_index_select` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
     pub fn new_inferred(
         ctx: &mut Context,
         input: Value,
@@ -418,6 +438,7 @@ impl TorchIndexSelectOp {
     ) -> Result<Self> {
         Self::new_inferred_with_batch_dims(ctx, input, indices, dimension, 0)
     }
+    /// Builds a `stablehlo.torch_index_select` operation with a result type inferred from its operands and batch-dimension configuration. Returns an error if inference or builder validation fails.
     pub fn new_inferred_with_batch_dims(
         ctx: &mut Context,
         input: Value,
@@ -458,6 +479,7 @@ impl TorchIndexSelectOp {
             batch_dims,
         ))
     }
+    /// Returns the operation's dimension attribute when it is present and representable.
     pub fn dimension(&self, ctx: &Context) -> Option<usize> {
         usize::try_from(
             self.get_attr_stablehlo_torch_index_select_dimension(ctx)?
@@ -468,6 +490,7 @@ impl TorchIndexSelectOp {
         )
         .ok()
     }
+    /// Returns the configured batch dimensions.
     pub fn batch_dims(&self, ctx: &Context) -> Option<usize> {
         usize::try_from(
             self.get_attr_stablehlo_torch_index_select_batch_dims(ctx)?

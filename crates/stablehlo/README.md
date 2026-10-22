@@ -2,6 +2,13 @@
 
 `stablehlo` StableHLO dialect for [pliron](https://crates.io/crates/pliron).
 
+Public APIs are grouped under `attributes`, `types`, `integer`, `sparse`,
+`ops`, `inference` and `verification`. Dictionary keys used in explicit
+lookups are centralized in `attributes::keys`; generated operation attributes
+retain their typed accessors, and serialized attribute names are unchanged.
+Domain directories use `mod.rs` roots, and integration tests are grouped under
+matching domain directories.
+
 ## Example: `((x + y) * 2.0).exp()`
 
 This builds a rank-1 `tensor<4xf32>` function, checks each operation, and verifies the complete module:
@@ -68,4 +75,4 @@ verify_module_fast(&context, module.get_operation()).expect("valid StableHLO mod
 
 ## License
 
-See the workspace license file.
+Apache-2.0. See the `LICENSE` file distributed with this crate.

@@ -61,6 +61,11 @@ fn make_with_bounds(
     )
 }
 
+/// Reorders input dimensions according to a full axis permutation.
+///
+/// `permutation[axis]` selects the corresponding input axis for each output
+/// axis. The permutation must have the input rank, contain every axis exactly
+/// once, and preserve the element type and any dynamic-dimension bounds.
 pub fn infer_transpose(
     ctx: &Context,
     input: TypeHandle,
@@ -87,6 +92,10 @@ pub fn infer_transpose(
     }
     Ok(make_with_bounds(ctx, out, elem, out_bounds))
 }
+/// Prepends the specified nonnegative extents to the input shape.
+///
+/// The input must be a ranked tensor; its original dimensions and element type
+/// are preserved after the new leading dimensions.
 pub fn infer_broadcast(ctx: &Context, input: TypeHandle, sizes: &[i64]) -> Result<TypeHandle> {
     let (shape, elem) = tensor(ctx, input)?;
     if sizes.iter().any(|&d| d < 0) {
@@ -98,6 +107,12 @@ pub fn infer_broadcast(ctx: &Context, input: TypeHandle, sizes: &[i64]) -> Resul
         elem,
     ))
 }
+/// Infers a broadcast result with an explicit output shape and input-axis map.
+///
+/// `dimensions` maps each input axis to a distinct output axis and must have
+/// the input rank. Output extents may be dynamic (`-1`), but values below `-1`
+/// are rejected. A known input extent can map to an equal output extent or to
+/// a singleton broadcast dimension.
 pub fn infer_broadcast_in_dim(
     ctx: &Context,
     input: TypeHandle,
@@ -121,6 +136,10 @@ pub fn infer_broadcast_in_dim(
     }
     Ok(make(ctx, result_shape.to_vec(), elem))
 }
+/// Infers a reshape to a fully static `result_shape`.
+///
+/// The input must have only known extents and both shapes must contain no
+/// negative dimensions. Their element counts must match without overflow.
 pub fn infer_reshape(ctx: &Context, input: TypeHandle, result_shape: &[i64]) -> Result<TypeHandle> {
     let (src, elem) = tensor(ctx, input)?;
     if result_shape.iter().any(|&d| d < -1)
@@ -145,6 +164,12 @@ pub fn infer_reshape(ctx: &Context, input: TypeHandle, result_shape: &[i64]) -> 
     }
     Ok(make(ctx, result_shape.to_vec(), elem))
 }
+/// Infers a static slice using per-axis start, exclusive limit, and stride.
+///
+/// All three lists must match the input rank. Starts must be nonnegative,
+/// limits must not precede starts or exceed known/bounded input extents, and
+/// strides must be positive. Output extents are the ceiling of
+/// `(limit - start) / stride`.
 pub fn infer_slice(
     ctx: &Context,
     input: TypeHandle,
@@ -168,6 +193,10 @@ pub fn infer_slice(
     }
     Ok(make(ctx, out, elem))
 }
+/// Infers a dynamic slice with fixed output `sizes`.
+///
+/// The size list must match the input rank, contain only nonnegative extents,
+/// and not exceed any known or bounded input extent.
 pub fn infer_dynamic_slice(ctx: &Context, input: TypeHandle, sizes: &[i64]) -> Result<TypeHandle> {
     let (shape, elem) = tensor(ctx, input)?;
     if sizes.len() != shape.len()
@@ -180,6 +209,10 @@ pub fn infer_dynamic_slice(ctx: &Context, input: TypeHandle, sizes: &[i64]) -> R
     }
     Ok(make(ctx, sizes.to_vec(), elem))
 }
+/// Validates a dynamic-update-slice pair and returns the input type.
+///
+/// Input and update must have equal element types and ranks. Update extents
+/// must fit within known or bounded input dimensions.
 pub fn infer_dynamic_update_slice(
     ctx: &Context,
     input: TypeHandle,
@@ -200,6 +233,9 @@ pub fn infer_dynamic_update_slice(
     }
     Ok(input)
 }
+/// Validates the axes to reverse and returns the input type unchanged.
+///
+/// Every axis must be within the input rank and may appear only once.
 pub fn infer_reverse(ctx: &Context, input: TypeHandle, axes: &[usize]) -> Result<TypeHandle> {
     let (shape, _) = tensor(ctx, input)?;
     let mut seen = vec![false; shape.len()];
@@ -211,6 +247,12 @@ pub fn infer_reverse(ctx: &Context, input: TypeHandle, axes: &[usize]) -> Result
     }
     Ok(input)
 }
+/// Infers the concatenated shape for one or more ranked input tensors.
+///
+/// All tensors must have the same rank and element type and compatible
+/// non-concatenated dimensions. The selected axis must be in range; its known
+/// extents are added, while dynamic extents remain dynamic with a combined
+/// bound when available.
 pub fn infer_concatenate(
     ctx: &Context,
     inputs: &[TypeHandle],
@@ -288,6 +330,12 @@ pub fn infer_concatenate(
     Ok(make_with_bounds(ctx, output, element, upper))
 }
 
+/// Infers a padded tensor shape from low, high, and interior padding per axis.
+///
+/// The padding value must be a scalar with the input element type, and all
+/// padding lists must match input rank. Interior padding must be nonnegative;
+/// the computed dimensions must remain nonnegative and representable. Dynamic
+/// input dimensions retain dynamic shape with an updated bound where possible.
 pub fn infer_pad(
     ctx: &Context,
     input: TypeHandle,
@@ -337,6 +385,9 @@ pub fn infer_pad(
     Ok(make_with_bounds(ctx, out, elem, out_bounds))
 }
 
+/// Type-oriented alias for [`infer_transpose`].
+///
+/// Applies the same full-permutation and ranked-tensor validation.
 pub fn infer_transpose_type(
     ctx: &Context,
     input: TypeHandle,
@@ -344,12 +395,20 @@ pub fn infer_transpose_type(
 ) -> Result<TypeHandle> {
     infer_transpose(ctx, input, permutation)
 }
+/// Type-oriented alias for [`infer_broadcast`].
+///
+/// The supplied sizes are nonnegative extents prepended to the ranked input.
 pub fn infer_broadcast_type(ctx: &Context, input: TypeHandle, sizes: &[i64]) -> Result<TypeHandle> {
     infer_broadcast(ctx, input, sizes)
 }
+/// Type-oriented alias for [`infer_reverse`], validating unique in-range axes.
 pub fn infer_reverse_type(ctx: &Context, input: TypeHandle, axes: &[usize]) -> Result<TypeHandle> {
     infer_reverse(ctx, input, axes)
 }
+/// Type-oriented alias for [`infer_slice`].
+///
+/// Starts, exclusive limits, and positive strides must each match the input
+/// rank and stay within known or bounded dimensions.
 pub fn infer_slice_type(
     ctx: &Context,
     input: TypeHandle,
@@ -359,6 +418,10 @@ pub fn infer_slice_type(
 ) -> Result<TypeHandle> {
     infer_slice(ctx, input, starts, limits, strides)
 }
+/// Type-oriented alias for [`infer_dynamic_slice`].
+///
+/// Returns a tensor with the requested nonnegative sizes, subject to input
+/// rank and dimension bounds.
 pub fn infer_dynamic_slice_type(
     ctx: &Context,
     input: TypeHandle,
@@ -366,6 +429,10 @@ pub fn infer_dynamic_slice_type(
 ) -> Result<TypeHandle> {
     infer_dynamic_slice(ctx, input, sizes)
 }
+/// Type-oriented alias for [`infer_dynamic_update_slice`].
+///
+/// Returns the input type after validating update element type, rank, and
+/// extents.
 pub fn infer_dynamic_update_slice_type(
     ctx: &Context,
     input: TypeHandle,
@@ -373,6 +440,9 @@ pub fn infer_dynamic_update_slice_type(
 ) -> Result<TypeHandle> {
     infer_dynamic_update_slice(ctx, input, update)
 }
+/// Type-oriented alias for [`infer_concatenate`].
+///
+/// Returns one inferred result type for the compatible input tensors.
 pub fn infer_concatenate_type(
     ctx: &Context,
     inputs: &[TypeHandle],
@@ -380,6 +450,10 @@ pub fn infer_concatenate_type(
 ) -> Result<TypeHandle> {
     infer_concatenate(ctx, inputs, dimension)
 }
+/// Type-oriented alias for [`infer_pad`].
+///
+/// Validates a scalar padding value and per-axis padding lists before
+/// returning the result type.
 pub fn infer_pad_type(
     ctx: &Context,
     input: TypeHandle,
@@ -390,6 +464,11 @@ pub fn infer_pad_type(
 ) -> Result<TypeHandle> {
     infer_pad(ctx, input, padding, low, high, interior)
 }
+/// Infers a reshape whose output rank is specified by a rank-one shape tensor.
+///
+/// The shape tensor must have a statically known, nonnegative length. Its
+/// element values are not available here, so every output dimension is
+/// represented as dynamic (`-1`); the input element type is preserved.
 pub fn infer_dynamic_reshape_type(
     ctx: &Context,
     input: TypeHandle,
@@ -406,6 +485,10 @@ pub fn infer_dynamic_reshape_type(
         elem,
     ))
 }
+/// Infers a dynamic-slice result with unknown extents and the input rank.
+///
+/// Start, limit, and stride tensors must each have shape `[input_rank]`. The
+/// result preserves the input element type and has dynamic (`-1`) dimensions.
 pub fn infer_real_dynamic_slice_type(
     ctx: &Context,
     input: TypeHandle,
@@ -422,6 +505,10 @@ pub fn infer_real_dynamic_slice_type(
     }
     Ok(make(ctx, vec![-1; shape.len()], elem))
 }
+/// Infers the result of dynamic padding with unknown output extents.
+///
+/// The padding operand must be a scalar tensor with the input element type.
+/// The result has the input rank and element type, with every extent dynamic.
 pub fn infer_dynamic_pad_type(
     ctx: &Context,
     input: TypeHandle,
@@ -434,6 +521,11 @@ pub fn infer_dynamic_pad_type(
     }
     Ok(make(ctx, vec![-1; shape.len()], elem))
 }
+/// Infers a dynamic broadcast result from an output-dimensions tensor.
+///
+/// `output_dimensions` must be a rank-one tensor whose length is statically
+/// known. `dimensions` must map every input axis to an in-range output axis.
+/// Since dimension values are runtime data, all output extents are dynamic.
 pub fn infer_dynamic_broadcast_in_dim_type(
     ctx: &Context,
     input: TypeHandle,
@@ -451,6 +543,9 @@ pub fn infer_dynamic_broadcast_in_dim_type(
     }
     Ok(make(ctx, vec![-1; output[0] as usize], elem))
 }
+/// Infers the scalar `i32` result type of querying one tensor dimension.
+///
+/// Returns an error when `dimension` is outside the ranked input.
 pub fn infer_get_dimension_size_type(
     ctx: &Context,
     input: TypeHandle,
@@ -462,6 +557,11 @@ pub fn infer_get_dimension_size_type(
     }
     Ok(TensorType::scalar(ctx, crate::types::ElementType::I32))
 }
+/// Infers a set-dimension-size result, making the selected extent dynamic.
+///
+/// The size operand must be a scalar `i32` tensor and `dimension` must be in
+/// range. The input's element type and other dimensions are preserved, along
+/// with a known bound on the updated dimension when present.
 pub fn infer_set_dimension_size_type(
     ctx: &Context,
     input: TypeHandle,
@@ -482,6 +582,14 @@ pub fn infer_set_dimension_size_type(
     Ok(make_with_bounds(ctx, shape, elem, bounds))
 }
 
+/// Infers the result shape of a gather from operand, index, and dimension
+/// metadata.
+///
+/// Slice sizes must match operand rank and fit its dimensions. Index-vector,
+/// batching, collapsed-slice, offset, and start-index-map axes must satisfy
+/// their rank, uniqueness, sorting, and compatibility constraints. The result
+/// combines index batch extents with the non-collapsed slice extents and keeps
+/// the operand element type.
 pub fn infer_gather_type(
     ctx: &Context,
     operand: TypeHandle,
@@ -586,6 +694,12 @@ pub fn infer_gather_type(
     }
     Ok(make_with_bounds(ctx, out, elem, out_bounds))
 }
+/// Infers a dynamic gather result from a rank-one runtime slice-size tensor.
+///
+/// The slice-size tensor length must equal operand rank and its element type
+/// must be integer. Gather metadata and indices are validated as by
+/// [`infer_gather_type`]; the result extents are dynamic, except that known
+/// index-batch bounds are retained.
 pub fn infer_dynamic_gather_type(
     ctx: &Context,
     operand: TypeHandle,
@@ -634,6 +748,11 @@ pub fn infer_dynamic_gather_type(
     Ok(make_with_bounds(ctx, vec![-1; rank], element, bounds))
 }
 
+/// Validates scatter operand/update pairing and returns the operand types.
+///
+/// At least one operand is required, the update count must match, and
+/// `index_vector_dim` must be nonnegative. This helper does not infer or
+/// validate detailed tensor-shape relationships.
 pub fn infer_scatter_types(
     inputs: &[TypeHandle],
     _indices: TypeHandle,

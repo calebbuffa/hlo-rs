@@ -9,12 +9,19 @@ use pliron::{location::Location, verify_err};
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct QuantizedElementType {
+    /// Integer storage type for the quantized representation.
     pub storage: TypeHandle,
+    /// Floating-point type in which the represented values are interpreted.
     pub expressed: TypeHandle,
+    /// Quantization axis, or `-1` for per-tensor parameters.
     pub axis: i64,
+    /// Optional inclusive storage minimum, represented as zero or one value.
     pub storage_min: Vec<Signed128Attr>,
+    /// Optional inclusive storage maximum, represented as zero or one value.
     pub storage_max: Vec<Signed128Attr>,
+    /// Exact floating-point bit patterns of per-tensor or per-axis scales.
     pub scale_bits: Vec<u64>,
+    /// Signed integer zero points paired with the scale factors.
     pub zero_points: Vec<Signed128Attr>,
 }
 /// Parameter data for an interned uniform quantized element type.
@@ -108,27 +115,34 @@ impl QuantizedElementType {
         )
         .into()
     }
+    /// Returns the primitive integer storage type, when recognized.
     pub fn storage_type(&self, ctx: &Context) -> Option<ElementType> {
         primitive_element(ctx, self.storage)
     }
+    /// Returns the primitive floating-point expressed type, when recognized.
     pub fn expressed_type(&self, ctx: &Context) -> Option<ElementType> {
         primitive_element(ctx, self.expressed)
     }
+    /// Returns explicit inclusive storage bounds; absent bounds use the storage defaults.
     pub fn storage_range(&self) -> (Option<i128>, Option<i128>) {
         (
             self.storage_min.first().copied().map(Signed128Attr::value),
             self.storage_max.first().copied().map(Signed128Attr::value),
         )
     }
+    /// Returns the per-axis quantization dimension, or `None` for per-tensor quantization.
     pub fn quantization_dimension(&self) -> Option<usize> {
         usize::try_from(self.axis).ok()
     }
+    /// Iterates scale factors decoded from their exact floating-point bit patterns.
     pub fn scales(&self) -> impl ExactSizeIterator<Item = f64> + '_ {
         self.scale_bits.iter().copied().map(f64::from_bits)
     }
+    /// Iterates quantized zero points as signed integers.
     pub fn zero_points(&self) -> impl ExactSizeIterator<Item = i128> + '_ {
         self.zero_points.iter().copied().map(Signed128Attr::value)
     }
+    /// Returns whether every zero point lies inside the effective storage range.
     pub fn zero_points_fit_storage(&self, ctx: &Context) -> bool {
         let Some((minimum, maximum)) = self.storage_type(ctx).and_then(storage_bounds) else {
             return false;

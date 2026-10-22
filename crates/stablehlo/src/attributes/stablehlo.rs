@@ -8,10 +8,15 @@ use pliron::{location::Location, verify_err};
     format = "`<` `[` vec($lhs_batching_dimensions, CharSpace(`,`)) `]` `,` `[` vec($rhs_batching_dimensions, CharSpace(`,`)) `]` `,` `[` vec($lhs_contracting_dimensions, CharSpace(`,`)) `]` `,` `[` vec($rhs_contracting_dimensions, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Dimension selections that define dot batching and contracting axes.
 pub struct DotDimensionNumbersAttr {
+    /// Batch dimensions selected from the left-hand operand.
     pub lhs_batching_dimensions: Vec<i64>,
+    /// Batch dimensions selected from the right-hand operand.
     pub rhs_batching_dimensions: Vec<i64>,
+    /// Contracting dimensions selected from the left-hand operand.
     pub lhs_contracting_dimensions: Vec<i64>,
+    /// Contracting dimensions selected from the right-hand operand.
     pub rhs_contracting_dimensions: Vec<i64>,
 }
 impl Verify for DotDimensionNumbersAttr {
@@ -39,12 +44,19 @@ impl Verify for DotDimensionNumbersAttr {
     format = "`<` `[` vec($offset_dims, CharSpace(`,`)) `]` `,` `[` vec($collapsed_slice_dims, CharSpace(`,`)) `]` `,` `[` vec($operand_batching_dims, CharSpace(`,`)) `]` `,` `[` vec($start_indices_batching_dims, CharSpace(`,`)) `]` `,` `[` vec($start_index_map, CharSpace(`,`)) `]` `,` $index_vector_dim `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Dimension selections that define how gather indices address an operand.
 pub struct GatherDimensionNumbersAttr {
+    /// Result dimensions occupied by operand window dimensions.
     pub offset_dims: Vec<i64>,
+    /// Operand dimensions removed because each slice has extent one.
     pub collapsed_slice_dims: Vec<i64>,
+    /// Operand dimensions paired with start-index batch dimensions.
     pub operand_batching_dims: Vec<i64>,
+    /// Start-indices dimensions paired with operand batch dimensions.
     pub start_indices_batching_dims: Vec<i64>,
+    /// Operand dimensions addressed by entries of the index vector.
     pub start_index_map: Vec<i64>,
+    /// Dimension of `start_indices` containing index-vector entries.
     pub index_vector_dim: i64,
 }
 impl Verify for GatherDimensionNumbersAttr {
@@ -74,12 +86,19 @@ impl Verify for GatherDimensionNumbersAttr {
     format = "`<` `[` vec($update_window_dims, CharSpace(`,`)) `]` `,` `[` vec($inserted_window_dims, CharSpace(`,`)) `]` `,` `[` vec($input_batching_dims, CharSpace(`,`)) `]` `,` `[` vec($scatter_indices_batching_dims, CharSpace(`,`)) `]` `,` `[` vec($scatter_dims_to_operand_dims, CharSpace(`,`)) `]` `,` $index_vector_dim `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Dimension selections that define scatter update and index mappings.
 pub struct ScatterDimensionNumbersAttr {
+    /// Update dimensions that correspond to operand window dimensions.
     pub update_window_dims: Vec<i64>,
+    /// Operand dimensions inserted as size-one windows.
     pub inserted_window_dims: Vec<i64>,
+    /// Input dimensions paired with scatter-index batch dimensions.
     pub input_batching_dims: Vec<i64>,
+    /// Scatter-index dimensions paired with input batch dimensions.
     pub scatter_indices_batching_dims: Vec<i64>,
+    /// Operand dimensions addressed by scatter-index vector entries.
     pub scatter_dims_to_operand_dims: Vec<i64>,
+    /// Dimension of `scatter_indices` containing index-vector entries.
     pub index_vector_dim: i64,
 }
 impl Verify for ScatterDimensionNumbersAttr {
@@ -109,15 +128,25 @@ impl Verify for ScatterDimensionNumbersAttr {
     format = "`<` $input_batch_dimension `,` $input_feature_dimension `,` `[` vec($input_spatial_dimensions, CharSpace(`,`)) `]` `,` $kernel_input_feature_dimension `,` $kernel_output_feature_dimension `,` `[` vec($kernel_spatial_dimensions, CharSpace(`,`)) `]` `,` $output_batch_dimension `,` $output_feature_dimension `,` `[` vec($output_spatial_dimensions, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Input, kernel, and output axis positions for a convolution.
 pub struct ConvDimensionNumbersAttr {
+    /// Batch dimension of the convolution input.
     pub input_batch_dimension: i64,
+    /// Feature/channel dimension of the convolution input.
     pub input_feature_dimension: i64,
+    /// Spatial dimensions of the convolution input.
     pub input_spatial_dimensions: Vec<i64>,
+    /// Input-feature dimension of the convolution kernel.
     pub kernel_input_feature_dimension: i64,
+    /// Output-feature dimension of the convolution kernel.
     pub kernel_output_feature_dimension: i64,
+    /// Spatial dimensions of the convolution kernel.
     pub kernel_spatial_dimensions: Vec<i64>,
+    /// Batch dimension of the convolution result.
     pub output_batch_dimension: i64,
+    /// Feature/channel dimension of the convolution result.
     pub output_feature_dimension: i64,
+    /// Spatial dimensions of the convolution result.
     pub output_spatial_dimensions: Vec<i64>,
 }
 impl Verify for ConvDimensionNumbersAttr {
@@ -150,13 +179,21 @@ impl Verify for ConvDimensionNumbersAttr {
     format = "`<` $lhs_precision_type `,` $rhs_precision_type `,` $accumulation_type `,` $lhs_component_count `,` $rhs_component_count `,` $num_primitive_operations `,` $allow_imprecise_accumulation `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Operand formats and operation counts for a dot algorithm.
 pub struct DotAlgorithmAttr {
+    /// Element type used to interpret the left-hand operand precision.
     pub lhs_precision_type: TypeHandle,
+    /// Element type used to interpret the right-hand operand precision.
     pub rhs_precision_type: TypeHandle,
+    /// Element type used for accumulation.
     pub accumulation_type: TypeHandle,
+    /// Number of components used to represent each left-hand value.
     pub lhs_component_count: i64,
+    /// Number of components used to represent each right-hand value.
     pub rhs_component_count: i64,
+    /// Number of primitive operations in the algorithm.
     pub num_primitive_operations: i64,
+    /// Whether accumulation may use reduced precision.
     pub allow_imprecise_accumulation: bool,
 }
 impl Verify for DotAlgorithmAttr {
@@ -198,9 +235,13 @@ impl Verify for DotAlgorithmAttr {
     format = "`<` `[` vec($output_tuple_indices, CharSpace(`,`)) `]` `,` $operand_index `,` `[` vec($operand_tuple_indices, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Identifies an output value that aliases storage from an operand.
 pub struct OutputOperandAliasAttr {
+    /// Path through nested result tuples to the aliased output.
     pub output_tuple_indices: Vec<i64>,
+    /// Zero-based operand number providing the aliased storage.
     pub operand_index: i64,
+    /// Path through nested operand tuples to the aliased value.
     pub operand_tuple_indices: Vec<i64>,
 }
 impl Verify for OutputOperandAliasAttr {
@@ -222,14 +263,30 @@ impl Verify for OutputOperandAliasAttr {
     }
 }
 
+#[pliron_attr(name = "stablehlo.channel_type", format, verifier = "succ")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(i64)]
+/// Direction of communication for a StableHLO channel.
+pub enum ChannelType {
+    /// Send data between devices.
+    DeviceToDevice = 1,
+    /// Send data from a device to the host.
+    DeviceToHost = 2,
+    /// Receive data from the host to a device.
+    HostToDevice = 3,
+}
+
 #[pliron_attr(
     name = "stablehlo.channel_handle",
     format = "`<` $handle `,` $channel_type `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Identifier and category of a communication channel.
 pub struct ChannelHandleAttr {
+    /// Identifier of the communication channel.
     pub handle: i64,
-    pub channel_type: i64,
+    /// Channel category used by the operation.
+    pub channel_type: ChannelType,
 }
 impl Verify for ChannelHandleAttr {
     fn verify(&self, ctx: &Context) -> Result<()> {
@@ -243,7 +300,9 @@ impl Verify for ChannelHandleAttr {
     format = "`<` `[` vec($bounds, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Optional per-dimension bounds for tensor type extensions.
 pub struct TypeExtensionsAttr {
+    /// Per-dimension bounds; `-1` represents an unspecified bound.
     pub bounds: Vec<i64>,
 }
 impl Verify for TypeExtensionsAttr {
@@ -267,35 +326,39 @@ impl Verify for TypeExtensionsAttr {
     format = "`<` $atol_bits `,` $rtol_bits `,` $ulps `,` $mode `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Absolute, relative, and ULP tolerances for result comparison.
 pub struct ResultAccuracyAttr {
+    /// Exact `f64` bits of the absolute error tolerance.
     pub atol_bits: u64,
+    /// Exact `f64` bits of the relative error tolerance.
     pub rtol_bits: u64,
+    /// Maximum permitted error in units in the last place.
     pub ulps: i64,
-    pub mode: u8,
+    /// Policy for interpreting the supplied tolerances.
+    pub mode: ResultAccuracyMode,
 }
 impl ResultAccuracyAttr {
+    /// Encodes tolerances and mode in the native representation.
     pub fn new(atol: f64, rtol: f64, ulps: i64, mode: ResultAccuracyMode) -> Self {
         Self {
             atol_bits: atol.to_bits(),
             rtol_bits: rtol.to_bits(),
             ulps,
-            mode: mode as u8,
+            mode,
         }
     }
+    /// Decodes the absolute tolerance from its stored bit pattern.
     pub fn atol(&self) -> f64 {
         f64::from_bits(self.atol_bits)
     }
+    /// Decodes the relative tolerance from its stored bit pattern.
     pub fn rtol(&self) -> f64 {
         f64::from_bits(self.rtol_bits)
     }
 }
 impl Verify for ResultAccuracyAttr {
     fn verify(&self, _: &Context) -> Result<()> {
-        if self.atol().is_sign_negative()
-            || self.rtol().is_sign_negative()
-            || self.ulps < 0
-            || self.mode > 2
-        {
+        if self.atol().is_sign_negative() || self.rtol().is_sign_negative() || self.ulps < 0 {
             return verify_err!(
                 Location::Unknown,
                 crate::Diagnostic::InvalidAttribute {
@@ -304,7 +367,9 @@ impl Verify for ResultAccuracyAttr {
                 }
             );
         }
-        if self.mode < 2 && (self.atol() != 0.0 || self.rtol() != 0.0 || self.ulps != 0) {
+        if self.mode != ResultAccuracyMode::Tolerance
+            && (self.atol() != 0.0 || self.rtol() != 0.0 || self.ulps != 0)
+        {
             return verify_err!(
                 Location::Unknown,
                 crate::Diagnostic::InvalidAttribute {
@@ -322,8 +387,11 @@ impl Verify for ResultAccuracyAttr {
     format = "`<` $pre_size `,` $size `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Size metadata selecting a sub-axis within a mesh axis.
 pub struct SubAxisInfoAttr {
+    /// Size of the enclosing axis before this sub-axis.
     pub pre_size: i64,
+    /// Extent of this sub-axis.
     pub size: i64,
 }
 impl Verify for SubAxisInfoAttr {
@@ -347,8 +415,11 @@ impl Verify for SubAxisInfoAttr {
     format = "`<` $name `,` `[` vec($sub_axis_info, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Reference to a mesh axis, optionally narrowed to a sub-axis.
 pub struct AxisRefAttr {
+    /// Name of the referenced mesh axis.
     pub name: StringAttr,
+    /// Optional single sub-axis selection.
     pub sub_axis_info: Vec<SubAxisInfoAttr>,
 }
 impl Verify for AxisRefAttr {
@@ -369,8 +440,11 @@ impl Verify for AxisRefAttr {
 
 #[pliron_attr(name = "stablehlo.mesh_axis", format = "`<` $name `,` $size `>`")]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Named axis and its positive extent in a device mesh.
 pub struct MeshAxisAttr {
+    /// Unique name of this mesh axis.
     pub name: StringAttr,
+    /// Positive number of devices along this axis.
     pub size: i64,
 }
 impl Verify for MeshAxisAttr {
@@ -391,8 +465,11 @@ impl Verify for MeshAxisAttr {
     format = "`<` `[` vec($axes, CharSpace(`,`)) `]` `,` `[` vec($device_ids, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Mesh topology and optional device identifier assignment.
 pub struct MeshAttr {
+    /// Mesh axes, each with a unique name and positive extent.
     pub axes: Vec<MeshAxisAttr>,
+    /// Optional device-id array describing the device assignment.
     pub device_ids: Vec<IndexTensorAttr>,
 }
 impl Verify for MeshAttr {
@@ -422,8 +499,11 @@ impl Verify for MeshAttr {
     format = "`<` $mesh `,` `[` vec($axes, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Mesh reference paired with the axes used to form replica groups.
 pub struct ReplicaGroupMeshAxesAttr {
+    /// Inline or symbolic mesh referenced by these axes.
     pub mesh: MeshReferenceAttr,
+    /// Axes whose products determine replica-group membership.
     pub axes: Vec<AxisRefAttr>,
 }
 impl Verify for ReplicaGroupMeshAxesAttr {
@@ -452,7 +532,9 @@ impl Verify for ReplicaGroupMeshAxesAttr {
     format = "`<` `[` vec($values, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Flattened nonnegative device or coordinate indices.
 pub struct IndexTensorAttr {
+    /// Nonnegative flattened coordinate values.
     pub values: Vec<i64>,
 }
 impl Verify for IndexTensorAttr {
@@ -476,7 +558,9 @@ impl Verify for IndexTensorAttr {
     format = "`<` `[` vec($minor_to_major, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Dimension order describing a ranked tensor layout.
 pub struct LayoutAttr {
+    /// Dimension order from minor (fastest varying) to major.
     pub minor_to_major: Vec<i64>,
 }
 impl Verify for LayoutAttr {
@@ -500,7 +584,9 @@ impl Verify for LayoutAttr {
     format = "`<` `[` vec($layouts, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Ordered collection of layout descriptors.
 pub struct ArrayOfLayoutAttr {
+    /// Layout descriptors in array order.
     pub layouts: Vec<LayoutAttr>,
 }
 impl Verify for ArrayOfLayoutAttr {
@@ -518,7 +604,9 @@ impl Verify for ArrayOfLayoutAttr {
     format = "`<` `[` vec($tiles, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Tile sizes for a tiled operation configuration.
 pub struct TilingAttr {
+    /// Tile sizes represented as index tensors.
     pub tiles: Vec<IndexTensorAttr>,
 }
 impl Verify for TilingAttr {
@@ -536,7 +624,9 @@ impl Verify for TilingAttr {
     format = "`<` `[` vec($tilings, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Ordered collection of tiling descriptors.
 pub struct ArrayOfTilingAttr {
+    /// Tiling descriptors in array order.
     pub tilings: Vec<TilingAttr>,
 }
 impl Verify for ArrayOfTilingAttr {
@@ -549,144 +639,18 @@ impl Verify for ArrayOfTilingAttr {
     }
 }
 
-#[pliron_attr(name = "stablehlo.precision", format = "`<` $value `>`")]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct PrecisionAttr {
-    pub value: u8,
-}
-impl Verify for PrecisionAttr {
-    fn verify(&self, _: &Context) -> Result<()> {
-        if self.value > 2 {
-            return verify_err!(
-                Location::Unknown,
-                crate::Diagnostic::InvalidAttribute {
-                    attribute: "StableHLO attribute",
-                    reason: "invalid precision enumeration"
-                }
-            );
-        }
-        Ok(())
-    }
-}
-
-#[pliron_attr(name = "stablehlo.comparison_direction", format = "`<` $value `>`")]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ComparisonDirectionAttr {
-    pub value: u8,
-}
-impl Verify for ComparisonDirectionAttr {
-    fn verify(&self, _: &Context) -> Result<()> {
-        if self.value > 5 {
-            return verify_err!(
-                Location::Unknown,
-                crate::Diagnostic::InvalidAttribute {
-                    attribute: "StableHLO attribute",
-                    reason: "invalid comparison_direction enumeration"
-                }
-            );
-        }
-        Ok(())
-    }
-}
-
-#[pliron_attr(name = "stablehlo.comparison_type", format = "`<` $value `>`")]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ComparisonTypeAttr {
-    pub value: u8,
-}
-impl Verify for ComparisonTypeAttr {
-    fn verify(&self, _: &Context) -> Result<()> {
-        if self.value > 5 {
-            return verify_err!(
-                Location::Unknown,
-                crate::Diagnostic::InvalidAttribute {
-                    attribute: "StableHLO attribute",
-                    reason: "invalid comparison_type enumeration"
-                }
-            );
-        }
-        Ok(())
-    }
-}
-
-#[pliron_attr(name = "stablehlo.fft_type", format = "`<` $value `>`")]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct FftTypeAttr {
-    pub value: u8,
-}
-impl Verify for FftTypeAttr {
-    fn verify(&self, _: &Context) -> Result<()> {
-        if self.value > 3 {
-            return verify_err!(
-                Location::Unknown,
-                crate::Diagnostic::InvalidAttribute {
-                    attribute: "StableHLO attribute",
-                    reason: "invalid fft_type enumeration"
-                }
-            );
-        }
-        Ok(())
-    }
-}
-
-#[pliron_attr(name = "stablehlo.rng_algorithm", format = "`<` $value `>`")]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct RngAlgorithmAttr {
-    pub value: u8,
-}
-impl Verify for RngAlgorithmAttr {
-    fn verify(&self, _: &Context) -> Result<()> {
-        if self.value > 2 {
-            return verify_err!(
-                Location::Unknown,
-                crate::Diagnostic::InvalidAttribute {
-                    attribute: "StableHLO attribute",
-                    reason: "invalid rng_algorithm enumeration"
-                }
-            );
-        }
-        Ok(())
-    }
-}
-
-#[pliron_attr(name = "stablehlo.rng_distribution", format = "`<` $value `>`")]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct RngDistributionAttr {
-    pub value: u8,
-}
-impl Verify for RngDistributionAttr {
-    fn verify(&self, _: &Context) -> Result<()> {
-        if self.value > 1 {
-            return verify_err!(
-                Location::Unknown,
-                crate::Diagnostic::InvalidAttribute {
-                    attribute: "StableHLO attribute",
-                    reason: "invalid rng_distribution enumeration"
-                }
-            );
-        }
-        Ok(())
-    }
-}
-
-#[pliron_attr(name = "stablehlo.result_accuracy_mode", format = "`<` $value `>`")]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ResultAccuracyModeAttr {
-    pub value: u8,
-}
-impl Verify for ResultAccuracyModeAttr {
-    fn verify(&self, _: &Context) -> Result<()> {
-        if self.value > 2 {
-            return verify_err!(
-                Location::Unknown,
-                crate::Diagnostic::InvalidAttribute {
-                    attribute: "StableHLO attribute",
-                    reason: "invalid result_accuracy_mode enumeration"
-                }
-            );
-        }
-        Ok(())
-    }
+#[pliron_attr(name = "stablehlo.fft_type", format, verifier = "succ")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Fourier transform kind used by StableHLO FFT operations.
+pub enum FftTypeAttr {
+    /// Complex-to-complex forward transform.
+    Fft,
+    /// Complex-to-complex inverse transform.
+    Ifft,
+    /// Real-to-complex forward transform.
+    Rfft,
+    /// Complex-to-real inverse transform.
+    Irfft,
 }
 
 #[pliron_attr(
@@ -694,8 +658,11 @@ impl Verify for ResultAccuracyModeAttr {
     format = "`<` `[` vec($inline, CharSpace(`,`)) `]` `,` `[` vec($symbol, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Either an inline device mesh or a symbolic mesh path.
 pub struct MeshReferenceAttr {
+    /// Inline mesh form; valid references contain exactly one inline mesh or symbol.
     pub inline: Vec<MeshAttr>,
+    /// Symbolic mesh path; valid references contain exactly one inline mesh or symbol.
     pub symbol: Vec<StringAttr>,
 }
 impl Verify for MeshReferenceAttr {
@@ -717,54 +684,89 @@ impl Verify for MeshReferenceAttr {
         Ok(())
     }
 }
+#[pliron_attr(name = "stablehlo.precision", format, verifier = "succ")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
+/// Precision preference for floating-point operations.
 pub enum Precision {
+    /// Use the operation's default precision.
     Default,
+    /// Request high precision.
     High,
+    /// Request the highest supported precision.
     Highest,
 }
+#[pliron_attr(name = "stablehlo.result_accuracy_mode", format, verifier = "succ")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
+/// Policy for interpreting result-accuracy tolerances.
 pub enum ResultAccuracyMode {
+    /// Use the default accuracy policy, with zero explicit tolerances.
     Default,
+    /// Request highest accuracy, with zero explicit tolerances.
     Highest,
+    /// Apply the supplied absolute, relative, and ULP tolerances.
     Tolerance,
 }
+#[pliron_attr(name = "stablehlo.comparison_direction", format, verifier = "succ")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
+/// Relational operator used for elementwise comparison.
 pub enum ComparisonDirection {
+    /// Equal to.
     Eq,
+    /// Not equal to.
     Ne,
+    /// Greater than or equal to.
     Ge,
+    /// Greater than.
     Gt,
+    /// Less than or equal to.
     Le,
+    /// Less than.
     Lt,
 }
+#[pliron_attr(name = "stablehlo.comparison_type", format, verifier = "succ")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
+/// Numeric ordering semantics used for elementwise comparison.
 pub enum ComparisonType {
+    /// No explicitly selected comparison type.
     NoType,
+    /// Floating-point comparison semantics.
     Float,
+    /// Total ordering over values, including exceptional floating-point values.
     TotalOrder,
+    /// Signed integer comparison semantics.
     Signed,
+    /// Unsigned integer comparison semantics.
     Unsigned,
+    /// Weak ordering semantics.
     WeakOrder,
 }
-impl PrecisionAttr {
-    pub fn new(value: Precision) -> Self {
-        Self { value: value as u8 }
-    }
+
+#[pliron_attr(name = "stablehlo.rng_algorithm", format, verifier = "succ")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+/// Random number generator algorithm supported by StableHLO.
+pub enum RngAlgorithmAttr {
+    /// Implementation-selected algorithm.
+    Default,
+    /// ThreeFry counter-based algorithm.
+    ThreeFry,
+    /// Philox counter-based algorithm.
+    Philox,
 }
-impl ComparisonDirectionAttr {
-    pub fn new(value: ComparisonDirection) -> Self {
-        Self { value: value as u8 }
-    }
-}
-impl ComparisonTypeAttr {
-    pub fn new(value: ComparisonType) -> Self {
-        Self { value: value as u8 }
-    }
+
+#[pliron_attr(name = "stablehlo.rng_distribution", format, verifier = "succ")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+/// Distribution used to generate random values.
+pub enum RngDistributionAttr {
+    /// Uniform distribution.
+    Uniform,
+    /// Normal distribution.
+    Normal,
 }
 fn is_known_dot_algorithm(ctx: &Context, algorithm: &DotAlgorithmAttr) -> bool {
     let (Some(lhs), Some(rhs), Some(accumulation)) = (

@@ -20,12 +20,15 @@ use pliron::{
     builtin::attributes::TypeAttr as PlironTypeAttr, identifier::Identifier, region::Region,
 };
 
+/// Terminates a function-like region and yields its values to the enclosing operation. It produces no SSA results.
 #[pliron_op(name="stablehlo.return",format,interfaces=[pliron::builtin::op_interfaces::NResultsInterface<0>,pliron::builtin::op_interfaces::IsTerminatorInterface])]
 pub struct ReturnOp;
 impl ReturnOp {
+    /// Creates a `stablehlo.return` terminator that yields the supplied value from the current region. Uses `value` as its operand.
     pub fn new(ctx: &mut Context, value: Value) -> Self {
         Self::new_many(ctx, vec![value])
     }
+    /// Creates a `stablehlo.return` terminator that yields all supplied values from the current region.
     pub fn new_many(ctx: &mut Context, values: Vec<Value>) -> Self {
         Self {
             op: Operation::new(ctx, Self::get_concrete_op_info(), vec![], values, vec![], 0),
@@ -41,6 +44,7 @@ impl Verify for ReturnOp {
     }
 }
 
+/// Groups function definitions in a single module body. Its body is represented by one region containing one block.
 #[pliron_op(name="stablehlo.module",format,interfaces=[pliron::builtin::op_interfaces::OneRegionInterface,pliron::builtin::op_interfaces::IsolatedFromAboveInterface])]
 pub struct ModuleOp;
 impl ModuleOp {
@@ -97,6 +101,7 @@ impl Verify for ModuleOp {
 #[pliron_op(name="stablehlo.call",format,attributes=(stablehlo_call_callee:StringAttr))]
 pub struct CallOp;
 impl CallOp {
+    /// Creates a `stablehlo.call` operation with the supplied result types. Uses `args` as operands. Configures the operation with `callee`.
     pub fn new(
         ctx: &mut Context,
         callee: String,
@@ -129,9 +134,11 @@ impl Verify for CallOp {
     }
 }
 
+/// Repeats a condition region and body region while carrying SSA values between iterations.
 #[pliron_op(name = "stablehlo.while", format)]
 pub struct WhileOp;
 impl WhileOp {
+    /// Creates a `stablehlo.while` operation with the supplied result types. Uses `carried` as operands.
     pub fn new(ctx: &mut Context, carried: Vec<Value>, result_types: Vec<TypeHandle>) -> Self {
         Self {
             op: Operation::new(
@@ -144,9 +151,11 @@ impl WhileOp {
             ),
         }
     }
+    /// Returns the loop condition region.
     pub fn condition_region(&self, ctx: &Context) -> Ptr<Region> {
         self.get_operation().deref(ctx).get_region(0)
     }
+    /// Returns the loop body region.
     pub fn body_region(&self, ctx: &Context) -> Ptr<Region> {
         self.get_operation().deref(ctx).get_region(1)
     }
@@ -321,9 +330,11 @@ impl Verify for FuncOp {
     }
 }
 
+/// Executes one of two regions according to a predicate.
 #[pliron_op(name = "stablehlo.if", format)]
 pub struct IfOp;
 impl IfOp {
+    /// Creates a `stablehlo.if` operation with the supplied result types. Uses `predicate` as its operand.
     pub fn new(ctx: &mut Context, predicate: Value, results: Vec<TypeHandle>) -> Self {
         Self {
             op: Operation::new(
@@ -336,9 +347,11 @@ impl IfOp {
             ),
         }
     }
+    /// Returns the region executed when the predicate is true.
     pub fn true_region(&self, ctx: &Context) -> Ptr<Region> {
         self.get_operation().deref(ctx).get_region(0)
     }
+    /// Returns the region executed when the predicate is false.
     pub fn false_region(&self, ctx: &Context) -> Ptr<Region> {
         self.get_operation().deref(ctx).get_region(1)
     }
@@ -376,9 +389,11 @@ impl Verify for IfOp {
     }
 }
 
+/// Selects and executes a region according to an index value.
 #[pliron_op(name = "stablehlo.case", format)]
 pub struct CaseOp;
 impl CaseOp {
+    /// Creates a `stablehlo.case` operation with the supplied result types. Uses `selector` as its operand. Configures the operation with `branch_count`.
     pub fn new(
         ctx: &mut Context,
         selector: Value,
@@ -416,9 +431,11 @@ impl Verify for CaseOp {
     }
 }
 
+/// Packages values into a tuple result.
 #[pliron_op(name="stablehlo.tuple",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct TupleOp;
 impl TupleOp {
+    /// Creates a `stablehlo.tuple` operation. Uses `values` as operands.
     pub fn new(ctx: &mut Context, values: Vec<Value>) -> Self {
         let ty = TupleType::get(ctx, values.iter().map(|v| v.get_type(ctx)).collect()).into();
         Self {
@@ -460,6 +477,7 @@ impl Verify for TupleOp {
 #[pliron_op(name="stablehlo.get_tuple_element",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_get_tuple_element_index:IntegerAttr))]
 pub struct GetTupleElementOp;
 impl GetTupleElementOp {
+    /// Creates a `stablehlo.get_tuple_element` operation with the supplied result type. Uses `value` as its operand. Configures the operation with `index`.
     pub fn new(ctx: &mut Context, value: Value, index: u32, result: TypeHandle) -> Self {
         let op = Self {
             op: Operation::new(
@@ -513,6 +531,7 @@ impl Verify for GetTupleElementOp {
 #[pliron_op(name="stablehlo.composite",format,attributes=(stablehlo_composite_name:StringAttr,stablehlo_composite_version:IntegerAttr,stablehlo_composite_decomposition:StringAttr,stablehlo_composite_attributes:DictAttr))]
 pub struct CompositeOp;
 impl CompositeOp {
+    /// Creates a `stablehlo.composite` operation with the supplied result types. Uses `operands` as operands. Configures the operation with `name`, `version`, `decomposition`, `region_count`.
     pub fn new(
         ctx: &mut Context,
         name: String,
@@ -558,14 +577,18 @@ impl Verify for CompositeOp {
 #[pliron_op(name="stablehlo.custom_call",format,attributes=(stablehlo_custom_call_target:StringAttr,stablehlo_custom_call_has_side_effect:BoolAttr,stablehlo_custom_call_api_version:IntegerAttr,stablehlo_custom_call_called_computations:VecAttr,stablehlo_custom_call_output_operand_aliases:VecAttr,stablehlo_custom_call_operand_layouts:ArrayOfLayoutAttr,stablehlo_custom_call_result_layouts:ArrayOfLayoutAttr))]
 pub struct CustomCallOp;
 static CUSTOM_CALL_BACKEND_CONFIG: std::sync::LazyLock<Identifier> =
-    std::sync::LazyLock::new(|| Identifier::new("stablehlo_custom_call_backend_config"));
+    std::sync::LazyLock::new(|| {
+        Identifier::new(crate::attributes::keys::CUSTOM_CALL_BACKEND_CONFIG)
+    });
 static CUSTOM_CALL_CALLED_COMPUTATIONS: std::sync::LazyLock<Identifier> =
-    std::sync::LazyLock::new(|| Identifier::new("stablehlo_custom_call_called_computations"));
+    std::sync::LazyLock::new(|| {
+        Identifier::new(crate::attributes::keys::CUSTOM_CALL_CALLED_COMPUTATIONS)
+    });
 impl CustomCallOp {
     /// Resolve the source API version, using the upstream ORIGINAL default.
     pub fn api_version(&self, ctx: &Context) -> Result<u32> {
         let ir = self.get_operation().deref(ctx);
-        let key = Identifier::new("stablehlo_custom_call_api_version");
+        let key = Identifier::new(crate::attributes::keys::CUSTOM_CALL_API_VERSION);
         let Some(attribute) = ir.attributes.0.get(&key) else {
             return Ok(1);
         };
@@ -649,6 +672,7 @@ impl CustomCallOp {
             .0
             .insert(CUSTOM_CALL_BACKEND_CONFIG.clone(), config);
     }
+    /// Returns the custom-call backend configuration.
     pub fn backend_config<'a>(&self, ctx: &'a Context) -> Option<std::cell::Ref<'a, AttrObj>> {
         std::cell::Ref::filter_map(self.get_operation().deref(ctx), |op| {
             op.attributes.0.get(&*CUSTOM_CALL_BACKEND_CONFIG)
@@ -658,6 +682,7 @@ impl CustomCallOp {
 }
 
 impl CustomCallOp {
+    /// Creates a `stablehlo.custom_call` operation with the supplied result types. Uses `operands` as operands. Configures the operation with `target`, `api_version`.
     pub fn new(
         ctx: &mut Context,
         target: String,
@@ -691,12 +716,12 @@ impl Verify for CustomCallOp {
         self.called_computations(ctx)?;
         for (key, valid) in [
             (
-                "stablehlo_custom_call_has_side_effect",
+                crate::attributes::keys::CUSTOM_CALL_HAS_SIDE_EFFECT,
                 self.get_attr_stablehlo_custom_call_has_side_effect(ctx)
                     .is_some(),
             ),
             (
-                "stablehlo_custom_call_output_operand_aliases",
+                crate::attributes::keys::CUSTOM_CALL_OUTPUT_OPERAND_ALIASES,
                 self.get_attr_stablehlo_custom_call_output_operand_aliases(ctx)
                     .is_some(),
             ),
@@ -731,11 +756,11 @@ impl Verify for CustomCallOp {
         let result_layouts = self.get_attr_stablehlo_custom_call_result_layouts(ctx);
         for (key, valid) in [
             (
-                "stablehlo_custom_call_operand_layouts",
+                crate::attributes::keys::CUSTOM_CALL_OPERAND_LAYOUTS,
                 operand_layouts.is_some(),
             ),
             (
-                "stablehlo_custom_call_result_layouts",
+                crate::attributes::keys::CUSTOM_CALL_RESULT_LAYOUTS,
                 result_layouts.is_some(),
             ),
         ] {
@@ -967,9 +992,11 @@ impl Verify for CustomCallOp {
     }
 }
 
+/// Prevents optimizations from moving values across the barrier.
 #[pliron_op(name = "stablehlo.optimization_barrier", format)]
 pub struct OptimizationBarrierOp;
 impl OptimizationBarrierOp {
+    /// Creates a `stablehlo.optimization_barrier` operation. Uses `values` as operands.
     pub fn new(ctx: &mut Context, values: Vec<Value>) -> Self {
         let types = values.iter().map(|v| v.get_type(ctx)).collect();
         Self {
@@ -995,9 +1022,11 @@ impl Verify for OptimizationBarrierOp {
     }
 }
 
+/// Creates an initial token for ordering side effects.
 #[pliron_op(name="stablehlo.create_token",format,interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<0>,pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct CreateTokenOp;
 impl CreateTokenOp {
+    /// Creates a `stablehlo.create_token` operation.
     pub fn new(ctx: &mut Context) -> Self {
         Self {
             op: Operation::new(
@@ -1025,9 +1054,11 @@ impl Verify for CreateTokenOp {
     }
 }
 
+/// Creates a token that depends on all supplied tokens.
 #[pliron_op(name="stablehlo.after_all",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct AfterAllOp;
 impl AfterAllOp {
+    /// Creates a `stablehlo.after_all` operation. Uses `tokens` as operands.
     pub fn new(ctx: &mut Context, tokens: Vec<Value>) -> Self {
         Self {
             op: Operation::new(
@@ -1058,7 +1089,7 @@ fn typed_integer_attr(ctx: &Context, value: u64, width: u32) -> IntegerAttr {
 fn scalar_element_is(ctx: &Context, ty: TypeHandle, e: ElementType) -> bool {
     tensor_parts(ctx, ty).is_some_and(|(shape, element)| shape.is_empty() && element == e)
 }
-fn valid_transfer_channel(attr: Option<&ChannelHandleAttr>, expected: i64) -> bool {
+fn valid_transfer_channel(attr: Option<&ChannelHandleAttr>, expected: ChannelType) -> bool {
     attr.is_some_and(|channel| channel.channel_type == expected)
 }
 fn is_token(ctx: &Context, ty: TypeHandle) -> bool {
@@ -1124,15 +1155,17 @@ fn region_signature(
     actual_args == args && region_returns(region, ctx, args.len(), results, false)
 }
 
+/// Returns the identifier of the current replica.
 #[pliron_op(name="stablehlo.replica_id",format,interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<0>,pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct ReplicaIdOp;
 impl ReplicaIdOp {
+    /// Creates a `stablehlo.replica_id` operation.
     pub fn new(ctx: &mut Context) -> Self {
         Self {
             op: Operation::new(
                 ctx,
                 Self::get_concrete_op_info(),
-                vec![tensor(ctx, &[], ElementType::I32)],
+                vec![tensor(ctx, &[], ElementType::Ui32)],
                 vec![],
                 vec![],
                 0,
@@ -1145,23 +1178,25 @@ impl Verify for ReplicaIdOp {
         if !scalar_element_is(
             ctx,
             self.get_operation().deref(ctx).get_result(0).get_type(ctx),
-            ElementType::I32,
+            ElementType::Ui32,
         ) {
-            return invalid(self, ctx, "replica_id returns scalar i32");
+            return invalid(self, ctx, "replica_id returns scalar ui32");
         }
         Ok(())
     }
 }
 
+/// Returns the identifier of the current partition.
 #[pliron_op(name="stablehlo.partition_id",format,interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<0>,pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct PartitionIdOp;
 impl PartitionIdOp {
+    /// Creates a `stablehlo.partition_id` operation.
     pub fn new(ctx: &mut Context) -> Self {
         Self {
             op: Operation::new(
                 ctx,
                 Self::get_concrete_op_info(),
-                vec![tensor(ctx, &[], ElementType::I32)],
+                vec![tensor(ctx, &[], ElementType::Ui32)],
                 vec![],
                 vec![],
                 0,
@@ -1174,9 +1209,9 @@ impl Verify for PartitionIdOp {
         if !scalar_element_is(
             ctx,
             self.get_operation().deref(ctx).get_result(0).get_type(ctx),
-            ElementType::I32,
+            ElementType::Ui32,
         ) {
-            return invalid(self, ctx, "partition_id returns scalar i32");
+            return invalid(self, ctx, "partition_id returns scalar ui32");
         }
         Ok(())
     }
@@ -1185,6 +1220,7 @@ impl Verify for PartitionIdOp {
 #[pliron_op(name="stablehlo.infeed",format,attributes=(stablehlo_infeed_config:StringAttr,stablehlo_infeed_layout:ArrayOfLayoutAttr))]
 pub struct InfeedOp;
 impl InfeedOp {
+    /// Creates a `stablehlo.infeed` operation. Uses `token` as its operand. Configures the operation with `data`, `config`, `layout`.
     pub fn new(
         ctx: &mut Context,
         token: Value,
@@ -1253,6 +1289,7 @@ impl Verify for InfeedOp {
 #[pliron_op(name="stablehlo.outfeed",format,attributes=(stablehlo_outfeed_config:StringAttr))]
 pub struct OutfeedOp;
 impl OutfeedOp {
+    /// Creates a `stablehlo.outfeed` operation. Uses `value`, `token` as operands. Configures the operation with `config`.
     pub fn new(ctx: &mut Context, value: Value, token: Value, config: String) -> Self {
         let ty = token.get_type(ctx);
         let op = Self {
@@ -1291,6 +1328,7 @@ impl Verify for OutfeedOp {
 #[pliron_op(name="stablehlo.send",format,attributes=(stablehlo_send_channel_handle:ChannelHandleAttr,stablehlo_send_is_host_transfer:BoolAttr))]
 pub struct SendOp;
 impl SendOp {
+    /// Creates a `stablehlo.send` operation. Uses `value`, `token` as operands. Configures the operation with `channel`, `host`.
     pub fn new(
         ctx: &mut Context,
         value: Value,
@@ -1330,7 +1368,11 @@ impl Verify for SendOp {
             .is_some_and(|v| bool::from(v.clone()));
         if !valid_transfer_channel(
             self.get_attr_stablehlo_send_channel_handle(ctx).as_deref(),
-            if host { 2 } else { 1 },
+            if host {
+                ChannelType::DeviceToHost
+            } else {
+                ChannelType::DeviceToDevice
+            },
         ) {
             return invalid(
                 self,
@@ -1345,6 +1387,7 @@ impl Verify for SendOp {
 #[pliron_op(name="stablehlo.recv",format,attributes=(stablehlo_recv_channel_handle:ChannelHandleAttr,stablehlo_recv_is_host_transfer:BoolAttr))]
 pub struct RecvOp;
 impl RecvOp {
+    /// Creates a `stablehlo.recv` operation. Uses `token` as its operand. Configures the operation with `data`, `channel`, `host`.
     pub fn new(
         ctx: &mut Context,
         token: Value,
@@ -1384,7 +1427,11 @@ impl Verify for RecvOp {
             .is_some_and(|v| bool::from(v.clone()));
         if !valid_transfer_channel(
             self.get_attr_stablehlo_recv_channel_handle(ctx).as_deref(),
-            if host { 3 } else { 1 },
+            if host {
+                ChannelType::HostToDevice
+            } else {
+                ChannelType::DeviceToDevice
+            },
         ) {
             return invalid(
                 self,
@@ -1396,9 +1443,11 @@ impl Verify for RecvOp {
     }
 }
 
+/// Starts an asynchronous computation and packages its state.
 #[pliron_op(name = "stablehlo.async_start", format)]
 pub struct AsyncStartOp;
 impl AsyncStartOp {
+    /// Creates a `stablehlo.async_start` operation. Uses `operands` as operands. Configures the operation with `future_results`.
     pub fn new(ctx: &mut Context, operands: Vec<Value>, future_results: Vec<TypeHandle>) -> Self {
         let state = FutureType::get(ctx, future_results).into();
         Self {
@@ -1412,6 +1461,7 @@ impl AsyncStartOp {
             ),
         }
     }
+    /// Returns the loop body region.
     pub fn body_region(&self, ctx: &Context) -> Ptr<Region> {
         self.get_operation().deref(ctx).get_region(0)
     }
@@ -1496,9 +1546,11 @@ impl Verify for AsyncStartOp {
     }
 }
 
+/// Completes an asynchronous computation and returns its results.
 #[pliron_op(name="stablehlo.async_done",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface])]
 pub struct AsyncDoneOp;
 impl AsyncDoneOp {
+    /// Creates a `stablehlo.async_done` operation with the supplied result types. Uses `state` as its operand.
     pub fn new(ctx: &mut Context, state: Value, results: Vec<TypeHandle>) -> Self {
         Self {
             op: Operation::new(

@@ -16,6 +16,7 @@ use pliron::{
 #[pliron_op(name="stablehlo.constant",format,interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<0>,pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_constant_bits:VecAttr,stablehlo_constant_splat:BoolAttr,stablehlo_constant_sparse:SparseElementsAttr))]
 pub struct ConstantOp;
 impl ConstantOp {
+    /// Creates a dense constant with the supplied result type, packed element `bits`, and `splat` flag.
     pub fn new(ctx: &mut Context, result: TypeHandle, bits: Vec<u64>, splat: bool) -> Self {
         let op = Self {
             op: Operation::new(
@@ -32,6 +33,7 @@ impl ConstantOp {
         op.set_attr_stablehlo_constant_splat(ctx, BoolAttr::new(splat));
         op
     }
+    /// Creates a sparse `stablehlo.constant` from the result type, element indices, and stored values.
     pub fn new_sparse(
         ctx: &mut Context,
         result: TypeHandle,
@@ -78,13 +80,18 @@ impl ConstantOp {
         );
         op
     }
-    pub fn sparse_value(&self, ctx: &Context) -> Option<SparseElementsAttr> {
+    /// Returns the sparse elements payload when one is present.
+    pub fn sparse_value<'a>(
+        &self,
+        ctx: &'a Context,
+    ) -> Option<std::cell::Ref<'a, SparseElementsAttr>> {
         self.get_attr_stablehlo_constant_sparse(ctx)
-            .map(|attribute| (*attribute).clone())
     }
+    /// Returns the dense constant payload as packed words, if present.
     pub fn bits(&self, ctx: &Context) -> Option<Vec<u64>> {
         read_integer_list(&*self.get_attr_stablehlo_constant_bits(ctx)?)
     }
+    /// Returns whether the dense constant payload represents a splat, if the attribute is present.
     pub fn is_splat(&self, ctx: &Context) -> Option<bool> {
         self.get_attr_stablehlo_constant_splat(ctx)
             .map(|v| bool::from((*v).clone()))
@@ -189,9 +196,11 @@ impl Verify for ConstantOp {
 #[pliron_op(name="stablehlo.dynamic_iota",format,interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<1>,pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dynamic_iota_dimension:IntegerAttr))]
 pub struct DynamicIotaOp;
 impl DynamicIotaOp {
+    /// Returns the operand that supplies the dynamic dimension size.
     pub fn dimension_size(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
+    /// Creates a `stablehlo.dynamic_iota` operation with the supplied result type. Uses `dimension_size` as its operand. Configures the operation with `dimension`.
     pub fn new(
         ctx: &mut Context,
         dimension_size: Value,
@@ -211,6 +220,7 @@ impl DynamicIotaOp {
         op.set_attr_stablehlo_dynamic_iota_dimension(ctx, integer_attr(ctx, dimension as u64));
         op
     }
+    /// Returns the operation's dimension attribute when it is present and representable.
     pub fn dimension(&self, ctx: &Context) -> Option<usize> {
         usize::try_from(
             self.get_attr_stablehlo_dynamic_iota_dimension(ctx)?
@@ -221,6 +231,7 @@ impl DynamicIotaOp {
         )
         .ok()
     }
+    /// Builds a dynamic iota whose result tensor type is formed from `result_shape` and `element`; `dimension_size` supplies the runtime extent. This builder returns the constructed operation in `Result` for API consistency.
     pub fn new_inferred(
         ctx: &mut Context,
         dimension_size: Value,

@@ -223,6 +223,7 @@ fn reducer_contract(ctx: &Context, ir: &Operation, check_shape: bool, count: usi
 #[pliron_op(name="stablehlo.all_gather",format,attributes=(stablehlo_all_gather_dimension:IntegerAttr,stablehlo_all_gather_replica_groups:VecAttr,stablehlo_all_gather_channel_handle:ChannelHandleAttr,stablehlo_all_gather_use_global_device_ids:BoolAttr))]
 pub struct AllGatherOp;
 impl AllGatherOp {
+    /// Creates a `stablehlo.all_gather` operation with the supplied result types. Uses `operands` as operands. Configures the operation with `dimension`, `groups`.
     pub fn new(
         ctx: &mut Context,
         operands: Vec<Value>,
@@ -324,6 +325,7 @@ impl Verify for AllGatherOp {
 #[pliron_op(name="stablehlo.all_reduce",format,attributes=(stablehlo_all_reduce_replica_groups:VecAttr,stablehlo_all_reduce_channel_handle:ChannelHandleAttr,stablehlo_all_reduce_use_global_device_ids:BoolAttr))]
 pub struct AllReduceOp;
 impl AllReduceOp {
+    /// Creates a `stablehlo.all_reduce` operation with the supplied result types. Uses `operands` as operands. Configures the operation with `groups`.
     pub fn new(
         ctx: &mut Context,
         operands: Vec<Value>,
@@ -343,6 +345,7 @@ impl AllReduceOp {
         op.set_attr_stablehlo_all_reduce_replica_groups(ctx, groups);
         op
     }
+    /// Returns the region containing the reduction computation.
     pub fn reducer_region(&self, ctx: &Context) -> Ptr<Region> {
         self.get_operation().deref(ctx).get_region(0)
     }
@@ -379,6 +382,7 @@ impl Verify for AllReduceOp {
 #[pliron_op(name="stablehlo.reduce_scatter",format,attributes=(stablehlo_reduce_scatter_dimension:IntegerAttr,stablehlo_reduce_scatter_replica_groups:VecAttr,stablehlo_reduce_scatter_channel_handle:ChannelHandleAttr,stablehlo_reduce_scatter_use_global_device_ids:BoolAttr))]
 pub struct ReduceScatterOp;
 impl ReduceScatterOp {
+    /// Creates a `stablehlo.reduce_scatter` operation with the supplied result types. Uses `operands` as operands. Configures the operation with `dimension`, `groups`.
     pub fn new(
         ctx: &mut Context,
         operands: Vec<Value>,
@@ -400,6 +404,7 @@ impl ReduceScatterOp {
         op.set_attr_stablehlo_reduce_scatter_replica_groups(ctx, groups);
         op
     }
+    /// Returns the region containing the reduction computation.
     pub fn reducer_region(&self, ctx: &Context) -> Ptr<Region> {
         self.get_operation().deref(ctx).get_region(0)
     }
@@ -471,6 +476,7 @@ impl Verify for ReduceScatterOp {
 #[pliron_op(name="stablehlo.all_to_all",format,attributes=(stablehlo_all_to_all_split_dimension:IntegerAttr,stablehlo_all_to_all_concat_dimension:IntegerAttr,stablehlo_all_to_all_split_count:IntegerAttr,stablehlo_all_to_all_replica_groups:VecAttr,stablehlo_all_to_all_channel_handle:ChannelHandleAttr,stablehlo_all_to_all_use_global_device_ids:BoolAttr))]
 pub struct AllToAllOp;
 impl AllToAllOp {
+    /// Creates a `stablehlo.all_to_all` operation with the supplied result types. Uses `operands` as operands. Configures the operation with `split`, `concat`, `count`, `groups`.
     pub fn new(
         ctx: &mut Context,
         operands: Vec<Value>,
@@ -591,6 +597,7 @@ impl Verify for AllToAllOp {
 #[pliron_op(name="stablehlo.collective_broadcast",format,attributes=(stablehlo_collective_broadcast_has_dynamic_root:BoolAttr,stablehlo_collective_broadcast_replica_groups:VecAttr,stablehlo_collective_broadcast_channel_handle:ChannelHandleAttr))]
 pub struct CollectiveBroadcastOp;
 impl CollectiveBroadcastOp {
+    /// Creates a `stablehlo.collective_broadcast` operation with the supplied result types. Uses `operands` as operands. Configures the operation with `dynamic_root`, `groups`.
     pub fn new(
         ctx: &mut Context,
         operands: Vec<Value>,
@@ -679,6 +686,7 @@ impl Verify for CollectiveBroadcastOp {
 #[pliron_op(name="stablehlo.collective_reduce",format,attributes=(stablehlo_collective_reduce_replica_groups:VecAttr,stablehlo_collective_reduce_has_dynamic_root:BoolAttr,stablehlo_collective_reduce_channel_handle:ChannelHandleAttr,stablehlo_collective_reduce_use_global_device_ids:BoolAttr))]
 pub struct CollectiveReduceOp;
 impl CollectiveReduceOp {
+    /// Creates a `stablehlo.collective_reduce` operation with the supplied result types. Uses `operands` as operands. Configures the operation with `groups`.
     pub fn new(
         ctx: &mut Context,
         operands: Vec<Value>,
@@ -750,6 +758,7 @@ impl Verify for CollectiveReduceOp {
 #[pliron_op(name="stablehlo.collective_permute",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_collective_permute_source_target_pairs:VecAttr,stablehlo_collective_permute_channel_handle:ChannelHandleAttr))]
 pub struct CollectivePermuteOp;
 impl CollectivePermuteOp {
+    /// Creates a `stablehlo.collective_permute` operation with the supplied result type. Uses `input` as its operand. Configures the operation with `pairs`.
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle, pairs: VecAttr) -> Self {
         let op = Self {
             op: Operation::new(
@@ -790,6 +799,7 @@ impl Verify for CollectivePermuteOp {
 #[pliron_op(name="stablehlo.cross_replica_sum",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_cross_replica_sum_replica_groups:VecAttr))]
 pub struct CrossReplicaSumOp;
 impl CrossReplicaSumOp {
+    /// Creates a `stablehlo.cross_replica_sum` operation with the supplied result type. Uses `input` as its operand. Configures the operation with `groups`.
     pub fn new(ctx: &mut Context, input: Value, result: TypeHandle, groups: VecAttr) -> Self {
         let op = Self {
             op: Operation::new(

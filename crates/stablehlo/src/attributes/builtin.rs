@@ -13,11 +13,15 @@ use pliron::{location::Location, verify_err};
     format = "`<` $ty `,` `[` vec($words, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Scalar integer or floating-point payload stored as exact raw bits.
 pub struct ScalarBitsAttr {
+    /// Primitive scalar type represented by the payload.
     pub ty: TypeHandle,
+    /// Little-endian 64-bit limbs containing the scalar's exact bit pattern.
     pub words: Vec<u64>,
 }
 impl ScalarBitsAttr {
+    /// Encodes an integer value after checking that it fits the element type.
     pub fn integer(
         ctx: &Context,
         element: ElementType,
@@ -32,7 +36,13 @@ impl ScalarBitsAttr {
                 }
             );
         };
-        if !value.fits_width(width, signedness) {
+        let fits = if element == ElementType::I1 {
+            value == crate::integer::IntegerValue::ZERO
+                || value == crate::integer::IntegerValue::from(1_u8)
+        } else {
+            value.fits_width(width, signedness)
+        };
+        if !fits {
             return verify_err!(
                 Location::Unknown,
                 crate::Diagnostic::InvalidAttribute {
@@ -46,20 +56,25 @@ impl ScalarBitsAttr {
             words: value.to_twos_complement_words(width),
         })
     }
+    /// Decodes the payload as an integer when its type is an integer element.
     pub fn integer_value(&self, ctx: &Context) -> Option<crate::integer::IntegerValue> {
-        let (width, signedness) = primitive_element(ctx, self.ty)?.integer_parts()?;
+        let element = primitive_element(ctx, self.ty)?;
+        let (width, signedness) = element.integer_parts()?;
         Some(crate::integer::IntegerValue::from_twos_complement_words(
             &self.words,
             width,
-            signedness != IntegerSignedness::Unsigned && width > 1,
+            signedness != IntegerSignedness::Unsigned
+                && (width > 1 || signedness == IntegerSignedness::Signed),
         ))
     }
+    /// Creates an `f64` scalar payload from its exact IEEE-754 bits.
     pub fn float_bits(ctx: &Context, bits: u64) -> Self {
         Self {
             ty: ElementType::F64.native(ctx),
             words: vec![bits],
         }
     }
+    /// Creates an `f32` scalar payload from its exact IEEE-754 bits.
     pub fn f32_bits(ctx: &Context, bits: u32) -> Self {
         Self {
             ty: ElementType::F32.native(ctx),
@@ -96,7 +111,9 @@ fn words_fit_width(words: &[u64], width: u32) -> bool {
 }
 #[pliron_attr(name = "stablehlo.index_value", format = "$value", verifier = "succ")]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Signed index constant attribute.
 pub struct IndexAttr {
+    /// Signed index value.
     pub value: i64,
 }
 
@@ -105,11 +122,15 @@ pub struct IndexAttr {
     format = "`<` $element `,` $values `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Homogeneous one-dimensional array of primitive scalar values.
 pub struct DenseArrayAttr {
+    /// Primitive element type of each array entry.
     pub element: TypeHandle,
+    /// Values stored as a native vector attribute.
     pub values: VecAttr,
 }
 impl DenseArrayAttr {
+    /// Creates an array of signless 64-bit integer values.
     pub fn integers(ctx: &Context, values: Vec<i64>) -> Self {
         Self {
             element: ElementType::I64.native(ctx),
@@ -126,6 +147,7 @@ impl DenseArrayAttr {
             ),
         }
     }
+    /// Creates an array of one-bit boolean values.
     pub fn bools(ctx: &Context, values: Vec<bool>) -> Self {
         Self {
             element: ElementType::I1.native(ctx),
@@ -137,6 +159,7 @@ impl DenseArrayAttr {
             ),
         }
     }
+    /// Creates an array of `f64` values from their exact bit patterns.
     pub fn floats_bits(ctx: &Context, values: Vec<u64>) -> Self {
         Self {
             element: ElementType::F64.native(ctx),
@@ -163,6 +186,7 @@ impl Verify for DenseArrayAttr {
         verify_values(ctx, self.element, &self.values)
     }
 }
+/// Returns whether an element type is supported by dense-array attributes.
 pub fn dense_array_element_type(e: ElementType) -> bool {
     e == ElementType::I1
         || (e.is_integer() || e.is_float()) && e.bit_width().is_some_and(|w| w % 8 == 0)
@@ -225,12 +249,17 @@ fn shaped(ctx: &Context, ty: TypeHandle) -> Option<(Vec<i64>, TypeHandle)> {
     format = "`<` $ty `,` $values `,` $is_splat `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Dense values associated with a ranked tensor or vector type.
 pub struct DenseElementsAttr {
+    /// Ranked tensor or vector type described by these elements.
     pub ty: TypeHandle,
+    /// Stored scalar values, one per element unless `is_splat` is true.
     pub values: VecAttr,
+    /// Whether the single stored value is broadcast to the entire shaped type.
     pub is_splat: bool,
 }
 impl DenseElementsAttr {
+    /// Constructs a dense payload with one explicit value per element.
     pub fn new(ty: TypeHandle, values: VecAttr) -> Self {
         Self {
             ty,
@@ -238,6 +267,7 @@ impl DenseElementsAttr {
             is_splat: false,
         }
     }
+    /// Constructs a dense payload by broadcasting one scalar over the shaped type.
     pub fn splat(ty: TypeHandle, value: AttrObj) -> Self {
         Self {
             ty,
@@ -288,9 +318,13 @@ impl Verify for DenseElementsAttr {
     format = "`<` $ty `,` `[` vec($indices, CharSpace(`,`)) `]` `,` $values `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Coordinate/value representation of a sparse tensor or vector constant.
 pub struct SparseElementsAttr {
+    /// Ranked tensor or vector type described by the sparse payload.
     pub ty: TypeHandle,
+    /// Coordinates of stored values, with one coordinate per shaped dimension.
     pub indices: Vec<IndexTensorAttr>,
+    /// Stored scalar values, paired positionally with `indices`.
     pub values: VecAttr,
 }
 impl Verify for SparseElementsAttr {
@@ -389,7 +423,9 @@ fn verify_shaped_values(
     verifier = "succ"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Opaque sequence of bytes.
 pub struct BytesAttr {
+    /// Opaque byte sequence.
     pub value: Vec<u8>,
 }
 #[pliron_attr(
@@ -397,8 +433,11 @@ pub struct BytesAttr {
     format = "`<` $ty `,` `[` vec($value, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Byte string associated with a native type.
 pub struct TypedStringAttr {
+    /// Type associated with the byte sequence.
     pub ty: TypeHandle,
+    /// String contents encoded as bytes.
     pub value: Vec<u8>,
 }
 impl Verify for TypedStringAttr {
@@ -412,7 +451,9 @@ impl Verify for TypedStringAttr {
     verifier = "succ"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Hierarchical symbol reference represented by path components.
 pub struct SymbolRefAttr {
+    /// Components of the symbol path, from the root symbol to the nested symbol.
     pub path: Vec<StringAttr>,
 }
 #[pliron_attr(
@@ -421,8 +462,11 @@ pub struct SymbolRefAttr {
     verifier = "succ"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Dialect-tagged syntax preserved without interpreting its contents.
 pub struct OpaqueAttr {
+    /// Dialect that owns the opaque syntax.
     pub dialect: StringAttr,
+    /// Dialect-specific textual representation.
     pub syntax: StringAttr,
 }
 #[pliron_attr(
@@ -430,16 +474,19 @@ pub struct OpaqueAttr {
     format = "`<` $dialect `,` $name `,` $value `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Named dialect enum value stored as text.
 pub struct EnumAttr {
+    /// Dialect that defines the enumeration.
     pub dialect: StringAttr,
+    /// Enumeration name.
     pub name: StringAttr,
+    /// Selected enumeration spelling.
     pub value: StringAttr,
 }
 impl Verify for EnumAttr {
     fn verify(&self, _: &Context) -> Result<()> {
         if self.dialect.as_str() == "stablehlo"
-            && enums::values(self.name.as_str())
-                .is_none_or(|values| !values.contains(&self.value.as_str()))
+            && !enums::is_valid(self.name.as_str(), self.value.as_str())
         {
             return verify_err!(
                 Location::Unknown,
@@ -457,8 +504,11 @@ impl Verify for EnumAttr {
     format = "`<` `[` vec($offset, CharSpace(`,`)) `]` `,` `[` vec($strides, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Offset and stride metadata for a strided layout.
 pub struct StridedLayoutAttr {
+    /// Optional base offset, represented by zero or one signed value.
     pub offset: Vec<i64>,
+    /// Per-dimension strides, in element units.
     pub strides: Vec<i64>,
 }
 impl Verify for StridedLayoutAttr {
@@ -475,27 +525,33 @@ impl Verify for StridedLayoutAttr {
         Ok(())
     }
 }
+/// Packages precision values in the vector representation used by operation attributes.
 pub fn precision_config(values: Vec<Precision>) -> VecAttr {
     VecAttr::new(
         values
             .into_iter()
-            .map(|p| Box::new(PrecisionAttr::new(p)) as AttrObj)
+            .map(|precision| Box::new(precision) as AttrObj)
             .collect(),
     )
 }
+/// Returns whether an attribute is an index-coordinate tensor.
 pub fn is_index_tensor(attr: &AttrObj) -> bool {
     attr.downcast_ref::<IndexTensorAttr>().is_some()
 }
+/// Copies the coordinate values when the attribute is an index tensor.
 pub fn index_tensor_values(attr: &AttrObj) -> Option<Vec<i64>> {
     Some(attr.downcast_ref::<IndexTensorAttr>()?.values.clone())
 }
 
 #[pliron_attr(name = "stablehlo.type_value", format = "`<` $ty `>`")]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Attribute whose value is a native type handle.
 pub struct TypeAttr {
+    /// Type represented by this attribute.
     pub ty: TypeHandle,
 }
 impl TypeAttr {
+    /// Wraps a type handle as a type-valued attribute.
     pub fn new(ty: TypeHandle) -> Self {
         Self { ty }
     }
@@ -518,11 +574,15 @@ impl Typed for TypeAttr {
     verifier = "succ"
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Signed 128-bit value represented by low and high limbs.
 pub struct Signed128Attr {
+    /// Low 64 bits of the two's-complement representation.
     pub low: u64,
+    /// High 64 bits of the two's-complement representation.
     pub high: i64,
 }
 impl Signed128Attr {
+    /// Reconstructs the signed 128-bit value from its two limbs.
     pub fn value(self) -> i128 {
         (i128::from(self.high) << 64) | i128::from(self.low)
     }
@@ -542,9 +602,13 @@ impl From<i128> for Signed128Attr {
     format = "`<` $ty `,` $real `,` $imaginary `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Complex scalar represented by exact real and imaginary component bits.
 pub struct ComplexAttr {
+    /// Complex scalar type represented by the component payloads.
     pub ty: TypeHandle,
+    /// Real component encoded with its exact floating-point bits.
     pub real: ScalarBitsAttr,
+    /// Imaginary component encoded with its exact floating-point bits.
     pub imaginary: ScalarBitsAttr,
 }
 impl Verify for ComplexAttr {

@@ -12,28 +12,48 @@ use pliron::{
     result::Result,
 };
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Storage format used for a single sparse tensor level.
 pub enum SparseLevelFormat {
+    /// Every coordinate at this level is present.
     Dense,
+    /// Batch level, which must appear before non-batch levels.
     Batch,
+    /// Compressed sparse level with unique, ordered coordinates by default.
     Compressed,
+    /// Compressed level that permits gaps in its position array.
     LooseCompressed,
+    /// Singleton sparse level.
     Singleton,
-    Structured { n: u8, m: u8 },
+    /// Structured sparse level with an `n`-of-`m` block pattern.
+    Structured {
+        /// Number of stored entries in each block.
+        n: u8,
+        /// Total number of entries in each block.
+        m: u8,
+    },
 }
 #[pliron_attr(
     name = "stablehlo.sparse_level",
     format = "`<` $format `,` $n `,` $m `,` $nonunique `,` $nonordered `,` $soa `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Sparse level format and its ordering, uniqueness, and layout flags.
 pub struct SparseLevelType {
+    /// Encoded level format discriminant.
     pub format: u8,
+    /// Numerator of the structured level's `n`-of-`m` ratio.
     pub n: u8,
+    /// Denominator of the structured level's `n`-of-`m` ratio.
     pub m: u8,
+    /// Whether coordinates may repeat at this level.
     pub nonunique: bool,
+    /// Whether coordinates may be out of order at this level.
     pub nonordered: bool,
+    /// Whether singleton values use the structure-of-arrays representation.
     pub soa: bool,
 }
 impl SparseLevelType {
+    /// Creates a level descriptor with the format's default properties.
     pub fn new(format: SparseLevelFormat) -> Self {
         let (kind, n, m) = match format {
             SparseLevelFormat::Dense => (0, 0, 0),
@@ -52,6 +72,7 @@ impl SparseLevelType {
             soa: false,
         }
     }
+    /// Decodes the stored discriminant and structured ratio, if valid.
     pub fn level_format(&self) -> Option<SparseLevelFormat> {
         Some(match self.format {
             0 => SparseLevelFormat::Dense,
@@ -66,6 +87,7 @@ impl SparseLevelType {
             _ => return None,
         })
     }
+    /// Checks format-specific flags and structured ratio constraints.
     pub fn validate(&self) -> Result<()> {
         if self.format > 5
             || (self.format != 5 && (self.n != 0 || self.m != 0))
@@ -91,9 +113,13 @@ impl Verify for SparseLevelType {
     format = "`<` `[` vec($offset, CharSpace(`,`)) `]` `,` `[` vec($size, CharSpace(`,`)) `]` `,` `[` vec($stride, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Optional offset, extent, and stride metadata for one tensor dimension.
 pub struct SparseTensorDimSlice {
+    /// Starting coordinate; empty represents a dynamic offset.
     pub offset: Vec<i64>,
+    /// Extent of the slice; empty represents a dynamic size.
     pub size: Vec<i64>,
+    /// Step between coordinates; empty represents a dynamic stride.
     pub stride: Vec<i64>,
 }
 impl Default for SparseTensorDimSlice {
@@ -106,9 +132,11 @@ impl Default for SparseTensorDimSlice {
     }
 }
 impl SparseTensorDimSlice {
+    /// Returns whether all three slice components are unspecified.
     pub fn is_completely_dynamic(&self) -> bool {
         self.offset.is_empty() && self.size.is_empty() && self.stride.is_empty()
     }
+    /// Checks the optional scalar fields for valid nonnegative offsets and positive sizes/strides.
     pub fn validate(&self) -> Result<()> {
         if self.offset.len() > 1
             || self.size.len() > 1
@@ -131,17 +159,27 @@ impl Verify for SparseTensorDimSlice {
     format = "`<` `[` vec($levels, CharSpace(`,`)) `]` `,` $dimension_to_level `,` `[` vec($level_to_dimension, CharSpace(`,`)) `]` `,` $position_width `,` $coordinate_width `,` $explicit_value `,` $implicit_value `,` `[` vec($dimension_slices, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Sparse tensor storage layout, mappings, widths, values, and dimension slices.
 pub struct SparseTensorEncoding {
+    /// Storage format for each sparse level.
     pub levels: Vec<SparseLevelType>,
+    /// Mapping from tensor dimensions to sparse levels.
     pub dimension_to_level: AffineMap,
+    /// Inverse mapping when it can be inferred from `dimension_to_level`.
     pub level_to_dimension: Vec<AffineMap>,
+    /// Bit width of position indices; zero selects the implementation default.
     pub position_width: u32,
+    /// Bit width of coordinates; zero selects the implementation default.
     pub coordinate_width: u32,
+    /// Optional explicit stored-value default, represented as zero or one numeric attribute.
     pub explicit_value: VecAttr,
+    /// Optional implicit-value default, which must be zero for sparse tensors.
     pub implicit_value: VecAttr,
+    /// Optional slice metadata for each tensor dimension.
     pub dimension_slices: Vec<SparseTensorDimSlice>,
 }
 impl SparseTensorEncoding {
+    /// Builds an encoding with inferred inverse mapping and default widths and values.
     pub fn new(ctx: &Context, levels: Vec<SparseLevelType>, map: AffineMap) -> Result<Self> {
         let inverse = infer_sparse_level_to_dimension(&map)?;
         let encoding = Self {
@@ -157,6 +195,7 @@ impl SparseTensorEncoding {
         encoding.validate(ctx)?;
         Ok(encoding)
     }
+    /// Validates level sequencing, maps, slices, widths, and optional numeric values.
     pub fn validate(&self, ctx: &Context) -> Result<()> {
         for (field, width) in [
             ("position", self.position_width),
@@ -265,6 +304,7 @@ impl SparseTensorEncoding {
         }
         Ok(())
     }
+    /// Checks that the encoding is compatible with a ranked tensor and its element type.
     pub fn verify_tensor(&self, ctx: &Context, rank: usize, element: ElementType) -> Result<()> {
         self.validate(ctx)?;
         if rank == 0 || rank != self.dimension_to_level.dimensions {
@@ -353,6 +393,10 @@ fn numeric_type(ctx: &Context, value: &AttrObj) -> Option<ElementType> {
         None
     }
 }
+/// Infers the inverse dimension-to-level map for direct or quotient/remainder mappings.
+///
+/// Returns `None` when the map uses symbols or has a form that is not invertible
+/// by these supported patterns; malformed affine expressions return an error.
 pub fn infer_sparse_level_to_dimension(map: &AffineMap) -> Result<Option<AffineMap>> {
     map.validate()?;
     if map.symbols != 0 || map.dimensions > map.results.len() {
@@ -409,16 +453,16 @@ pub fn infer_sparse_level_to_dimension(map: &AffineMap) -> Result<Option<AffineM
     let mut results = Vec::with_capacity(map.dimensions);
     for dimension in 0..map.dimensions {
         if let Some(level) = direct[dimension] {
-            results.push(AffineExpr::Dimension(level));
+            results.push(AffineExpr::dimension(level));
         } else if let (Some((q, c)), Some(r)) = (quotient[dimension], remainder[dimension]) {
             results.push(AffineExpr::binary(
                 AffineBinaryOp::Add,
                 AffineExpr::binary(
                     AffineBinaryOp::Mul,
-                    AffineExpr::Dimension(q),
-                    AffineExpr::Constant(c),
+                    AffineExpr::dimension(q),
+                    AffineExpr::constant(c),
                 ),
-                AffineExpr::Dimension(r),
+                AffineExpr::dimension(r),
             ));
         } else {
             return Ok(None);

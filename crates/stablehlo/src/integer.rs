@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, fmt};
+use std::{cmp::Ordering, fmt, ops::Neg, str::FromStr};
 
 use pliron::builtin::types::Signedness as IntegerSignedness;
 
@@ -15,21 +15,42 @@ enum Repr {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct IntegerValue(Repr);
 
+/// Error returned when an integer literal cannot be parsed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IntegerParseError;
+
+impl fmt::Display for IntegerParseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("invalid arbitrary-precision integer literal")
+    }
+}
+
+impl std::error::Error for IntegerParseError {}
+
 impl IntegerValue {
     /// The integer zero.
     pub const ZERO: Self = Self(Repr::Small(0));
 
-    /// Parses a base-10 integer, including an optional leading minus sign.
+    /// Parses a base-10 integer, including an optional leading sign.
     ///
     /// Returns `None` when the input is empty, malformed, or contains no digits.
     pub fn parse_decimal(value: &str) -> Option<Self> {
         Self::parse_radix(value, 10)
     }
 
-    pub(crate) fn parse_radix(value: &str, radix: u32) -> Option<Self> {
-        let (negative, digits) = value
-            .strip_prefix('-')
-            .map_or((false, value), |s| (true, s));
+    /// Parses an integer using a radix from 2 through 36.
+    ///
+    /// An optional leading `+` or `-` is accepted; digits are case-insensitive for
+    /// radices above ten. Returns `None` for an invalid radix, empty digit
+    /// sequence, or any digit not valid in the selected radix.
+    pub fn parse_radix(value: &str, radix: u32) -> Option<Self> {
+        let (negative, digits) = if let Some(digits) = value.strip_prefix('-') {
+            (true, digits)
+        } else if let Some(digits) = value.strip_prefix('+') {
+            (false, digits)
+        } else {
+            (false, value)
+        };
         if digits.is_empty() || !(2..=36).contains(&radix) {
             return None;
         }
@@ -133,10 +154,24 @@ impl IntegerValue {
         }
     }
 
-    pub const fn from_i64(value: i64) -> Self {
-        Self(Repr::Small(value as i128))
+    /// Returns the value when it is representable as a nonnegative `u128`.
+    pub fn to_u128(&self) -> Option<u128> {
+        if self.negative() {
+            return None;
+        }
+        if let Repr::Small(value) = self.0 {
+            return u128::try_from(value).ok();
+        }
+        if self.magnitude_word_len() > 2 {
+            return None;
+        }
+        Some(u128::from(self.magnitude_word(0)) | (u128::from(self.magnitude_word(1)) << 64))
     }
 
+    /// Returns the low 128 bits of the integer in two's-complement form.
+    ///
+    /// Values wider than 128 bits are truncated; negative values are returned
+    /// modulo 2<sup>128</sup>.
     pub fn low_u128(&self) -> u128 {
         match &self.0 {
             Repr::Small(value) => *value as u128, // Preserve the low two's-complement bits.
@@ -152,16 +187,20 @@ impl IntegerValue {
         }
     }
 
+    /// Returns the additive inverse of this value.
     pub fn negated(&self) -> Self {
-        let (negative, words) = self.magnitude_words();
-        Self::from_magnitude(!negative, words)
+        -self.clone()
     }
 
     pub(crate) fn is_zero(&self) -> bool {
         matches!(self.0, Repr::Small(0))
     }
 
-    pub(crate) fn to_twos_complement_words(&self, width: u32) -> Vec<u64> {
+    /// Encodes the low `width` bits as little-endian two's-complement words.
+    ///
+    /// The vector contains `ceil(width / 64)` words, and unused high bits in
+    /// its final word are zero. Width zero produces an empty vector.
+    pub fn to_twos_complement_words(&self, width: u32) -> Vec<u64> {
         let count = width.div_ceil(64) as usize;
         if count == 0 {
             return Vec::new();
@@ -193,7 +232,13 @@ impl IntegerValue {
         words
     }
 
-    pub(crate) fn from_twos_complement_words(words: &[u64], width: u32, signed: bool) -> Self {
+    /// Decodes up to `width` low bits from little-endian words.
+    ///
+    /// When `signed` is true, the highest selected bit is treated as the sign
+    /// bit; otherwise the bits are interpreted as an unsigned magnitude.
+    /// Missing input words are treated as zero and excess words/bits are
+    /// ignored. A zero width returns [`Self::ZERO`].
+    pub fn from_twos_complement_words(words: &[u64], width: u32, signed: bool) -> Self {
         if width == 0 {
             return Self::ZERO;
         }
@@ -233,7 +278,11 @@ impl IntegerValue {
         Self::from_magnitude(true, bits)
     }
 
-    pub(crate) fn fits_width(&self, width: u32, signedness: IntegerSignedness) -> bool {
+    /// Returns whether the value is representable in the requested bit width.
+    ///
+    /// `Unsigned` accepts nonnegative values; `Signed` and `Signless` use the
+    /// signed two's-complement range. Only zero fits a zero-bit width.
+    pub fn fits_width(&self, width: u32, signedness: IntegerSignedness) -> bool {
         if width == 0 {
             return self.is_zero();
         }
@@ -273,21 +322,65 @@ impl From<i128> for IntegerValue {
         Self(Repr::Small(value))
     }
 }
-impl From<i64> for IntegerValue {
-    fn from(value: i64) -> Self {
-        Self(Repr::Small(i128::from(value)))
+impl From<u128> for IntegerValue {
+    fn from(value: u128) -> Self {
+        if value <= i128::MAX as u128 {
+            Self(Repr::Small(value as i128))
+        } else {
+            Self::from_magnitude(false, vec![value as u64, (value >> 64) as u64])
+        }
     }
 }
-impl From<i32> for IntegerValue {
-    fn from(value: i32) -> Self {
-        Self(Repr::Small(i128::from(value)))
+
+impl FromStr for IntegerValue {
+    type Err = IntegerParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse_decimal(value).ok_or(IntegerParseError)
     }
 }
-impl From<u64> for IntegerValue {
-    fn from(value: u64) -> Self {
-        Self(Repr::Small(i128::from(value)))
+
+impl Neg for IntegerValue {
+    type Output = Self;
+
+    fn neg(mut self) -> Self::Output {
+        match &mut self.0 {
+            Repr::Small(value) if *value == i128::MIN => {
+                Self::from_magnitude(false, vec![0, 1_u64 << 63])
+            }
+            Repr::Small(value) => {
+                *value = -*value;
+                self
+            }
+            Repr::Big { negative, .. } => {
+                *negative = !*negative;
+                self
+            }
+        }
     }
 }
+
+macro_rules! impl_from_signed {
+    ($($ty:ty),* $(,)?) => {$ (
+        impl From<$ty> for IntegerValue {
+            fn from(value: $ty) -> Self {
+                Self(Repr::Small(value as i128))
+            }
+        }
+    )*};
+}
+impl_from_signed!(i8, i16, i32, i64, isize);
+
+macro_rules! impl_from_unsigned {
+    ($($ty:ty),* $(,)?) => {$ (
+        impl From<$ty> for IntegerValue {
+            fn from(value: $ty) -> Self {
+                Self(Repr::Small(value as i128))
+            }
+        }
+    )*};
+}
+impl_from_unsigned!(u8, u16, u32, u64, usize);
 
 impl fmt::Display for IntegerValue {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -312,25 +405,6 @@ impl fmt::Display for IntegerValue {
             write!(formatter, "{}", char::from(*digit))?;
         }
         Ok(())
-    }
-}
-
-impl TryFrom<IntegerValue> for i128 {
-    type Error = pliron::result::Error;
-
-    fn try_from(value: IntegerValue) -> Result<Self, Self::Error> {
-        value
-            .to_i128()
-            .ok_or_else(|| crate::Diagnostic::IntegerOutOfRange { target: "i128" }.into_error())
-    }
-}
-impl TryFrom<&IntegerValue> for i128 {
-    type Error = pliron::result::Error;
-
-    fn try_from(value: &IntegerValue) -> Result<Self, Self::Error> {
-        value
-            .to_i128()
-            .ok_or_else(|| crate::Diagnostic::IntegerOutOfRange { target: "i128" }.into_error())
     }
 }
 
@@ -387,7 +461,7 @@ impl PartialOrd<IntegerValue> for i128 {
     }
 }
 
-macro_rules! try_into_small {
+macro_rules! try_into_signed {
     ($($ty:ty),* $(,)?) => {$ (
         impl TryFrom<IntegerValue> for $ty {
             type Error = pliron::result::Error;
@@ -407,53 +481,26 @@ macro_rules! try_into_small {
         }
     )*};
 }
-try_into_small!(i64, i32, usize, u64);
+try_into_signed!(i8, i16, i32, i64, i128, isize);
 
-#[cfg(test)]
-mod tests {
-    use super::IntegerValue;
-    use pliron::builtin::types::Signedness as IntegerSignedness;
+macro_rules! try_into_unsigned {
+    ($($ty:ty),* $(,)?) => {$ (
+        impl TryFrom<IntegerValue> for $ty {
+            type Error = pliron::result::Error;
 
-    #[test]
-    fn decimal_and_apint_word_conversions_preserve_wide_values() {
-        let unsigned = IntegerValue::parse_decimal("340282366920938463463374607431768211455");
-        assert!(unsigned.is_some());
-        if let Some(unsigned) = unsigned {
-            assert_eq!(
-                unsigned.to_string(),
-                "340282366920938463463374607431768211455"
-            );
-            assert_eq!(
-                u128::from(unsigned.to_twos_complement_words(128)[0]),
-                u64::MAX as u128
-            );
-            assert_eq!(
-                IntegerValue::from_twos_complement_words(
-                    &unsigned.to_twos_complement_words(128),
-                    128,
-                    false
-                ),
-                unsigned
-            );
-            assert_eq!(unsigned.to_i128(), None);
+            fn try_from(value: IntegerValue) -> Result<Self, Self::Error> {
+                let value = value.to_u128().ok_or_else(|| crate::Diagnostic::IntegerOutOfRange { target: stringify!($ty) }.into_error())?;
+                <$ty>::try_from(value).map_err(|_| crate::Diagnostic::IntegerOutOfRange { target: stringify!($ty) }.into_error())
+            }
         }
+        impl TryFrom<&IntegerValue> for $ty {
+            type Error = pliron::result::Error;
 
-        let below_i128_min =
-            IntegerValue::parse_decimal("-170141183460469231731687303715884105729");
-        assert!(below_i128_min.is_some());
-        if let Some(below_i128_min) = below_i128_min {
-            assert!(below_i128_min.fits_width(129, IntegerSignedness::Signed));
-            assert!(!below_i128_min.fits_width(128, IntegerSignedness::Signed));
-            let words = below_i128_min.to_twos_complement_words(129);
-            assert_eq!(
-                IntegerValue::from_twos_complement_words(&words, 129, true),
-                below_i128_min
-            );
-            let (seven, eight) = (IntegerValue::from(7_i128), IntegerValue::from(8_i128));
-            let (minus_seven, minus_eight) =
-                (IntegerValue::from(-7_i128), IntegerValue::from(-8_i128));
-            assert!(eight > seven);
-            assert!(minus_eight < minus_seven);
+            fn try_from(value: &IntegerValue) -> Result<Self, Self::Error> {
+                let value = value.to_u128().ok_or_else(|| crate::Diagnostic::IntegerOutOfRange { target: stringify!($ty) }.into_error())?;
+                <$ty>::try_from(value).map_err(|_| crate::Diagnostic::IntegerOutOfRange { target: stringify!($ty) }.into_error())
+            }
         }
-    }
+    )*};
 }
+try_into_unsigned!(u8, u16, u32, u64, u128, usize);
