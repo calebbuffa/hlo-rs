@@ -255,7 +255,7 @@ name = "clienthlo"
 version = "0.1.0"
 dependencies = [
  "pliron",
- "stablehlo",
+ "stablehlo 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "thiserror",
 ]
 
@@ -1443,6 +1443,16 @@ dependencies = [
 [[package]]
 name = "stablehlo"
 version = "0.2.0"
+dependencies = [
+ "pliron",
+ "thiserror",
+]
+
+[[package]]
+name = "stablehlo"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eeab9defe418c580d7f150dae552f5760ea2f30150b1e70c943e24972e844052"
 dependencies = [
  "pliron",
  "thiserror",
