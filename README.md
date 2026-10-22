@@ -4,14 +4,14 @@ Rust dialects and compiler tools for [pliron](https://crates.io/crates/pliron),
 covering StableHLO and OpenXLA HLO. Choose the crate that matches the IR or
 compiler stage you need:
 
-| Crate | Use it for | Guide |
-| --- | --- | --- |
-| [`stablehlo`](https://crates.io/crates/stablehlo) | Constructing and verifying StableHLO IR | [Guide](crates/stablehlo/README.md) |
-| `stablehlo-codec` | StableHLO MLIR types, attributes, and supported module assembly | [Guide](crates/stablehlo-codec/README.md) |
-| [`clienthlo`](https://crates.io/crates/clienthlo) | Client HLO operations that complement StableHLO | [Guide](crates/clienthlo/README.md) |
-| [`xlahlo`](https://crates.io/crates/xlahlo) | OpenXLA HLO IR, metadata, inference, and verification | [Guide](crates/xlahlo/README.md) |
-| `xlahlo-codec` | HLO shape/layout assembly and While backend-config JSON | [Guide](crates/xlahlo-codec/README.md) |
-| [`xlahlo-cubecl`](https://crates.io/crates/xlahlo-cubecl) | Lowering supported xlahlo modules into CubeCL execution plans | [Guide](crates/xlahlo-cubecl/README.md) |
+| Crate                                                     | Use it for                                                      | Guide                                     |
+| --------------------------------------------------------- | --------------------------------------------------------------- | ----------------------------------------- |
+| [`stablehlo`](https://crates.io/crates/stablehlo)         | Constructing and verifying StableHLO IR                         | [Guide](crates/stablehlo/README.md)       |
+| `stablehlo-codec`                                         | StableHLO MLIR types, attributes, and supported module assembly | [Guide](crates/stablehlo-codec/README.md) |
+| [`clienthlo`](https://crates.io/crates/clienthlo)         | Client HLO operations that complement StableHLO                 | [Guide](crates/clienthlo/README.md)       |
+| [`xlahlo`](https://crates.io/crates/xlahlo)               | OpenXLA HLO IR, metadata, inference, and verification           | [Guide](crates/xlahlo/README.md)          |
+| `xlahlo-codec`                                            | HLO shape/layout assembly and While backend-config JSON         | [Guide](crates/xlahlo-codec/README.md)    |
+| [`xlahlo-cubecl`](https://crates.io/crates/xlahlo-cubecl) | Lowering supported xlahlo modules into CubeCL execution plans   | [Guide](crates/xlahlo-cubecl/README.md)   |
 
 The dialect crates provide typed IR construction, inference, and verification;
 they do not provide a general MLIR text parser or guarantee that every
