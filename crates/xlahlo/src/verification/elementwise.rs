@@ -4,7 +4,7 @@ use crate::{
     attributes::{ComparisonOrder, Direction, ReducePrecision},
     inference::elementwise,
     opcode::Opcode,
-    shape::Shape,
+    shape,
     types::{ElementType, tensor},
     verification::VerifyOptions,
 };
@@ -63,8 +63,10 @@ pub(crate) fn instruction(
         | Opcode::Xor => {
             let lhs = tensor(ctx, operands[0])?;
             if opcode == Opcode::Compare {
-                let _direction = required_attr::<Direction>(ctx, op, "hlo_direction")?;
-                let order = required_attr::<ComparisonOrder>(ctx, op, "hlo_order")?;
+                let _direction =
+                    required_attr::<Direction>(ctx, op, crate::attributes::keys::DIRECTION)?;
+                let order =
+                    required_attr::<ComparisonOrder>(ctx, op, crate::attributes::keys::ORDER)?;
                 if lhs.element.is_integer() || lhs.element == ElementType::Pred {
                     verify_require(
                         *order == ComparisonOrder::Total,
@@ -75,13 +77,13 @@ pub(crate) fn instruction(
             let inferred = elementwise::infer_binary(ctx, opcode, operands[0], operands[1])?;
             let inferred_element = tensor(ctx, inferred)?.element;
             verify_require(
-                Shape::compatible(
+                shape::compatible(
                     ctx,
-                    Shape::with_element_type(ctx, operands[0], inferred_element)?,
+                    shape::with_element_type(ctx, operands[0], inferred_element)?,
                     inferred,
-                ) && Shape::compatible(
+                ) && shape::compatible(
                     ctx,
-                    Shape::with_element_type(ctx, operands[1], inferred_element)?,
+                    shape::with_element_type(ctx, operands[1], inferred_element)?,
                     inferred,
                 ),
                 "implicit elementwise broadcasting is not permitted",
@@ -103,7 +105,8 @@ pub(crate) fn instruction(
             tensor(ctx, declared)?.element,
         )?,
         Opcode::ReducePrecision => {
-            let precision = required_attr::<ReducePrecision>(ctx, op, "hlo_precision")?;
+            let precision =
+                required_attr::<ReducePrecision>(ctx, op, crate::attributes::keys::PRECISION)?;
             elementwise::infer_reduce_precision(
                 ctx,
                 operands[0],
@@ -176,7 +179,7 @@ fn verify_unary(
     let expected = if result_element == input_element {
         operand
     } else {
-        Shape::with_element_type(ctx, operand, result_element)?
+        shape::with_element_type(ctx, operand, result_element)?
     };
     verify_require(
         options.same_shapes(ctx, expected, declared),

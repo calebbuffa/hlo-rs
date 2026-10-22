@@ -3,7 +3,7 @@ use super::require;
 use crate::{
     Diagnostic,
     opcode::Opcode,
-    shape::{Shape, UNBOUNDED_SIZE},
+    shape::{self, UNBOUNDED_SIZE},
     types::{ElementType, TensorType, tensor},
 };
 use pliron::{
@@ -96,12 +96,12 @@ pub fn infer_binary(
 pub fn infer_scalar_broadcast(ctx: &Context, shapes: &[TypeHandle]) -> Result<Option<TypeHandle>> {
     let mut selected: Option<TypeHandle> = None;
     for &shape in shapes {
-        if !Shape::is_array(ctx, shape) || Shape::rank(ctx, shape)? == 0 {
+        if !shape::is_array(ctx, shape) || shape::rank(ctx, shape)? == 0 {
             continue;
         }
         if let Some(first) = selected {
             require(
-                Shape::compatible(ctx, first, shape),
+                shape::compatible(ctx, first, shape),
                 "implicit scalar broadcast requires matching array dimensions",
             )?;
         } else {
@@ -308,7 +308,7 @@ pub fn infer_binary_in_dim(
         rebuilt(ctx, base, result_element, dimensions, dynamic)
     } else {
         let result = rebuilt(ctx, base, result_element, dimensions, dynamic)?;
-        Shape::with_default_layout(ctx, result)
+        shape::with_default_layout(ctx, result)
     }
 }
 
@@ -318,7 +318,7 @@ pub fn infer_convert(
     operand: TypeHandle,
     element: ElementType,
 ) -> Result<TypeHandle> {
-    Shape::with_element_type(ctx, operand, element)
+    shape::with_element_type(ctx, operand, element)
 }
 
 /// Validate the numeric domain and bit counts for reduce-precision.
@@ -364,8 +364,8 @@ pub fn infer_stochastic_convert(
             && input.dynamic_dimensions == random_type.dynamic_dimensions,
         "stochastic-convert input shapes differ",
     )?;
-    let input_layout = Shape::layout(ctx, operand)?;
-    let random_layout = Shape::layout(ctx, random)?;
+    let input_layout = shape::layout(ctx, operand)?;
+    let random_layout = shape::layout(ctx, random)?;
     require(
         match (input_layout, random_layout) {
             (None, None) => true,
@@ -374,7 +374,7 @@ pub fn infer_stochastic_convert(
         },
         "stochastic-convert input layouts differ",
     )?;
-    Shape::with_element_type(ctx, operand, element)
+    shape::with_element_type(ctx, operand, element)
 }
 
 /// Infer a clamp result, allowing scalar or shape-compatible bounds.
@@ -400,12 +400,12 @@ pub fn infer_clamp(
     )?;
     require(
         (minimum_ty.dimensions.is_empty()
-            || Shape::compatible_ignoring_fp_precision(ctx, minimum, operand))
+            || shape::compatible_ignoring_fp_precision(ctx, minimum, operand))
             && (maximum_ty.dimensions.is_empty()
-                || Shape::compatible_ignoring_fp_precision(ctx, maximum, operand))
+                || shape::compatible_ignoring_fp_precision(ctx, maximum, operand))
             && (minimum_ty.dimensions.is_empty()
                 || maximum_ty.dimensions.is_empty()
-                || Shape::compatible_ignoring_fp_precision(ctx, minimum, maximum)),
+                || shape::compatible_ignoring_fp_precision(ctx, minimum, maximum)),
         "clamp bounds have incompatible shapes",
     )?;
     Ok(operand)
@@ -424,7 +424,7 @@ pub fn infer_select(
         tensor(ctx, on_false)?,
     );
     require(
-        Shape::compatible_ignoring_fp_precision(ctx, on_true, on_false),
+        shape::compatible_ignoring_fp_precision(ctx, on_true, on_false),
         "select values must have compatible shapes",
     )?;
     require(
@@ -434,13 +434,13 @@ pub fn infer_select(
     let scalar_predicate = predicate_ty.dimensions.is_empty();
     require(
         scalar_predicate
-            || Shape::compatible(
+            || shape::compatible(
                 ctx,
-                Shape::with_element_type(ctx, predicate, true_ty.element)?,
+                shape::with_element_type(ctx, predicate, true_ty.element)?,
                 on_true,
-            ) && Shape::compatible(
+            ) && shape::compatible(
                 ctx,
-                Shape::with_element_type(ctx, predicate, false_ty.element)?,
+                shape::with_element_type(ctx, predicate, false_ty.element)?,
                 on_false,
             ),
         "select predicate and values must have compatible shapes",
@@ -484,7 +484,7 @@ pub fn infer_select(
     result.dynamic_dimensions = dynamic;
     if let Some(layout) = result.layout.first_mut() {
         layout.element_size_in_bits =
-            Shape::layout(ctx, on_true)?.map_or(0, |true_layout| true_layout.element_size_in_bits);
+            shape::layout(ctx, on_true)?.map_or(0, |true_layout| true_layout.element_size_in_bits);
     }
     result.verify(ctx)?;
     Ok(TensorType::instantiate(result, ctx).into())

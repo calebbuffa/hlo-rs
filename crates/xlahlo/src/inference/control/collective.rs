@@ -3,7 +3,7 @@ use super::infer_get_tuple_element;
 use crate::Diagnostic;
 use crate::{
     inference::require,
-    shape::{Shape, UNBOUNDED_SIZE},
+    shape::{self, UNBOUNDED_SIZE},
     types::{ElementType, TensorType, tensor},
     verification::control::same_ignoring_memory,
 };
@@ -18,19 +18,19 @@ fn one_or_tuple(ctx: &Context, operands: &[TypeHandle]) -> Result<TypeHandle> {
     if let [operand] = operands {
         Ok(*operand)
     } else {
-        Shape::tuple(ctx, operands.to_vec())
+        shape::tuple(ctx, operands.to_vec())
     }
 }
 
 fn axis(ctx: &Context, operand: TypeHandle, axis: i64) -> Result<usize> {
-    tensor(ctx, Shape::array_view(ctx, operand)?)?.verify(ctx)?;
+    tensor(ctx, shape::array_view(ctx, operand)?)?.verify(ctx)?;
     let axis = usize::try_from(axis).map_err(|_| {
         pliron::verify_error_noloc!(Diagnostic::Inference {
             message: "negative collective dimension".into()
         })
     })?;
     require(
-        axis < Shape::rank(ctx, Shape::array_view(ctx, operand)?)?,
+        axis < shape::rank(ctx, shape::array_view(ctx, operand)?)?,
         "collective dimension out of range",
     )?;
     Ok(axis)
@@ -76,7 +76,7 @@ pub fn infer_all_gather_start(
     dimension: i64,
     shards: i64,
 ) -> Result<TypeHandle> {
-    Shape::tuple(
+    shape::tuple(
         ctx,
         vec![
             one_or_tuple(ctx, operands)?,
@@ -91,7 +91,7 @@ pub fn infer_all_gather_done(ctx: &Context, context: TypeHandle) -> Result<TypeH
 /// Retain one operand's type or form a tuple for a variadic reduction.
 pub fn infer_all_reduce(ctx: &Context, operands: &[TypeHandle]) -> Result<TypeHandle> {
     for &operand in operands {
-        Shape::rank(ctx, operand)?;
+        shape::rank(ctx, operand)?;
     }
     one_or_tuple(ctx, operands)
 }
@@ -144,7 +144,7 @@ pub fn infer_all_to_all(
     count: i64,
 ) -> Result<TypeHandle> {
     require(count > 0, "all-to-all requires positive split count")?;
-    let operand = Shape::array_view(ctx, operand)?;
+    let operand = shape::array_view(ctx, operand)?;
     let mut output = tensor(ctx, operand)?.clone();
     require(
         !output
@@ -173,7 +173,7 @@ pub fn infer_all_to_all(
                     })
                 })?;
     }
-    Shape::with_default_layout(ctx, TensorType::instantiate(output, ctx).into())
+    shape::with_default_layout(ctx, TensorType::instantiate(output, ctx).into())
 }
 
 /// Form a tuple after checking operand equivalence apart from memory space.
@@ -185,7 +185,7 @@ pub fn infer_all_to_all_tuple(ctx: &Context, operands: &[TypeHandle]) -> Result<
     })?;
     for &operand in operands {
         require(
-            !Shape::has_unbounded(ctx, operand),
+            !shape::has_unbounded(ctx, operand),
             "tuple all-to-all does not support unbounded dynamics",
         )?;
         require(
@@ -193,7 +193,7 @@ pub fn infer_all_to_all_tuple(ctx: &Context, operands: &[TypeHandle]) -> Result<
             "tuple all-to-all operands differ apart from memory space",
         )?;
     }
-    Shape::tuple(ctx, operands.to_vec())
+    shape::tuple(ctx, operands.to_vec())
 }
 
 fn dynamic_root<'a>(
@@ -220,8 +220,8 @@ fn dynamic_root<'a>(
     })?;
     let valid = if exact {
         let expected =
-            Shape::with_default_layout(ctx, Shape::array(ctx, ElementType::S32, vec![count])?)?;
-        Shape::equal_including_layout(ctx, *root, expected)
+            shape::with_default_layout(ctx, shape::array(ctx, ElementType::S32, vec![count])?)?;
+        shape::equal_including_layout(ctx, *root, expected)
     } else {
         let root = tensor(ctx, *root)?;
         root.element == ElementType::S32 && root.dimensions == [count]
@@ -251,7 +251,7 @@ pub fn infer_collective_broadcast(
             message: "broadcast requires an operand".into()
         })
     })?;
-    Shape::rank(ctx, *first)?;
+    shape::rank(ctx, *first)?;
     Ok(*first)
 }
 /// Infer reduction data and validate an optional default-layout S32 root vector.
@@ -269,7 +269,7 @@ pub fn infer_ragged_all_to_all(ctx: &Context, operands: &[TypeHandle]) -> Result
             message: "ragged all-to-all requires an output operand".into()
         })
     })?;
-    Shape::rank(ctx, *output)?;
+    shape::rank(ctx, *output)?;
     Ok(*output)
 }
 /// Infer permutation results, using the output buffer for in-place operations.
@@ -303,13 +303,13 @@ pub fn infer_collective_permute_start(
         vec![operands[0], operands[1]]
     } else {
         if operands.len() == 1 {
-            Shape::rank(ctx, operands[0])?;
+            shape::rank(ctx, operands[0])?;
         }
         let shape = one_or_tuple(ctx, operands)?;
         vec![shape, shape]
     };
     shapes.extend_from_slice(contexts);
-    Shape::tuple(ctx, shapes)
+    shape::tuple(ctx, shapes)
 }
 /// Extract the output component of a permutation context.
 pub fn infer_collective_permute_done(ctx: &Context, context: TypeHandle) -> Result<TypeHandle> {

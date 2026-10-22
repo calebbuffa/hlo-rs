@@ -7,7 +7,7 @@ use crate::{
     Diagnostic,
     attributes::Window,
     inference::Signature,
-    shape::{Dimension, Shape},
+    shape::{self, Dimension},
     types::ElementType,
 };
 use pliron::{context::Context, result::Result, r#type::TypeHandle};
@@ -29,7 +29,7 @@ pub(crate) fn infer_sort_result(ctx: &Context, operands: &[TypeHandle]) -> Resul
     if operands.len() == 1 {
         Ok(first)
     } else {
-        Shape::tuple(ctx, operands.to_vec())
+        shape::tuple(ctx, operands.to_vec())
     }
 }
 
@@ -46,7 +46,7 @@ pub fn infer_sort(
         })
     })?;
     require(
-        Shape::compatible(ctx, comparator.1, Shape::scalar(ctx, ElementType::Pred)?),
+        shape::compatible(ctx, comparator.1, shape::scalar(ctx, ElementType::Pred)?),
         "sort comparator must return a predicate scalar",
     )?;
     require(
@@ -62,8 +62,8 @@ pub fn infer_sort(
         let et = element(ctx, operand)?;
         for &parameter in &comparator.0[index * 2..index * 2 + 2] {
             require(
-                Shape::is_array(ctx, parameter)
-                    && Shape::rank(ctx, parameter)? == 0
+                shape::is_array(ctx, parameter)
+                    && shape::rank(ctx, parameter)? == 0
                     && element(ctx, parameter)?.same_ignoring_fp_precision(et),
                 "sort comparator parameter has incorrect scalar type",
             )?;
@@ -72,7 +72,7 @@ pub fn infer_sort(
     let output = infer_sort_result(ctx, operands)?;
     // HLO sort validation intentionally checks only the upper bound.
     require(
-        dimension < Shape::rank(ctx, array(ctx, first)?)? as i64,
+        dimension < shape::rank(ctx, array(ctx, first)?)? as i64,
         "sort dimension exceeds operand rank",
     )?;
     Ok(output)
@@ -91,9 +91,9 @@ pub fn infer_map(
         })
     })?;
     let mut prototype = array(ctx, first)?;
-    let mut prototype_is_buffer = !Shape::is_array(ctx, first);
+    let mut prototype_is_buffer = !shape::is_array(ctx, first);
     for &other in &operands[1..] {
-        let other_rank = Shape::rank(ctx, other)?;
+        let other_rank = shape::rank(ctx, other)?;
         if !prototype_is_buffer && same_dimensions(ctx, prototype, other)? {
             continue;
         }
@@ -101,7 +101,7 @@ pub fn infer_map(
             if other_rank == 0 {
                 continue;
             }
-            if Shape::rank(ctx, prototype)? == 0 {
+            if shape::rank(ctx, prototype)? == 0 {
                 prototype = other;
                 prototype_is_buffer = false;
                 continue;
@@ -112,7 +112,7 @@ pub fn infer_map(
                 .into(),
         });
     }
-    let rank = Shape::rank(ctx, prototype)?;
+    let rank = shape::rank(ctx, prototype)?;
     require(
         dims.len() == rank,
         "map cannot be applied to a subset of dimensions",
@@ -127,13 +127,13 @@ pub fn infer_map(
     )?;
     let result = array(ctx, callee.1)?;
     require(
-        Shape::rank(ctx, result)? == 0,
+        shape::rank(ctx, result)? == 0,
         "map computation must return a scalar",
     )?;
     for (&operand, &parameter) in operands.iter().zip(&callee.0) {
         let parameter = array(ctx, parameter)?;
         require(
-            Shape::rank(ctx, parameter)? == 0
+            shape::rank(ctx, parameter)? == 0
                 && element(ctx, parameter)?.same_ignoring_fp_precision(element(ctx, operand)?),
             "map parameter must be scalar with operand element type",
         )?;
@@ -157,7 +157,7 @@ pub fn infer_reduce(
     )?;
     let count = operands.len() / 2;
     let first = array(ctx, operands[0])?;
-    let rank = Shape::rank(ctx, first)?;
+    let rank = shape::rank(ctx, first)?;
     for &input in &operands[..count] {
         require(
             same_dimensions(ctx, input, first)?,
@@ -174,20 +174,20 @@ pub fn infer_reduce(
     )?;
     let results = elements(ctx, reducer.1);
     require(
-        results.len() == count && (count == 1 || Shape::is_tuple(ctx, reducer.1)),
+        results.len() == count && (count == 1 || shape::is_tuple(ctx, reducer.1)),
         "reducer result cardinality differs from input count",
     )?;
     for (index, &result) in results.iter().enumerate() {
         let accumulator = reducer.0[index];
         let input_parameter = reducer.0[count + index];
         require(
-            Shape::rank(ctx, result)? == 0
-                && Shape::compatible(ctx, result, accumulator)
-                && Shape::compatible_ignoring_fp_precision(ctx, result, operands[count + index])
-                && Shape::compatible_ignoring_fp_precision(ctx, result, input_parameter)
-                && Shape::compatible_ignoring_fp_precision(
+            shape::rank(ctx, result)? == 0
+                && shape::compatible(ctx, result, accumulator)
+                && shape::compatible_ignoring_fp_precision(ctx, result, operands[count + index])
+                && shape::compatible_ignoring_fp_precision(ctx, result, input_parameter)
+                && shape::compatible_ignoring_fp_precision(
                     ctx,
-                    Shape::scalar(ctx, element(ctx, operands[index])?)?,
+                    shape::scalar(ctx, element(ctx, operands[index])?)?,
                     input_parameter,
                 ),
             "reducer scalar, accumulator, input and initial-value types differ",
@@ -203,8 +203,8 @@ pub fn infer_reduce(
         .iter()
         .map(|&result| output(ctx, element(ctx, result)?, dims.clone()))
         .collect::<Result<Vec<_>>>()?;
-    if Shape::is_tuple(ctx, reducer.1) {
-        Shape::tuple(ctx, outputs)
+    if shape::is_tuple(ctx, reducer.1) {
+        shape::tuple(ctx, outputs)
     } else {
         Ok(outputs[0])
     }
@@ -224,8 +224,8 @@ pub fn infer_reduce_window(
         .zip(&operands[count..])
         .map(|(&input, &initial)| infer_window_output(ctx, input, window, element(ctx, initial)?))
         .collect::<Result<Vec<_>>>()?;
-    if Shape::is_tuple(ctx, signature) {
-        Shape::tuple(ctx, outputs)
+    if shape::is_tuple(ctx, signature) {
+        shape::tuple(ctx, outputs)
     } else {
         Ok(outputs[0])
     }
@@ -242,31 +242,31 @@ pub fn infer_select_and_scatter(
     select: &Signature,
     scatter: &Signature,
 ) -> Result<TypeHandle> {
-    Shape::rank(ctx, operand)?;
+    shape::rank(ctx, operand)?;
     require(
         select.0.len() == 2,
         "select-and-scatter select requires two parameters",
     )?;
     require(
-        Shape::compatible(ctx, select.1, Shape::scalar(ctx, ElementType::Pred)?),
+        shape::compatible(ctx, select.1, shape::scalar(ctx, ElementType::Pred)?),
         "select-and-scatter select must return scalar predicate",
     )?;
-    let scalar = Shape::scalar(ctx, element(ctx, operand)?)?;
+    let scalar = shape::scalar(ctx, element(ctx, operand)?)?;
     for &parameter in &select.0 {
         require(
-            Shape::compatible_ignoring_fp_precision(ctx, parameter, scalar),
+            shape::compatible_ignoring_fp_precision(ctx, parameter, scalar),
             "select-and-scatter select parameters must match operand scalar type",
         )?;
     }
     infer_reduce(
         ctx,
-        &[Shape::scalar(ctx, element(ctx, source)?)?, initial],
+        &[shape::scalar(ctx, element(ctx, source)?)?, initial],
         &[],
         scatter,
     )?;
     let expected = infer_window_output(ctx, operand, window, element(ctx, operand)?)?;
     require(
-        Shape::compatible_ignoring_fp_precision(ctx, source, expected),
+        shape::compatible_ignoring_fp_precision(ctx, source, expected),
         "select-and-scatter source must match window-reduced operand",
     )?;
     Ok(operand)
@@ -276,7 +276,7 @@ fn remove_axis(ctx: &Context, shape: TypeHandle, axis: usize) -> Result<TypeHand
     let mut dims = dimensions(ctx, shape)?;
     require(axis < dims.len(), "scan axis exceeds input/output rank")?;
     dims.remove(axis);
-    Shape::dynamic_array(ctx, element(ctx, shape)?, dims)
+    shape::dynamic_array(ctx, element(ctx, shape)?, dims)
 }
 
 /// Check scan body slices and trailing carries against declared input and output types.
@@ -318,7 +318,7 @@ pub fn verify_scan(
     let inputs = operands.len() - carries;
     let outputs = results.len() - carries;
     let size_source = if inputs > 0 { operands[0] } else { results[0] };
-    let bound = Shape::dimensions(ctx, size_source)?
+    let bound = shape::dimensions(ctx, size_source)?
         .get(axis)
         .copied()
         .ok_or_else(|| {
@@ -329,19 +329,19 @@ pub fn verify_scan(
     let same = |a, b| {
         if strict_dynamic {
             if allow_mixed_precision {
-                Shape::equal_ignoring_layout_and_fp_precision(ctx, a, b)
+                shape::equal_ignoring_layout_and_fp_precision(ctx, a, b)
             } else {
-                Shape::equal_ignoring_layout(ctx, a, b)
+                shape::equal_ignoring_layout(ctx, a, b)
             }
         } else {
-            Shape::compatible(ctx, a, b)
+            shape::compatible(ctx, a, b)
         }
     };
     for (index, (&operand, &parameter)) in operands.iter().zip(&body.0).enumerate() {
         let expected = if index < inputs {
             let slice = remove_axis(ctx, operand, axis)?;
             require(
-                Shape::dimensions(ctx, operand)?[axis] == bound,
+                shape::dimensions(ctx, operand)?[axis] == bound,
                 "scan inputs have different scan dimension extents",
             )?;
             slice
@@ -363,7 +363,7 @@ pub fn verify_scan(
         let expected = if index < outputs {
             let slice = remove_axis(ctx, result, axis)?;
             require(
-                Shape::dimensions(ctx, result)?[axis] == bound,
+                shape::dimensions(ctx, result)?[axis] == bound,
                 "scan outputs have different scan dimension extents",
             )?;
             slice
@@ -407,7 +407,7 @@ pub fn infer_scan(
         "carry count exceeds operand/root count",
     )?;
     let size = if operands.len() > carries {
-        Shape::dimension(ctx, operands[0], axis)?
+        shape::dimension(ctx, operands[0], axis)?
     } else {
         scan_size.ok_or_else(|| {
             pliron::verify_error_noloc!(Diagnostic::Inference {
@@ -433,8 +433,8 @@ pub fn infer_scan(
             output(ctx, element(ctx, shape)?, dims)
         })
         .collect::<Result<Vec<_>>>()?;
-    let result = if Shape::is_tuple(ctx, body.1) {
-        Shape::tuple(ctx, results)?
+    let result = if shape::is_tuple(ctx, body.1) {
+        shape::tuple(ctx, results)?
     } else {
         *results.first().ok_or_else(|| {
             pliron::verify_error_noloc!(Diagnostic::Inference {

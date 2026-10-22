@@ -5,7 +5,7 @@
 //! Dot, ragged dot, scaled dot, and convolution share [`PrecisionConfig`].
 use crate::attributes::{
     Axes, BatchNormOptions, Callees, CholeskyOptions, ConvolutionDimensionNumbers, ConvolutionKind,
-    DotDimensionNumbers, FftType, PrecisionConfig, RaggedDotDimensionNumbers, SortOptions,
+    DotDimensionNumbers, FftKind, PrecisionConfig, RaggedDotDimensionNumbers, SortOptions,
     TriState, TriangularSolveOptions, Window,
 };
 use pliron::{
@@ -93,7 +93,7 @@ impl TopKOp {
 }
 
 native_instruction!(FftOp, "xlahlo.fft", Fft, crate::verification::numerical::instruction,
-    kind: FftType, lengths: Axes);
+    kind: FftKind, lengths: Axes);
 native_instruction!(TriangularSolveOp, "xlahlo.triangular_solve", TriangularSolve, crate::verification::numerical::instruction,
     options: TriangularSolveOptions);
 native_instruction!(CholeskyOp, "xlahlo.cholesky", Cholesky, crate::verification::numerical::instruction,

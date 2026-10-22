@@ -81,7 +81,7 @@ pub(super) fn module(
     module
 }
 pub(super) fn callees(names: &[&'static str]) -> Callees {
-    Callees(names.iter().map(|&s| Identifier::new(s)).collect())
+    Callees(names.iter().map(|&s| s.into()).collect())
 }
 pub(super) fn groups(n: i64) -> ReplicaGroups {
     ReplicaGroups(vec![ReplicaGroup((0..n).collect())])

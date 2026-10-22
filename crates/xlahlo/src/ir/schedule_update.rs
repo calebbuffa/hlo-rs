@@ -1,5 +1,5 @@
 //! Stable dependency-driven schedule repair, following `hlo_schedule.cc`.
-use super::{ControlPredecessors, InstructionName, InstructionSequence, Schedule};
+use super::{ControlPredecessors, ExecutionThread, InstructionName, InstructionSequence, Schedule};
 use crate::{
     ops::{ComputationOp, ReturnOp},
     verification::{error, optional_attr, require},
@@ -27,6 +27,39 @@ use std::collections::{HashMap, HashSet, VecDeque};
 /// Name creation or control-edge removal invalidates the affected computation's
 /// optional logical order; a schedule-only change preserves that order.
 pub fn update_schedule(ctx: &Context, module: Ptr<Operation>) -> Result<()> {
+    update_schedule_with_threads(ctx, module, &HashSet::new())
+}
+
+/// Repair only selected execution threads; an empty selection means all threads.
+///
+/// Excluded sequences and instructions are untouched, including missing schedules.
+/// Filtered repair requires surviving computation symbols for old sequences:
+/// native schedules do not retain execution threads for erased computations.
+/// Remove erased computations' sequences while their thread identity is known
+/// (as native DCE does), or use unfiltered repair to remove orphan sequences.
+pub fn update_schedule_with_threads(
+    ctx: &Context,
+    module: Ptr<Operation>,
+    execution_threads: &HashSet<String>,
+) -> Result<()> {
+    update_selected(ctx, module, execution_threads, None)
+}
+
+/// Repair an edit's exact computation scope without scheduling untouched bodies.
+pub(crate) fn update_schedule_for_computations(
+    ctx: &Context,
+    module: Ptr<Operation>,
+    computations: &HashSet<crate::ir::ComputationName>,
+) -> Result<()> {
+    update_selected(ctx, module, &HashSet::new(), Some(computations))
+}
+
+fn update_selected(
+    ctx: &Context,
+    module: Ptr<Operation>,
+    execution_threads: &HashSet<String>,
+    selected_computations: Option<&HashSet<crate::ir::ComputationName>>,
+) -> Result<()> {
     require(
         Operation::is_op::<ModuleOp>(module, ctx),
         "schedule update requires a module",
@@ -51,16 +84,28 @@ pub fn update_schedule(ctx: &Context, module: Ptr<Operation>) -> Result<()> {
         let symbol = computation
             .get_attr_hlo_computation_name(ctx)
             .ok_or_else(|| error("scheduled computation has no symbol"))?
-            .as_ref()
             .clone();
         require(
             symbols.insert(symbol.clone(), operation).is_none(),
             "duplicate computation symbol",
         )?;
-        computations.push((symbol, computation.body(ctx)));
+        let thread = optional_attr::<ExecutionThread>(ctx, operation, "hlo_execution_thread")?
+            .map(|thread| thread.0.clone())
+            .filter(|thread| !thread.is_empty())
+            .unwrap_or_else(|| "main".into());
+        let selected = selected_computations.map_or_else(
+            || execution_threads.is_empty() || execution_threads.contains(&thread),
+            |selected| selected.contains(&symbol),
+        );
+        computations.push((symbol, computation.body(ctx), selected));
     }
     let mut previous = HashMap::new();
     for sequence in &old.0 {
+        require(
+            (execution_threads.is_empty() && selected_computations.is_none())
+                || symbols.contains_key(&sequence.computation),
+            "filtered schedule repair requires removal of orphan computation sequences",
+        )?;
         require(
             previous
                 .insert(sequence.computation.clone(), sequence.instructions.clone())
@@ -93,7 +138,16 @@ pub fn update_schedule(ctx: &Context, module: Ptr<Operation>) -> Result<()> {
     }
     let mut generated_names = Vec::new();
     let mut dropped_self_edges = Vec::new();
-    for (symbol, region) in computations {
+    for (symbol, region, selected) in computations {
+        if !selected {
+            if let Some(instructions) = previous.get(&symbol) {
+                sequences.push(InstructionSequence {
+                    computation: symbol,
+                    instructions: instructions.clone(),
+                });
+            }
+            continue;
+        }
         let block = region
             .deref(ctx)
             .get_entry_block()
@@ -294,6 +348,7 @@ impl Replay {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::{
         attributes::Index,
@@ -302,7 +357,7 @@ mod tests {
             elementwise::{AddOp, NegateOp},
             movement::CopyOp,
         },
-        shape::Shape,
+        shape,
         types::ElementType,
     };
     use pliron::{
@@ -312,7 +367,7 @@ mod tests {
 
     fn fixture(ctx: &mut Context) -> (Ptr<Operation>, Ptr<BasicBlock>, TypeHandle, Vec<Value>) {
         crate::register(ctx);
-        let ty = Shape::array(ctx, ElementType::F32, vec![2]).unwrap();
+        let ty = shape::array(ctx, ElementType::F32, vec![2]).unwrap();
         let module = ModuleOp::new(ctx, Identifier::new("schedule")).get_operation();
         super::super::set_entry(ctx, module, Identifier::new("main")).unwrap();
         let container = module
@@ -351,7 +406,7 @@ mod tests {
         module.deref_mut(ctx).attributes.set(
             Identifier::new("hlo_schedule"),
             Schedule(vec![InstructionSequence {
-                computation: Identifier::new("main"),
+                computation: "main".into(),
                 instructions: names.iter().map(|name| (*name).into()).collect(),
             }]),
         );
@@ -399,6 +454,179 @@ mod tests {
         )
         .unwrap();
         owner
+    }
+
+    fn threaded_fixture(ctx: &mut Context) -> (Ptr<Operation>, Ptr<Operation>) {
+        let (module, block, ty, values) = fixture(ctx);
+        let domain = crate::ops::control::DomainOp::new(ctx, ty, vec![values[0]]);
+        domain.get_operation().insert_at_back(block, ctx);
+        let root = AddOp::new(ctx, ty, vec![domain.result(ctx), values[1]]);
+        root.get_operation().insert_at_back(block, ctx);
+        name(ctx, root.get_operation(), "root");
+        ReturnOp::new(ctx, root.result(ctx))
+            .get_operation()
+            .insert_at_back(block, ctx);
+        let container = block
+            .deref(ctx)
+            .get_parent_op(ctx)
+            .unwrap()
+            .deref(ctx)
+            .get_parent_block()
+            .unwrap();
+        let signature = FunctionType::get(ctx, vec![ty, ty], vec![ty]).into();
+        let worker = ComputationOp::new(ctx, Identifier::new("worker"), signature);
+        worker.get_operation().insert_at_back(container, ctx);
+        worker.get_operation().deref_mut(ctx).attributes.set(
+            Identifier::new("hlo_execution_thread"),
+            ExecutionThread("worker".into()),
+        );
+        let body = BasicBlock::new(ctx, None, vec![]);
+        body.insert_at_back(worker.body(ctx), ctx);
+        let mut parameters = Vec::new();
+        for index in 0..2 {
+            let parameter = ParameterOp::new(ctx, ty, vec![], Index(index));
+            parameter.get_operation().insert_at_back(body, ctx);
+            name(
+                ctx,
+                parameter.get_operation(),
+                if index == 0 { "w0" } else { "w1" },
+            );
+            parameters.push(parameter.result(ctx));
+        }
+        ReturnOp::new(ctx, parameters[0])
+            .get_operation()
+            .insert_at_back(body, ctx);
+        module.deref_mut(ctx).attributes.set(
+            Identifier::new("hlo_schedule"),
+            Schedule(vec![
+                InstructionSequence {
+                    computation: "main".into(),
+                    instructions: vec!["p0".into(), "stale".into(), "p1".into(), "root".into()],
+                },
+                InstructionSequence {
+                    computation: "worker".into(),
+                    instructions: vec!["w1".into(), "w0".into()],
+                },
+            ]),
+        );
+        (module, worker.get_operation())
+    }
+
+    #[test]
+    fn selected_thread_repairs_domains_without_changing_excluded_sequence_or_ir() {
+        let ctx = &mut Context::new();
+        let (module, worker) = threaded_fixture(ctx);
+        let before = worker.disp(ctx).to_string();
+        let excluded = optional_attr::<Schedule>(ctx, module, "hlo_schedule")
+            .unwrap()
+            .unwrap()
+            .0[1]
+            .clone();
+        update_schedule_with_threads(ctx, module, &HashSet::from(["main".into()])).unwrap();
+        let schedule = optional_attr::<Schedule>(ctx, module, "hlo_schedule")
+            .unwrap()
+            .unwrap()
+            .clone();
+        assert_eq!(schedule.0[1], excluded);
+        assert_eq!(worker.disp(ctx).to_string(), before);
+        assert_eq!(schedule.0[0].instructions.len(), 4);
+        assert!(
+            !schedule.0[0]
+                .instructions
+                .iter()
+                .any(|name| name == "stale")
+        );
+        assert!(
+            schedule.0[0]
+                .instructions
+                .iter()
+                .any(|name| name.starts_with("schedule_update."))
+        );
+        crate::verification::verify(ctx, module).unwrap();
+    }
+
+    #[test]
+    fn empty_thread_selection_repairs_all_threads() {
+        let ctx = &mut Context::new();
+        let (module, _) = threaded_fixture(ctx);
+        {
+            let mut ir = module.deref_mut(ctx);
+            let mut schedule = ir
+                .attributes
+                .get::<Schedule>(&Identifier::new("hlo_schedule"))
+                .unwrap()
+                .clone();
+            schedule.0[1]
+                .instructions
+                .insert(0, "removed_worker".into());
+            ir.attributes.set(Identifier::new("hlo_schedule"), schedule);
+        }
+        update_schedule_with_threads(ctx, module, &HashSet::new()).unwrap();
+        let schedule = optional_attr::<Schedule>(ctx, module, "hlo_schedule")
+            .unwrap()
+            .unwrap()
+            .clone();
+        assert_eq!(schedule.0[1].instructions, ["w1", "w0"]);
+        crate::verification::verify(ctx, module).unwrap();
+    }
+
+    #[test]
+    fn filtered_repair_does_not_create_absent_schedule_or_excluded_sequence() {
+        let ctx = &mut Context::new();
+        let (module, _) = threaded_fixture(ctx);
+        module
+            .deref_mut(ctx)
+            .attributes
+            .0
+            .remove(&Identifier::new("hlo_schedule"));
+        let before = module.disp(ctx).to_string();
+        update_schedule_with_threads(ctx, module, &HashSet::from(["main".into()])).unwrap();
+        assert_eq!(module.disp(ctx).to_string(), before);
+        schedule(ctx, module, &["p0", "p1", "root"]);
+        update_schedule_with_threads(ctx, module, &HashSet::from(["main".into()])).unwrap();
+        assert_eq!(
+            optional_attr::<Schedule>(ctx, module, "hlo_schedule")
+                .unwrap()
+                .unwrap()
+                .0
+                .len(),
+            1
+        );
+        crate::verification::verify(ctx, module).unwrap();
+    }
+
+    #[test]
+    fn filtered_orphan_thread_ambiguity_errors_before_mutation_unfiltered_removes_it() {
+        let ctx = &mut Context::new();
+        let (module, _) = threaded_fixture(ctx);
+        {
+            let mut ir = module.deref_mut(ctx);
+            let mut schedule = ir
+                .attributes
+                .get::<Schedule>(&Identifier::new("hlo_schedule"))
+                .unwrap()
+                .clone();
+            schedule.0.push(InstructionSequence {
+                computation: "erased".into(),
+                instructions: vec![],
+            });
+            ir.attributes.set(Identifier::new("hlo_schedule"), schedule);
+        }
+        let before = module.disp(ctx).to_string();
+        assert!(
+            update_schedule_with_threads(ctx, module, &HashSet::from(["main".into()])).is_err()
+        );
+        assert_eq!(module.disp(ctx).to_string(), before);
+        update_schedule(ctx, module).unwrap();
+        assert_eq!(
+            optional_attr::<Schedule>(ctx, module, "hlo_schedule")
+                .unwrap()
+                .unwrap()
+                .0
+                .len(),
+            2
+        );
+        crate::verification::verify(ctx, module).unwrap();
     }
 
     #[test]
@@ -514,7 +742,7 @@ mod tests {
         module.deref_mut(ctx).attributes.set(
             Identifier::new("hlo_schedule"),
             Schedule(vec![InstructionSequence {
-                computation: Identifier::new("deleted"),
+                computation: "deleted".into(),
                 instructions: vec!["deleted_instruction".into()],
             }]),
         );
@@ -523,7 +751,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(updated.0.len(), 1);
-        assert_eq!(updated.0[0].computation, Identifier::new("main"));
+        assert_eq!(updated.0[0].computation, "main");
         assert_eq!(updated.0[0].instructions, ["p0", "p1"]);
         crate::verification::verify(ctx, module).unwrap();
     }

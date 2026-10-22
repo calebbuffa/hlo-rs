@@ -4,7 +4,7 @@ use crate::{
     ir,
     opcode::Opcode,
     ops::{HloOpInterface, ReturnOp},
-    shape::Shape,
+    shape,
     types::{BufferType, TupleType},
 };
 use pliron::{
@@ -75,8 +75,9 @@ impl Writers<'_> {
                     | Opcode::Conditional
                     | Opcode::DynamicUpdateSlice => writers += 1,
                     Opcode::GetTupleElement => {
-                        let selected = optional_attr::<Index>(ctx, user, "hlo_index")?
-                            .ok_or_else(|| error("missing tuple index"))?;
+                        let selected =
+                            optional_attr::<Index>(ctx, user, crate::attributes::keys::INDEX)?
+                                .ok_or_else(|| error("missing tuple index"))?;
                         if index
                             .first()
                             .is_some_and(|&i| i >= 0 && i as u64 == u64::from(selected.0))
@@ -118,9 +119,10 @@ impl Writers<'_> {
         let data = op.deref(ctx);
         let shape = data.get_type(0);
         let operands: Vec<_> = data.operand_types(ctx).collect();
-        let target = optional_attr::<StringAttr>(ctx, op, "hlo_target")?
+        let target = optional_attr::<StringAttr>(ctx, op, crate::attributes::keys::TARGET)?
             .ok_or_else(|| error("missing custom-call target"))?;
-        let aliases = optional_attr::<OutputOperandAliases>(ctx, op, "hlo_aliases")?;
+        let aliases =
+            optional_attr::<OutputOperandAliases>(ctx, op, crate::attributes::keys::ALIASES)?;
         let aliases = aliases
             .as_deref()
             .map_or(&[][..], |aliases| aliases.0.as_slice());
@@ -137,11 +139,11 @@ impl Writers<'_> {
                         && buffer.deref(ctx).is::<BufferType>(),
                     "Pin/Unpin requires an array and a buffer",
                 )?;
-                let inner = Shape::array_view(ctx, buffer)?;
+                let inner = shape::array_view(ctx, buffer)?;
                 let equal = if options.layout_sensitive {
-                    Shape::equal_including_layout(ctx, array, inner)
+                    shape::equal_including_layout(ctx, array, inner)
                 } else {
-                    Shape::equal_ignoring_layout(ctx, array, inner)
+                    shape::equal_ignoring_layout(ctx, array, inner)
                 };
                 require(
                     equal && aliases.len() == 1,
@@ -195,7 +197,7 @@ pub(super) fn verify(
     ctx: &Context,
     root: Ptr<Operation>,
     instructions: &[(Ptr<Operation>, Option<Ptr<Operation>>)],
-    computations: &HashMap<pliron::identifier::Identifier, Ptr<Operation>>,
+    computations: &HashMap<crate::ir::ComputationName, Ptr<Operation>>,
     options: VerifyOptions,
 ) -> Result<()> {
     let mut shapes = HashSet::new();
@@ -241,7 +243,8 @@ pub(super) fn verify(
         if matches!(
             opcode,
             Opcode::While | Opcode::AsyncStart | Opcode::AsyncUpdate | Opcode::AsyncDone
-        ) && let Some(callees) = optional_attr::<Callees>(ctx, op, "hlo_callees")?
+        ) && let Some(callees) =
+            optional_attr::<Callees>(ctx, op, crate::attributes::keys::CALLEES)?
         {
             for callee in &callees.0 {
                 let computation = *computations
@@ -270,8 +273,12 @@ pub(super) fn verify(
             continue;
         }
         let stream_call = opcode == Opcode::Call
-            && optional_attr::<FrontendAttributes>(ctx, op, "hlo_frontend_attributes")?
-                .is_some_and(|attrs| attrs.get("_xla_stream_annotation").is_some());
+            && optional_attr::<FrontendAttributes>(
+                ctx,
+                op,
+                crate::attributes::keys::FRONTEND_ATTRIBUTES,
+            )?
+            .is_some_and(|attrs| attrs.get("_xla_stream_annotation").is_some());
         if stream_call
             || matches!(
                 opcode,

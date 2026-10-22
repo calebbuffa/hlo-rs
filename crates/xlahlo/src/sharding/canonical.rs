@@ -1,4 +1,4 @@
-use super::{Sharding, ShardingType as T, named};
+use super::{Sharding, ShardingKind as T, named};
 use crate::Diagnostic;
 use pliron::result::Result;
 

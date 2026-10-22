@@ -1,26 +1,29 @@
 #![doc = include_str!("../README.md")]
+#![warn(missing_docs)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 use pliron::{attribute::Attribute, r#type::Type};
 
+pub mod analysis;
 pub mod attributes;
-pub mod effects;
-mod error;
+pub mod evaluator;
 pub mod inference;
 pub mod ir;
 pub mod literal;
 pub mod opcode;
 pub mod ops;
-pub mod original_value;
-pub mod primitive;
-pub mod replica_groups;
+pub mod scalar;
 pub mod shape;
 pub mod sharding;
 pub mod types;
 pub mod verification;
 
-pub use error::Diagnostic;
+mod error;
+
+pub use error::{Diagnostic, RecoveryCategory};
 pub use pliron;
+/// Shared error envelope and result type used by fallible IR APIs.
+pub use pliron::result::{Error, Result};
 
 /// Install HLO's typed parser/printer and operation registrations.
 pub fn register(ctx: &mut pliron::context::Context) {
@@ -32,14 +35,14 @@ pub fn register(ctx: &mut pliron::context::Context) {
     macro_rules! attrs { ($($ty:ty),* $(,)?) => { $(<$ty>::register::<$ty>(ctx);)* }; }
     attrs!(
         types::ElementType,
-        primitive::PrimitiveType,
+        types::PrimitiveType,
         shape::Dimension,
         shape::Tile,
         shape::SplitConfig,
-        shape::DimLevelType,
+        shape::DimLevelKind,
         shape::Layout,
         literal::Literal,
-        sharding::ShardingType,
+        sharding::ShardingKind,
         sharding::ShardGroup,
         sharding::Sharding,
         sharding::MeshAxis,
@@ -50,11 +53,11 @@ pub fn register(ctx: &mut pliron::context::Context) {
         sharding::DimensionSharding,
         sharding::ReductionOp,
         sharding::NamedSharding,
-        replica_groups::IotaReplicaGroupList,
-        replica_groups::MeshAxesReplicaGroupList,
-        original_value::OriginalArray,
-        original_value::OriginalValueElement,
-        original_value::OriginalValue,
+        sharding::IotaReplicaGroupList,
+        sharding::MeshAxesReplicaGroupList,
+        ir::OriginalArray,
+        ir::OriginalValueElement,
+        ir::OriginalValue,
         opcode::Opcode,
     );
     attributes::register(ctx);

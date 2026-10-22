@@ -8,7 +8,7 @@ use crate::{
     inference::{self, Signature, require},
     opcode::Opcode,
     ops::{control::ConstantOp, movement::CopyOp},
-    shape::{Dimension, Shape},
+    shape::{self, Dimension},
     types::{TupleType, tensor},
 };
 use pliron::{
@@ -24,7 +24,7 @@ use std::{cell::Ref, collections::HashSet};
 use super::{VerifyOptions, instruction_types, optional_attr};
 
 pub(crate) fn reshape_inferred_dimension(ctx: &Context, op: Ptr<Operation>) -> Result<i64> {
-    let dimensions = optional_attr::<Axes>(ctx, op, "hlo_dimensions")?;
+    let dimensions = optional_attr::<Axes>(ctx, op, crate::attributes::keys::DIMENSIONS)?;
     match dimensions
         .as_deref()
         .map(|dimensions| dimensions.0.as_slice())
@@ -32,7 +32,7 @@ pub(crate) fn reshape_inferred_dimension(ctx: &Context, op: Ptr<Operation>) -> R
         None | Some([]) => Ok(-1),
         Some([dimension]) if *dimension >= -1 => Ok(*dimension),
         _ => pliron::verify_err_noloc!(Diagnostic::InvalidAttribute {
-            attribute: "hlo_dimensions",
+            attribute: crate::attributes::keys::DIMENSIONS,
             message:
                 "reshape requires at most one inferred dimension, which must be -1 or nonnegative"
                     .into(),
@@ -54,8 +54,8 @@ fn required_attr<'a, T: Attribute>(
 }
 
 fn arrays(ctx: &Context, input: TypeHandle, output: TypeHandle) -> Result<()> {
-    tensor(ctx, Shape::array_view(ctx, input)?)?;
-    tensor(ctx, Shape::array_view(ctx, output)?)?;
+    tensor(ctx, shape::array_view(ctx, input)?)?;
+    tensor(ctx, shape::array_view(ctx, output)?)?;
     Ok(())
 }
 
@@ -65,8 +65,8 @@ fn compatible_element(
     right: TypeHandle,
     allow_mixed_precision: bool,
 ) -> Result<bool> {
-    let left = tensor(ctx, Shape::array_view(ctx, left)?)?.element;
-    let right = tensor(ctx, Shape::array_view(ctx, right)?)?.element;
+    let left = tensor(ctx, shape::array_view(ctx, left)?)?.element;
+    let right = tensor(ctx, shape::array_view(ctx, right)?)?.element;
     Ok(left == right || allow_mixed_precision && left.same_ignoring_fp_precision(right))
 }
 
@@ -83,8 +83,8 @@ fn equivalent(
 }
 
 fn declared_bounds(ctx: &Context, shape: TypeHandle) -> Result<Vec<Dimension>> {
-    (0..Shape::rank(ctx, shape)?)
-        .map(|axis| Shape::dimension(ctx, shape, axis))
+    (0..shape::rank(ctx, shape)?)
+        .map(|axis| shape::dimension(ctx, shape, axis))
         .collect()
 }
 
@@ -101,17 +101,17 @@ fn verify_bitcast(
     if options.size_of(ctx, input)? != options.size_of(ctx, output)? {
         require(
             options.allow_bitcast_to_have_different_size
-                && !Shape::is_dynamic(ctx, input)
-                && !Shape::is_dynamic(ctx, output)
-                && Shape::array_data_size(ctx, input)? == Shape::array_data_size(ctx, output)?,
+                && !shape::is_dynamic(ctx, input)
+                && !shape::is_dynamic(ctx, output)
+                && shape::array_data_size(ctx, input)? == shape::array_data_size(ctx, output)?,
             "bitcast operand and result have different shape sizes",
         )?;
     }
-    let input_array = Shape::array_view(ctx, input)?;
-    let output_array = Shape::array_view(ctx, output)?;
+    let input_array = shape::array_view(ctx, input)?;
+    let output_array = shape::array_view(ctx, output)?;
     if let (Some(input_layout), Some(output_layout)) = (
-        Shape::layout(ctx, input_array)?,
-        Shape::layout(ctx, output_array)?,
+        shape::layout(ctx, input_array)?,
+        shape::layout(ctx, output_array)?,
     ) && (input_layout.memory_space == 5) != (output_layout.memory_space == 5)
     {
         let data = op.deref(ctx);
@@ -165,25 +165,25 @@ pub(crate) fn instruction(
         Opcode::Copy => {
             let expected = inference::movement::infer_copy(ctx, operands[0])?;
             if options.layout_sensitive
-                && Shape::is_array(ctx, result)
-                && Shape::is_array(ctx, expected)
+                && shape::is_array(ctx, result)
+                && shape::is_array(ctx, expected)
                 && let (Some(output_layout), Some(input_layout)) =
-                    (Shape::layout(ctx, result)?, Shape::layout(ctx, expected)?)
+                    (shape::layout(ctx, result)?, shape::layout(ctx, expected)?)
                 && output_layout.memory_space != input_layout.memory_space
                 && (output_layout.memory_space == 5 || input_layout.memory_space == 5)
             {
                 if output_layout.memory_space == 5 {
                     // Host-bound copies may transpose before memory-space propagation.
                     require(
-                        Shape::element_type(ctx, result)? == Shape::element_type(ctx, expected)?,
+                        shape::element_type(ctx, result)? == shape::element_type(ctx, expected)?,
                         "host-bound copy must preserve the element type",
                     )?;
                 } else {
                     let mut layout = output_layout.clone();
                     layout.memory_space = input_layout.memory_space;
-                    let normalized = Shape::with_layout(ctx, result, layout)?;
+                    let normalized = shape::with_layout(ctx, result, layout)?;
                     require(
-                        Shape::equal_including_layout(ctx, normalized, expected),
+                        shape::equal_including_layout(ctx, normalized, expected),
                         "host-to-device copy must preserve shape and layout except memory space",
                     )?;
                 }
@@ -193,10 +193,10 @@ pub(crate) fn instruction(
             return Ok(());
         }
         Opcode::Broadcast => {
-            let dimensions = required_attr::<Axes>(ctx, op, "hlo_dimensions")?;
+            let dimensions = required_attr::<Axes>(ctx, op, crate::attributes::keys::DIMENSIONS)?;
             arrays(ctx, operands[0], result)?;
-            let input = tensor(ctx, Shape::array_view(ctx, operands[0])?)?;
-            let output = tensor(ctx, Shape::array_view(ctx, result)?)?;
+            let input = tensor(ctx, shape::array_view(ctx, operands[0])?)?;
+            let output = tensor(ctx, shape::array_view(ctx, result)?)?;
             require(
                 input.element == output.element,
                 "broadcast element types differ",
@@ -212,8 +212,8 @@ pub(crate) fn instruction(
         }
         Opcode::Reshape => {
             arrays(ctx, operands[0], result)?;
-            let input = tensor(ctx, Shape::array_view(ctx, operands[0])?)?;
-            let output = tensor(ctx, Shape::array_view(ctx, result)?)?;
+            let input = tensor(ctx, shape::array_view(ctx, operands[0])?)?;
+            let output = tensor(ctx, shape::array_view(ctx, result)?)?;
             require(
                 input.element == output.element,
                 "reshape cannot change element type",
@@ -224,7 +224,7 @@ pub(crate) fn instruction(
             } else {
                 Some(usize::try_from(dimension).map_err(|_| {
                     pliron::verify_error_noloc!(Diagnostic::InvalidAttribute {
-                        attribute: "hlo_dimensions",
+                        attribute: crate::attributes::keys::DIMENSIONS,
                         message: "reshape inferred dimension does not fit the host index type"
                             .into(),
                     })
@@ -237,12 +237,12 @@ pub(crate) fn instruction(
                 dimension,
             )?;
             require(
-                Shape::compatible(ctx, result, expected),
+                shape::compatible(ctx, result, expected),
                 "reshape changes element count or dynamic bounds",
             )?;
             if options.verify_reshape_is_bitcast {
                 require(
-                    Shape::reshape_is_bitcast(ctx, operands[0], result, false)?,
+                    shape::reshape_is_bitcast(ctx, operands[0], result, false)?,
                     "reshape is not a physical bitcast",
                 )?;
             }
@@ -250,8 +250,8 @@ pub(crate) fn instruction(
         }
         Opcode::DynamicReshape => {
             arrays(ctx, operands[0], result)?;
-            let input = tensor(ctx, Shape::array_view(ctx, operands[0])?)?;
-            let output = tensor(ctx, Shape::array_view(ctx, result)?)?;
+            let input = tensor(ctx, shape::array_view(ctx, operands[0])?)?;
+            let output = tensor(ctx, shape::array_view(ctx, result)?)?;
             require(
                 input.element == output.element,
                 "dynamic reshape cannot change element type",
@@ -266,7 +266,7 @@ pub(crate) fn instruction(
             )?;
             for (axis, &size) in operands[1..].iter().enumerate() {
                 require(
-                    Shape::element_type(ctx, size)? == crate::types::ElementType::S32,
+                    shape::element_type(ctx, size)? == crate::types::ElementType::S32,
                     &format!(
                         "dynamic reshape size operand for axis {axis} must have S32 element type"
                     ),
@@ -281,7 +281,7 @@ pub(crate) fn instruction(
             return Ok(());
         }
         Opcode::Transpose => {
-            let dimensions = required_attr::<Axes>(ctx, op, "hlo_dimensions")?;
+            let dimensions = required_attr::<Axes>(ctx, op, crate::attributes::keys::DIMENSIONS)?;
             arrays(ctx, operands[0], result)?;
             let expected = inference::movement::infer_transpose(ctx, operands[0], &dimensions)?;
             require(
@@ -291,17 +291,17 @@ pub(crate) fn instruction(
             expected
         }
         Opcode::Reverse => {
-            let dimensions = required_attr::<Axes>(ctx, op, "hlo_dimensions")?;
+            let dimensions = required_attr::<Axes>(ctx, op, crate::attributes::keys::DIMENSIONS)?;
             let expected = inference::movement::infer_reverse(ctx, operands[0], &dimensions)?;
             equivalent(ctx, options, result, expected)?;
             return Ok(());
         }
         Opcode::Slice => {
-            let geometry = required_attr::<Slice>(ctx, op, "hlo_geometry")?;
+            let geometry = required_attr::<Slice>(ctx, op, crate::attributes::keys::GEOMETRY)?;
             inference::movement::infer_slice(ctx, operands[0], &geometry)?
         }
         Opcode::DynamicSlice => {
-            let sizes = required_attr::<Axes>(ctx, op, "hlo_slice_sizes")?;
+            let sizes = required_attr::<Axes>(ctx, op, crate::attributes::keys::SLICE_SIZES)?;
             inference::movement::infer_dynamic_slice(ctx, operands[0], &operands[1..], &sizes)?
         }
         Opcode::DynamicUpdateSlice => {
@@ -323,7 +323,7 @@ pub(crate) fn instruction(
             return Ok(());
         }
         Opcode::Concatenate => {
-            let axis = required_attr::<Index>(ctx, op, "hlo_index")?;
+            let axis = required_attr::<Index>(ctx, op, crate::attributes::keys::INDEX)?;
             for &operand in &operands[1..] {
                 require(
                     compatible_element(ctx, operands[0], operand, options.allow_mixed_precision)?,
@@ -341,14 +341,18 @@ pub(crate) fn instruction(
             inference::movement::infer_pad(ctx, operands[0], operands[1], &config)?
         }
         Opcode::Iota => {
-            let axis = required_attr::<Index>(ctx, op, "hlo_index")?;
+            let axis = required_attr::<Index>(ctx, op, crate::attributes::keys::INDEX)?;
             inference::movement::infer_iota(ctx, result, axis.0 as usize)?;
             return Ok(());
         }
         Opcode::Gather => {
-            let dimensions = required_attr::<GatherDimensionNumbers>(ctx, op, "hlo_dimensions")?;
-            let slice_sizes = required_attr::<Axes>(ctx, op, "hlo_slice_sizes")?;
-            let _flags = required_attr::<IndexFlags>(ctx, op, "hlo_flags")?;
+            let dimensions = required_attr::<GatherDimensionNumbers>(
+                ctx,
+                op,
+                crate::attributes::keys::DIMENSIONS,
+            )?;
+            let slice_sizes = required_attr::<Axes>(ctx, op, crate::attributes::keys::SLICE_SIZES)?;
+            let _flags = required_attr::<IndexFlags>(ctx, op, crate::attributes::keys::FLAGS)?;
             inference::movement::infer_gather(
                 ctx,
                 operands[0],
@@ -358,9 +362,13 @@ pub(crate) fn instruction(
             )?
         }
         Opcode::Scatter => {
-            let dimensions = required_attr::<ScatterDimensionNumbers>(ctx, op, "hlo_dimensions")?;
-            let _callees = required_attr::<Callees>(ctx, op, "hlo_callees")?;
-            let _flags = required_attr::<IndexFlags>(ctx, op, "hlo_flags")?;
+            let dimensions = required_attr::<ScatterDimensionNumbers>(
+                ctx,
+                op,
+                crate::attributes::keys::DIMENSIONS,
+            )?;
+            let _callees = required_attr::<Callees>(ctx, op, crate::attributes::keys::CALLEES)?;
+            let _flags = required_attr::<IndexFlags>(ctx, op, crate::attributes::keys::FLAGS)?;
             require(
                 operands.len() >= 3 && !operands.len().is_multiple_of(2),
                 "scatter needs N inputs, indices, and N updates",
@@ -381,11 +389,11 @@ pub(crate) fn instruction(
             )?
         }
         Opcode::GetDimensionSize => {
-            let axis = required_attr::<Index>(ctx, op, "hlo_index")?;
+            let axis = required_attr::<Index>(ctx, op, crate::attributes::keys::INDEX)?;
             inference::movement::infer_get_dimension_size(ctx, operands[0], axis.0 as usize)?
         }
         Opcode::SetDimensionSize => {
-            let axis = required_attr::<Index>(ctx, op, "hlo_index")?;
+            let axis = required_attr::<Index>(ctx, op, crate::attributes::keys::INDEX)?;
             inference::movement::infer_set_dimension_size(
                 ctx,
                 operands[0],
@@ -394,7 +402,7 @@ pub(crate) fn instruction(
             )?
         }
         Opcode::Shuffle => {
-            let dimensions = required_attr::<Axes>(ctx, op, "hlo_dimensions")?;
+            let dimensions = required_attr::<Axes>(ctx, op, crate::attributes::keys::DIMENSIONS)?;
             let mode = required_attr::<ShuffleMode>(ctx, op, "hlo_mode")?;
             inference::movement::infer_shuffle(ctx, operands[0], &dimensions, &mode)?
         }

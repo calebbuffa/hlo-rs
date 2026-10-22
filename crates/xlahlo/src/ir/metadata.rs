@@ -1,7 +1,7 @@
 //! Owned module proto metadata, independent of execution configuration.
 use crate::{
     attributes::{Bytes, Payload},
-    original_value::OriginalArray,
+    ir::OriginalArray,
     sharding::Sharding,
     verification::{optional_attr, require},
 };
@@ -27,7 +27,9 @@ use std::collections::HashSet;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 /// An entry parameter subshape prefetched to an alternate-memory byte offset.
 pub struct CrossProgramPrefetch {
+    /// Zero-based entry-computation parameter number.
     pub parameter: i64,
+    /// Zero-based tuple path selecting the prefetched parameter subshape.
     pub index: Vec<i64>,
     /// Proto3's absent offset is zero.
     pub offset: i64,
@@ -49,13 +51,21 @@ impl Verify for CrossProgramPrefetch {
 /// Profile types: 0 invalid, 1 flag, 2 fusion, 3 layout, 4 dot, 5 flagnet,
 /// 6 sharding, 7 schedule. Other enums follow xla_data.proto.
 pub struct ModuleProfileInfo {
+    /// Numeric HloModuleProto profile type; unknown values are preserved.
     pub profile_type: i32,
+    /// Exact IEEE-754 bit pattern of the relative speedup.
     pub relative_speedup_bits: u64,
+    /// Numeric profile-source enum from the XLA proto.
     pub profile_source: i32,
+    /// Numeric compilation-event enum from the XLA proto.
     pub compilation_event: i32,
+    /// Profile fingerprint string, preserved without interpretation.
     pub fingerprint: String,
+    /// Numeric profile-generation-strategy enum from the XLA proto.
     pub profile_generation_strategy: i32,
+    /// Changelist at which the profile was originally generated.
     pub original_changelist: i64,
+    /// Changelist associated with the profile.
     pub changelist: i64,
 }
 
@@ -67,6 +77,7 @@ pub struct ModuleProfileInfo {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 /// Physical device IDs in replica order for one logical computation.
 pub struct ComputationDevice {
+    /// Device ID for each replica, in replica-index order.
     pub replica_device_ids: Vec<i64>,
 }
 
@@ -77,8 +88,11 @@ pub struct ComputationDevice {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 /// Computation-major DeviceAssignmentProto geometry.
 pub struct DeviceAssignment {
+    /// Number of replicas in each computation's device list.
     pub replica_count: i32,
+    /// Number of logical computations in the assignment.
     pub computation_count: i32,
+    /// Per-computation device lists, ordered by computation index.
     pub computation_devices: Vec<ComputationDevice>,
 }
 impl Verify for DeviceAssignment {
@@ -100,11 +114,17 @@ impl Verify for DeviceAssignment {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 /// Stack-frame source location; name IDs must be valid 1-based references.
 pub struct FileLocation {
+    /// One-based index into [`StackFrameIndex::file_names`].
     pub file_name_id: i32,
+    /// One-based index into [`StackFrameIndex::function_names`].
     pub function_name_id: i32,
+    /// Starting source line.
     pub line: i32,
+    /// Ending source line.
     pub end_line: i32,
+    /// Starting source column.
     pub column: i32,
+    /// Ending source column.
     pub end_column: i32,
 }
 
@@ -112,7 +132,9 @@ pub struct FileLocation {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 /// Stack-frame location and parent IDs; only the parent may be zero (no parent).
 pub struct StackFrame {
+    /// One-based index into [`StackFrameIndex::file_locations`].
     pub file_location_id: i32,
+    /// One-based index of the parent frame, or zero when there is no parent.
     pub parent_frame_id: i32,
 }
 
@@ -123,9 +145,13 @@ pub struct StackFrame {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 /// Flat stack-frame index with checked references and acyclic parent links.
 pub struct StackFrameIndex {
+    /// Unique file names addressed by file-location IDs.
     pub file_names: Vec<String>,
+    /// Unique function names addressed by file-location IDs.
     pub function_names: Vec<String>,
+    /// Source locations referenced by stack frames.
     pub file_locations: Vec<FileLocation>,
+    /// Frames whose parent links form an acyclic graph.
     pub stack_frames: Vec<StackFrame>,
 }
 impl Verify for StackFrameIndex {
@@ -186,8 +212,11 @@ impl Verify for StackFrameIndex {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 /// Debug-only x64 reconstruction strings, preserved even when not interpreted.
 pub struct X64Config {
+    /// Debug-only xprecision fragment string.
     pub xprecision_64bit_fragment: String,
+    /// Name of the original logging instruction.
     pub original_log_instruction_name: String,
+    /// Debug-only textual representation of the original type.
     pub xprecision_64bit_original_type: String,
 }
 
@@ -202,10 +231,15 @@ pub struct DebugAttributes {
     /// 0 none, 1 default, 2 fusion debugger, 3 no fusion, 4 guaranteed.
     /// Unknown enum numbers are retained, not silently converted to none.
     pub log_mode: i32,
+    /// Callback identifier associated with the debug operation.
     pub callback_id: i64,
+    /// Operation identifier used by the debugger.
     pub op_id: i64,
+    /// Whether the operation is partitioned.
     pub partitioned: bool,
+    /// Serialized sharding description for the operation's operands.
     pub operands_sharding: String,
+    /// Optional x64 reconstruction/debug strings.
     pub x64_config: Option<X64Config>,
 }
 
@@ -216,7 +250,9 @@ pub struct DebugAttributes {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 /// Debug attributes for an original array; preserves proto message presence.
 pub struct DebugAttributeTableEntry {
+    /// Original-array key; absence is preserved separately from an empty key.
     pub original_array: Option<OriginalArray>,
+    /// Debug-attribute entries associated with the original array.
     pub debug_attributes: Vec<DebugAttributes>,
 }
 fn verify_original(array: Option<&OriginalArray>) -> Result<()> {
@@ -236,7 +272,10 @@ impl Verify for DebugAttributeTableEntry {
 /// Immutable native module assembly snapshot, deep-copied on materialization.
 ///
 /// This is native assembly, not serialized HloModuleProto bytes.
-pub struct RecoveryModule(pub String);
+pub struct RecoveryModule(
+    /// Native module assembly captured as an immutable string.
+    pub String,
+);
 impl RecoveryModule {
     /// Capture a verified builtin module without retaining mutable IR handles.
     pub fn capture(ctx: &Context, module: Ptr<Operation>) -> Result<Self> {
@@ -274,8 +313,11 @@ impl Verify for RecoveryModule {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 /// Recovery mapping and optional recursively owned recovery graph.
 pub struct OriginalValueRecoveryEntry {
+    /// Provenance key before recovery.
     pub old_original_array: Option<OriginalArray>,
+    /// Provenance key produced by recovery.
     pub new_original_array: Option<OriginalArray>,
+    /// Optional immutable module snapshot used to recover the value.
     pub recovery_module: Option<RecoveryModule>,
 }
 impl Verify for OriginalValueRecoveryEntry {
@@ -295,7 +337,10 @@ impl Verify for OriginalValueRecoveryEntry {
 )]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 /// Ordered recovery entries; no optimizer or recovery execution is implied.
-pub struct OriginalValueRecoveryTable(pub Vec<OriginalValueRecoveryEntry>);
+pub struct OriginalValueRecoveryTable(
+    /// Ordered mappings retained from the module proto.
+    pub Vec<OriginalValueRecoveryEntry>,
+);
 impl Verify for OriginalValueRecoveryTable {
     fn verify(&self, ctx: &Context) -> Result<()> {
         for entry in &self.0 {
@@ -312,16 +357,27 @@ impl Verify for OriginalValueRecoveryTable {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 /// Additive HloModuleProto metadata attached under `hlo_module_metadata`.
 pub struct ModuleMetadata {
+    /// Cross-program-prefetch requests for entry parameters.
     pub cross_program_prefetches: Vec<CrossProgramPrefetch>,
+    /// Optional sharding assigned to the entry computation's result.
     pub spmd_output_sharding: Option<Sharding>,
+    /// Module-level profile records; proto ordering is retained.
     pub profile_info: Vec<ModuleProfileInfo>,
+    /// Per-entry-parameter SPMD shardings.
     pub spmd_parameters_shardings: Vec<Sharding>,
+    /// Optional physical replica/device assignment.
     pub device_assignment: Option<DeviceAssignment>,
+    /// Whether automatic SPMD partitioning is enabled for the module.
     pub use_auto_spmd_partitioning: bool,
+    /// Optional indexed source locations and stack frames.
     pub stack_frame_index: Option<StackFrameIndex>,
+    /// Optional original-value recovery mappings.
     pub original_value_recovery_table: Option<OriginalValueRecoveryTable>,
+    /// Device type string from the module proto.
     pub device_type: String,
+    /// Debug attributes grouped by original-array identity.
     pub debug_attributes: Vec<DebugAttributeTableEntry>,
+    /// Opaque module-level backend configuration bytes.
     pub backend_config: Bytes,
 }
 impl Verify for ModuleMetadata {
@@ -386,7 +442,10 @@ pub fn metadata(ctx: &Context, module: Ptr<Operation>) -> Result<ModuleMetadata>
 )]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 /// Instruction field 99; presence takes precedence over legacy backend_config.
-pub struct BackendConfigPayload(pub Payload);
+pub struct BackendConfigPayload(
+    /// Payload message, preserving absent, inline-byte, and table-ID variants.
+    pub Payload,
+);
 
 /// Attach instruction field 99 without normalizing inline bytes or IDs.
 pub fn set_backend_config_payload(

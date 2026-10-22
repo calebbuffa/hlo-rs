@@ -3,8 +3,8 @@ use super::{ControlPredecessors, InstructionName};
 use crate::{
     Diagnostic,
     attributes::{FrontendAttributes, OpMetadata},
+    ir::OriginalValue,
     ops::control::FusionOp,
-    original_value::OriginalValue,
     sharding::Sharding,
     verification::require,
 };
@@ -535,7 +535,6 @@ pub fn verify_fusion_parameters(ctx: &Context, block: Ptr<BasicBlock>) -> Result
 }
 
 /// Check graph closure for raw cloning without selecting annotation verification policy.
-#[cfg(test)]
 pub(crate) fn verify_fusion_parameter_structure(
     ctx: &Context,
     block: Ptr<BasicBlock>,

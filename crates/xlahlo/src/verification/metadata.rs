@@ -7,14 +7,13 @@ use crate::{
         InstructionName, Schedule,
     },
     ops::ReturnOp,
-    shape::Shape,
+    shape,
     types::{BufferType, TensorType, TupleType},
 };
 use pliron::{
     basic_block::BasicBlock,
     builtin::{attributes::TypeAttr, type_interfaces::FunctionTypeInterface, types::FunctionType},
     context::{Context, Ptr},
-    identifier::Identifier,
     linked_list::ContainsLinkedList,
     operation::Operation,
     result::Result,
@@ -37,9 +36,11 @@ pub(super) fn verify_instruction(
     stack_frame_count: usize,
 ) -> Result<()> {
     let data = op.deref(ctx);
-    if let Some(payload) =
-        optional_attr::<ir::BackendConfigPayload>(ctx, op, "hlo_backend_config_payload")?
-        && let Payload::Id(id) = payload.0
+    if let Some(payload) = optional_attr::<ir::BackendConfigPayload>(
+        ctx,
+        op,
+        crate::attributes::keys::BACKEND_CONFIG_PAYLOAD,
+    )? && let Payload::Id(id) = payload.0
     {
         require(
             usize::try_from(id).is_ok_and(|id| id < payload_count),
@@ -51,11 +52,11 @@ pub(super) fn verify_instruction(
     }
     let shape = data.get_type(0);
     if let Some(value) =
-        optional_attr::<crate::original_value::OriginalValue>(ctx, op, "hlo_original_value")?
+        optional_attr::<crate::ir::OriginalValue>(ctx, op, crate::attributes::keys::ORIGINAL_VALUE)?
     {
         value.verify_shape(ctx, shape)?;
     }
-    if Shape::has_unbounded(ctx, shape) {
+    if shape::has_unbounded(ctx, shape) {
         require(
             options
                 .supported_unbounded_dynamic_op
@@ -79,7 +80,8 @@ pub(super) fn verify_instruction(
             }
         }
     }
-    if let Some(metadata) = optional_attr::<OpMetadata>(ctx, op, "hlo_metadata")? {
+    if let Some(metadata) = optional_attr::<OpMetadata>(ctx, op, crate::attributes::keys::METADATA)?
+    {
         require(
             usize::try_from(metadata.stack_frame_id).is_ok_and(|id| id <= stack_frame_count),
             "instruction stack frame ID is out of range",
@@ -91,7 +93,7 @@ pub(super) fn verify_instruction(
             )?;
         }
         if options.verify_instruction_name_unchanged && !metadata.scheduling_name.is_empty() {
-            let name = optional_attr::<InstructionName>(ctx, op, "hlo_name")?
+            let name = optional_attr::<InstructionName>(ctx, op, crate::attributes::keys::NAME)?
                 .ok_or_else(|| error("scheduling metadata requires an instruction name"))?;
             require(
                 metadata.scheduling_name == name.0
@@ -112,16 +114,20 @@ pub(super) fn verify_control_dependencies(ctx: &Context, block: Ptr<BasicBlock>)
         if op.deref(ctx).attributes.0.is_empty() {
             continue;
         }
-        if let Some(name) = optional_attr::<InstructionName>(ctx, op, "hlo_name")? {
+        if let Some(name) =
+            optional_attr::<InstructionName>(ctx, op, crate::attributes::keys::NAME)?
+        {
             require(!name.0.is_empty(), "instruction name cannot be empty")?;
             require(
                 names.insert(name.0.clone(), op).is_none(),
                 "duplicate instruction name",
             )?;
         }
-        if let Some(predecessors) =
-            optional_attr::<ControlPredecessors>(ctx, op, "hlo_control_predecessors")?
-            && !predecessors.0.is_empty()
+        if let Some(predecessors) = optional_attr::<ControlPredecessors>(
+            ctx,
+            op,
+            crate::attributes::keys::CONTROL_PREDECESSORS,
+        )? && !predecessors.0.is_empty()
         {
             controls.push((op, predecessors));
         }
@@ -185,9 +191,13 @@ pub(super) fn verify_control_dependencies(ctx: &Context, block: Ptr<BasicBlock>)
 }
 
 pub(crate) fn execution_thread(ctx: &Context, computation: Ptr<Operation>) -> Result<String> {
-    let thread = optional_attr::<ExecutionThread>(ctx, computation, "hlo_execution_thread")?
-        .map(|thread| thread.0.clone())
-        .unwrap_or_default();
+    let thread = optional_attr::<ExecutionThread>(
+        ctx,
+        computation,
+        crate::attributes::keys::EXECUTION_THREAD,
+    )?
+    .map(|thread| thread.0.clone())
+    .unwrap_or_default();
     Ok(if thread.is_empty() {
         "main".to_owned()
     } else {
@@ -198,10 +208,11 @@ pub(crate) fn execution_thread(ctx: &Context, computation: Ptr<Operation>) -> Re
 pub(super) fn verify_schedule(
     ctx: &Context,
     module: Ptr<Operation>,
-    computations: &HashMap<Identifier, Ptr<Operation>>,
+    computations: &HashMap<crate::ir::ComputationName, Ptr<Operation>>,
     calls: &HashMap<Ptr<Operation>, Vec<Ptr<Operation>>>,
 ) -> Result<()> {
-    let Some(schedule) = optional_attr::<Schedule>(ctx, module, "hlo_schedule")? else {
+    let Some(schedule) = optional_attr::<Schedule>(ctx, module, crate::attributes::keys::SCHEDULE)?
+    else {
         return Ok(());
     };
     let entry = computations[&ir::entry(ctx, module)?];
@@ -235,7 +246,9 @@ pub(super) fn verify_schedule(
             .collect();
         let mut names = HashMap::new();
         for &op in &instructions {
-            if let Some(name) = optional_attr::<InstructionName>(ctx, op, "hlo_name")? {
+            if let Some(name) =
+                optional_attr::<InstructionName>(ctx, op, crate::attributes::keys::NAME)?
+            {
                 names.insert(name.0.clone(), op);
             }
         }
@@ -265,9 +278,11 @@ pub(super) fn verify_schedule(
                     )?;
                 }
             }
-            if let Some(predecessors) =
-                optional_attr::<ControlPredecessors>(ctx, op, "hlo_control_predecessors")?
-            {
+            if let Some(predecessors) = optional_attr::<ControlPredecessors>(
+                ctx,
+                op,
+                crate::attributes::keys::CONTROL_PREDECESSORS,
+            )? {
                 for predecessor in &predecessors.0 {
                     require(
                         names.get(predecessor).is_some_and(|op| seen.contains(op)),
@@ -284,7 +299,7 @@ pub(super) fn verify_schedule(
 pub(super) fn verify_aliases_and_donors(
     ctx: &Context,
     module: Ptr<Operation>,
-    computations: &HashMap<Identifier, Ptr<Operation>>,
+    computations: &HashMap<crate::ir::ComputationName, Ptr<Operation>>,
     signatures: &HashMap<Ptr<Operation>, Signature>,
     options: VerifyOptions,
 ) -> Result<()> {
@@ -318,22 +333,26 @@ pub(super) fn verify_aliases_and_donors(
             .ok()
             .and_then(|i| program.0.get(i))
             .ok_or_else(|| error("entry parameter number out of range"))?;
-        Shape::subshape(ctx, *shape, &index(path)?)
+        shape::subshape(ctx, *shape, &index(path)?)
     };
     let mut outputs = HashSet::new();
     let mut inputs = HashSet::new();
-    let aliases = optional_attr::<InputOutputAliases>(ctx, module, "hlo_input_output_aliases")?;
+    let aliases = optional_attr::<InputOutputAliases>(
+        ctx,
+        module,
+        crate::attributes::keys::INPUT_OUTPUT_ALIASES,
+    )?;
     if let Some(aliases) = &aliases {
         for alias in &aliases.0 {
             let input = parameter(alias.parameter_number, &alias.parameter_shape_index.0)?;
-            let output = Shape::subshape(ctx, program.1, &index(&alias.output_shape_index.0)?)?;
+            let output = shape::subshape(ctx, program.1, &index(&alias.output_shape_index.0)?)?;
             require(
-                Shape::is_array_or_buffer(ctx, input) && Shape::is_array_or_buffer(ctx, output),
+                shape::is_array_or_buffer(ctx, input) && shape::is_array_or_buffer(ctx, output),
                 "module aliases must reference array subshapes",
             )?;
             if alias.kind == AliasKind::MustAlias {
                 require(
-                    Shape::equal_including_layout(ctx, input, output),
+                    shape::equal_including_layout(ctx, input, output),
                     "must-alias entry shapes and layouts differ",
                 )?;
             }
@@ -346,7 +365,7 @@ pub(super) fn verify_aliases_and_donors(
                 "module alias input or output is used more than once",
             )?;
             let size = |shape| {
-                if Shape::has_unbounded(ctx, shape) {
+                if shape::has_unbounded(ctx, shape) {
                     Ok(i64::MIN)
                 } else if options.layout_sensitive {
                     options.size_of(ctx, shape)
@@ -360,10 +379,12 @@ pub(super) fn verify_aliases_and_donors(
             )?;
         }
     }
-    if let Some(donors) = optional_attr::<BufferDonors>(ctx, module, "hlo_buffer_donors")? {
+    if let Some(donors) =
+        optional_attr::<BufferDonors>(ctx, module, crate::attributes::keys::BUFFER_DONORS)?
+    {
         for donor in &donors.0 {
             require(
-                Shape::is_array_or_buffer(
+                shape::is_array_or_buffer(
                     ctx,
                     parameter(donor.parameter_number, &donor.parameter_shape_index.0)?,
                 ),
@@ -387,7 +408,8 @@ fn verify_module_metadata(
     entry: &Signature,
     options: VerifyOptions,
 ) -> Result<()> {
-    let Some(metadata) = optional_attr::<ir::ModuleMetadata>(ctx, module, "hlo_module_metadata")?
+    let Some(metadata) =
+        optional_attr::<ir::ModuleMetadata>(ctx, module, crate::attributes::keys::MODULE_METADATA)?
     else {
         return Ok(());
     };
@@ -396,9 +418,9 @@ fn verify_module_metadata(
             .ok()
             .and_then(|i| entry.0.get(i))
             .ok_or_else(|| error("cross-program prefetch parameter out of range"))?;
-        let shape = Shape::subshape(ctx, *parameter, &index(&prefetch.index)?)?;
+        let shape = shape::subshape(ctx, *parameter, &index(&prefetch.index)?)?;
         require(
-            Shape::is_array_or_buffer(ctx, shape),
+            shape::is_array_or_buffer(ctx, shape),
             "cross-program prefetch must reference an array",
         )?;
     }

@@ -7,8 +7,8 @@
 //! at mutation commit. Arbitrary generic rewriters are not intercepted here.
 //! Module verification validates these hints only after physical SSA checks;
 //! logical order never grants forward operand references.
-//! OpenXLA 941335fe721cdc5fad5b6c37a0c2e3a7a36fea24:
-//! hlo_computation.cc:2174-2245; hlo_instruction.cc:132-211,6179-6203.
+//! Based on OpenXLA's instruction and computation ordering in
+//! `hlo_computation.cc` and `hlo_instruction.cc`.
 use super::{ControlPredecessors, InstructionName, fusion_parameters};
 use crate::{
     ops::{ComputationOp, ReturnOp},
@@ -33,6 +33,7 @@ use std::collections::{HashMap, HashSet};
     verifier = "succ"
 )]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// An exact ordering override for the named subject's graph-derived members.
 pub struct OrderPermutation {
     /// Named instruction or fusion parameter whose order is overridden.
     pub subject: String,
@@ -46,6 +47,11 @@ pub struct OrderPermutation {
     verifier = "succ"
 )]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+/// Optional logical instruction, nested-block, user, and control ordering hints.
+///
+/// These hints never override graph membership or physical SSA dominance.
+/// Nonempty permutations must exactly match the members derived from the current
+/// IR; stale names or incomplete/duplicate member lists are invalid.
 pub struct InstructionOrder {
     /// Empty means derive from physical order. Nonempty is an exact permutation
     /// of the containing computation's direct instructions, excluding return.
@@ -492,6 +498,7 @@ pub(crate) fn register(ctx: &mut Context) {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::{
         attributes::Index,

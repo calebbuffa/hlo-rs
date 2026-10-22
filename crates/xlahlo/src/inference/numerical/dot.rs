@@ -5,7 +5,7 @@ use crate::{
     attributes::{
         DotDimensionNumbers, RaggedDotDimensionNumbers, SparsityConfig, TensorSparsityConfig,
     },
-    shape::{Shape, UNBOUNDED_SIZE},
+    shape::{self, UNBOUNDED_SIZE},
     types::ElementType,
 };
 use pliron::{context::Context, result::Result, r#type::TypeHandle};
@@ -58,8 +58,8 @@ pub(super) fn validate(
     d: &DotDimensionNumbers,
     sparsity: Option<&SparsityConfig>,
 ) -> Result<(Vec<bool>, Vec<bool>)> {
-    let ld = Shape::dimensions(ctx, array(ctx, lhs)?)?;
-    let rd = Shape::dimensions(ctx, array(ctx, rhs)?)?;
+    let ld = shape::dimensions(ctx, array(ctx, lhs)?)?;
+    let rd = shape::dimensions(ctx, array(ctx, rhs)?)?;
     let left: Vec<_> = d
         .lhs_contracting_dimensions
         .0
@@ -146,21 +146,21 @@ pub fn infer_dot_with_sparsity(
     preferred: Option<ElementType>,
     sparsity: Option<&SparsityConfig>,
 ) -> Result<TypeHandle> {
-    require(Shape::is_array(ctx, lhs), "dot lhs must be an array")?;
-    require(Shape::is_array(ctx, rhs), "dot rhs must be an array")?;
+    require(shape::is_array(ctx, lhs), "dot lhs must be an array")?;
+    require(shape::is_array(ctx, rhs), "dot rhs must be an array")?;
     let (left, right) = validate(ctx, lhs, rhs, d, sparsity)?;
     let mut dims = Vec::new();
     for &axis in &d.lhs_batch_dimensions.0 {
-        dims.push(Shape::dimension(ctx, lhs, axis as usize)?);
+        dims.push(shape::dimension(ctx, lhs, axis as usize)?);
     }
     for (axis, used) in left.into_iter().enumerate() {
         if !used {
-            dims.push(Shape::dimension(ctx, lhs, axis)?);
+            dims.push(shape::dimension(ctx, lhs, axis)?);
         }
     }
     for (axis, used) in right.into_iter().enumerate() {
         if !used {
-            dims.push(Shape::dimension(ctx, rhs, axis)?);
+            dims.push(shape::dimension(ctx, rhs, axis)?);
         }
     }
     output(ctx, dot_element(ctx, lhs, rhs, preferred)?, dims)
@@ -177,10 +177,10 @@ pub fn infer_ragged_dot(
     d: &RaggedDotDimensionNumbers,
     preferred: Option<ElementType>,
 ) -> Result<TypeHandle> {
-    require(Shape::is_array(ctx, lhs), "ragged-dot lhs must be an array")?;
-    require(Shape::is_array(ctx, rhs), "ragged-dot rhs must be an array")?;
+    require(shape::is_array(ctx, lhs), "ragged-dot lhs must be an array")?;
+    require(shape::is_array(ctx, rhs), "ragged-dot rhs must be an array")?;
     require(
-        Shape::is_array(ctx, group_sizes),
+        shape::is_array(ctx, group_sizes),
         "ragged-dot group sizes must be an array",
     )?;
     let groups = group_sizes;
@@ -222,9 +222,9 @@ pub fn infer_ragged_dot(
                 .take_while(|&a| a != ragged),
         );
     }
-    let gd = Shape::dimensions(ctx, groups)?;
+    let gd = shape::dimensions(ctx, groups)?;
     require(!gd.is_empty(), "group sizes must have positive rank")?;
-    let ld = Shape::dimensions(ctx, lhs)?;
+    let ld = shape::dimensions(ctx, lhs)?;
     require(
         gd.len() == 1
             || (gd.len() == prefix.len() + 1
@@ -251,7 +251,7 @@ pub fn infer_ragged_dot(
             d.rhs_group_dimensions.0.len() == 1,
             "noncontracting mode requires exactly one rhs group dimension",
         )?;
-        let rd = Shape::dimensions(ctx, rhs)?;
+        let rd = shape::dimensions(ctx, rhs)?;
         require(
             compatible_size(gd[gd.len() - 1], rd[d.rhs_group_dimensions.0[0] as usize]),
             "rhs group bound differs from group count",
@@ -259,19 +259,19 @@ pub fn infer_ragged_dot(
     }
     let mut dims = Vec::new();
     if contracting {
-        dims.push(Shape::dimension(ctx, groups, gd.len() - 1)?);
+        dims.push(shape::dimension(ctx, groups, gd.len() - 1)?);
     }
     for &axis in &dot.lhs_batch_dimensions.0 {
-        dims.push(Shape::dimension(ctx, lhs, axis as usize)?);
+        dims.push(shape::dimension(ctx, lhs, axis as usize)?);
     }
     for (axis, used) in left.into_iter().enumerate() {
         if !used {
-            dims.push(Shape::dimension(ctx, lhs, axis)?);
+            dims.push(shape::dimension(ctx, lhs, axis)?);
         }
     }
     for (axis, used) in right.into_iter().enumerate() {
         if !used && !d.rhs_group_dimensions.0.contains(&(axis as i64)) {
-            dims.push(Shape::dimension(ctx, rhs, axis)?);
+            dims.push(shape::dimension(ctx, rhs, axis)?);
         }
     }
     output(ctx, dot_element(ctx, lhs, rhs, preferred)?, dims)
@@ -309,8 +309,8 @@ pub fn infer_scaled_dot(
             &d.rhs_contracting_dimensions.0,
         ),
     ] {
-        let od = Shape::dimensions(ctx, operand)?;
-        let sd = Shape::dimensions(ctx, scale)?;
+        let od = shape::dimensions(ctx, operand)?;
+        let sd = shape::dimensions(ctx, scale)?;
         if !sd.is_empty() {
             let categories: Vec<_> = batch.iter().chain(contracting).copied().collect();
             axes(sd.len(), &categories, false)?;
@@ -334,7 +334,7 @@ pub fn infer_scaled_dot(
         }
     }
     require(
-        Shape::rank(ctx, lhs_scale)? != 0 || Shape::rank(ctx, rhs_scale)? != 0,
+        shape::rank(ctx, lhs_scale)? != 0 || shape::rank(ctx, rhs_scale)? != 0,
         "at least one scale must be nonscalar",
     )?;
     infer_dot(ctx, lhs, rhs, d, preferred)

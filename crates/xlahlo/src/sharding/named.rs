@@ -1,8 +1,8 @@
-use super::{Sharding, ShardingType};
+use super::{Sharding, ShardingKind};
 use crate::Diagnostic;
 use crate::{
     attributes::{Metadata, OpMetadata},
-    shape::Shape,
+    shape,
 };
 use pliron::{
     common_traits::Verify, context::Context, derive::pliron_attr, result::Result,
@@ -85,7 +85,9 @@ pub(super) fn iota_key(dimensions: &[i64], permutation: &[i64], count: i64) -> B
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 /// One named dimension and its positive extent in a device mesh.
 pub struct MeshAxis {
+    /// Unique axis name within the enclosing mesh.
     pub name: String,
+    /// Positive number of devices along this axis.
     pub size: i64,
 }
 #[pliron_attr(
@@ -96,7 +98,9 @@ pub struct MeshAxis {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 /// Compact device-ID assignment formed by reshaping and transposing an iota.
 pub struct IotaTransform {
+    /// Positive dimensions used to reshape consecutive device IDs.
     pub reshape_dims: Vec<i64>,
+    /// Permutation of the reshape axes, from major to minor.
     pub transpose_perm: Vec<i64>,
 }
 #[pliron_attr(
@@ -106,8 +110,11 @@ pub struct IotaTransform {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 /// Named device mesh with explicit IDs or a compact iota assignment.
 pub struct Mesh {
+    /// Named mesh dimensions in logical axis order.
     pub axes: Vec<MeshAxis>,
+    /// Explicit nonidentity permutation of device IDs, or empty for compact assignment.
     pub device_ids: Vec<i64>,
+    /// Optional singleton reshape/transpose assignment, exclusive with explicit IDs.
     pub iota_transform: Vec<IotaTransform>,
 }
 
@@ -300,7 +307,9 @@ impl Mesh {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// A proper mesh-axis factor starting at a multiplicative prefix.
 pub struct SubAxis {
+    /// Product of the mesh-axis factors preceding this sub-axis.
     pub pre_size: i64,
+    /// Extent of the selected factor; must be greater than one.
     pub size: i64,
 }
 #[pliron_attr(
@@ -310,7 +319,9 @@ pub struct SubAxis {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 /// A full mesh axis or one proper factor of that axis.
 pub struct AxisRef {
+    /// Zero-based index of the referenced dimension in the mesh.
     pub mesh_axis_index: i64,
+    /// Optional singleton proper factor; empty selects the whole mesh axis.
     pub sub_axis_info: Vec<SubAxis>,
 }
 impl Verify for AxisRef {
@@ -430,16 +441,21 @@ impl AxisRef {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 /// Named mesh axes assigned to one logical dimension and its closedness policy.
 pub struct DimensionSharding {
+    /// Nonoverlapping mesh-axis factors partitioning this tensor dimension.
     pub axes: Vec<AxisRef>,
+    /// Whether propagation may not add further sharding axes to this dimension.
     pub is_closed: bool,
 }
 #[pliron_attr(name = "xlahlo.reduction_op", format, verifier = "succ")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 /// Reduction semantics associated with unreduced mesh axes.
 pub enum ReductionOp {
+    /// Combines partial values by addition.
     #[default]
     Sum,
+    /// Combines partial values by selecting their maximum.
     Max,
+    /// Combines partial values by selecting their minimum.
     Min,
 }
 #[pliron_attr(
@@ -449,12 +465,19 @@ pub enum ReductionOp {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 /// Sharding expressed as nonoverlapping named mesh axes and subgroup roles.
 pub struct NamedSharding {
+    /// Device mesh on which this annotation is defined.
     pub mesh: Mesh,
+    /// Per-tensor-axis partitioning in logical dimension order.
     pub dim_shardings: Vec<DimensionSharding>,
+    /// Mesh axes across which the tensor is replicated.
     pub replicated_axes: Vec<AxisRef>,
+    /// Mesh axes holding partial values that require reduction.
     pub unreduced_axes: Vec<AxisRef>,
+    /// Mesh axes whose partitioning is managed explicitly by the program.
     pub manual_axes: Vec<AxisRef>,
+    /// Operation used to combine values on unreduced axes.
     pub reduction_op: ReductionOp,
+    /// Frontend metadata associated with this sharding.
     pub metadata: Metadata,
 }
 impl Verify for NamedSharding {
@@ -595,7 +618,7 @@ impl NamedSharding {
                 message: "tiled named sharding has one device".into(),
             }));
         }
-        if Shape::rank(ctx, Shape::array_view(ctx, shape)?)? != self.dim_shardings.len() {
+        if shape::rank(ctx, shape::array_view(ctx, shape)?)? != self.dim_shardings.len() {
             return Err(pliron::verify_error_noloc!(Diagnostic::InvalidAttribute {
                 attribute: "named_sharding",
                 message: "named sharding rank differs from shape".into(),
@@ -630,11 +653,11 @@ impl NamedSharding {
             return Ok(sharding);
         }
         if self.is_single_device()? {
-            sharding.kind = ShardingType::Maximal;
+            sharding.kind = ShardingKind::Maximal;
             sharding.tile_assignment_devices = vec![self.mesh.device_at(0)?];
             return Ok(sharding);
         }
-        sharding.kind = ShardingType::Other;
+        sharding.kind = ShardingKind::Other;
         let mut positions = BTreeMap::new();
         let mut next = 0i64;
         let mut append = |axes: &[AxisRef]| -> Result<i64> {
@@ -655,8 +678,8 @@ impl NamedSharding {
             sharding.tile_assignment_dimensions.push(append(&dim.axes)?);
         }
         for (axes, ty) in [
-            (&self.manual_axes, ShardingType::Manual),
-            (&self.unreduced_axes, ShardingType::Unreduced),
+            (&self.manual_axes, ShardingKind::Manual),
+            (&self.unreduced_axes, ShardingKind::Unreduced),
         ] {
             if !axes.is_empty() {
                 sharding.tile_assignment_dimensions.push(append(axes)?);
@@ -732,7 +755,7 @@ impl NamedSharding {
         }
         if replicated_size > 1 {
             sharding.tile_assignment_dimensions.push(replicated_size);
-            sharding.last_tile_dims.push(ShardingType::Replicated);
+            sharding.last_tile_dims.push(ShardingKind::Replicated);
         }
         let device_count = self.mesh.device_count()?;
         validate_iota(&dimensions, &permutation, device_count)?;

@@ -3,7 +3,7 @@ use super::{axes, dot, element, infer_window_output, output, require};
 use crate::{
     Diagnostic,
     attributes::{ConvolutionDimensionNumbers, ConvolutionKind, SparsityConfig, Window},
-    shape::{Dimension, Shape, UNBOUNDED_SIZE},
+    shape::{self, Dimension, UNBOUNDED_SIZE},
     types::ElementType,
 };
 use pliron::{context::Context, result::Result, r#type::TypeHandle};
@@ -78,11 +78,11 @@ pub fn infer_convolution_kind(
     kind: ConvolutionKind,
 ) -> Result<TypeHandle> {
     require(
-        Shape::is_array(ctx, lhs),
+        shape::is_array(ctx, lhs),
         "convolution lhs must be an array",
     )?;
     require(
-        Shape::is_array(ctx, rhs),
+        shape::is_array(ctx, rhs),
         "convolution rhs must be an array",
     )?;
     require(
@@ -115,8 +115,8 @@ pub fn infer_convolution_kind(
             message: "convolution rank overflow".into()
         })
     })?;
-    let ld = Shape::dimensions(ctx, lhs)?;
-    let rd = Shape::dimensions(ctx, rhs)?;
+    let ld = shape::dimensions(ctx, lhs)?;
+    let rd = shape::dimensions(ctx, rhs)?;
     require(
         ld.len() == rank && rd.len() == rank,
         "convolution operand rank differs from dimension numbers",
@@ -192,14 +192,14 @@ pub fn infer_convolution_kind(
         }
         let mut dynamic = vec![false; rank];
         if !matches!(
-            Shape::dimension(ctx, lhs, d.input_batch_dimension as usize)?,
+            shape::dimension(ctx, lhs, d.input_batch_dimension as usize)?,
             Dimension::Static(_)
         ) {
             dynamic[d.output_batch_dimension as usize] = true;
         }
         for (i, &axis) in d.input_spatial_dimensions.0.iter().enumerate() {
             if !matches!(
-                Shape::dimension(ctx, lhs, axis as usize)?,
+                shape::dimension(ctx, lhs, axis as usize)?,
                 Dimension::Static(_)
             ) {
                 dynamic[d.output_spatial_dimensions.0[i] as usize] = true;
@@ -273,18 +273,18 @@ pub fn infer_convolution_kind(
                 })?;
             dims.push(Dimension::Static(size));
         }
-        Shape::dynamic_array(ctx, element(ctx, lhs)?, dims)?
+        shape::dynamic_array(ctx, element(ctx, lhs)?, dims)?
     } else {
         infer_window_output(
             ctx,
-            Shape::dynamic_array(ctx, element(ctx, lhs)?, input_spatial)?,
+            shape::dynamic_array(ctx, element(ctx, lhs)?, input_spatial)?,
             window,
             element(ctx, lhs)?,
         )?
     };
     require(
         matches!(
-            Shape::dimension(ctx, rhs, d.kernel_output_feature_dimension as usize)?,
+            shape::dimension(ctx, rhs, d.kernel_output_feature_dimension as usize)?,
             Dimension::Static(_)
         ),
         "convolution kernel output feature dimension must be static",
@@ -294,7 +294,7 @@ pub fn infer_convolution_kind(
     dims[d.output_batch_dimension as usize] = if batch_size == UNBOUNDED_SIZE {
         Dimension::Unbounded
     } else if matches!(
-        Shape::dimension(ctx, lhs, d.input_batch_dimension as usize)?,
+        shape::dimension(ctx, lhs, d.input_batch_dimension as usize)?,
         Dimension::Bounded(_)
     ) {
         Dimension::Bounded(batch_size)
@@ -303,14 +303,14 @@ pub fn infer_convolution_kind(
     };
     dims[d.output_feature_dimension as usize] =
         Dimension::Static(if dgrad { kernel_input } else { kernel_output });
-    let spatial_bounds = Shape::dimensions(ctx, spatial)?;
+    let spatial_bounds = shape::dimensions(ctx, spatial)?;
     for (i, &axis) in d.output_spatial_dimensions.0.iter().enumerate() {
         let size = spatial_bounds[i];
         let dynamic = !matches!(
-            Shape::dimension(ctx, lhs, d.input_spatial_dimensions.0[i] as usize)?,
+            shape::dimension(ctx, lhs, d.input_spatial_dimensions.0[i] as usize)?,
             Dimension::Static(_)
         ) || !matches!(
-            Shape::dimension(ctx, rhs, d.kernel_spatial_dimensions.0[i] as usize)?,
+            shape::dimension(ctx, rhs, d.kernel_spatial_dimensions.0[i] as usize)?,
             Dimension::Static(_)
         );
         dims[axis as usize] = if size == UNBOUNDED_SIZE {

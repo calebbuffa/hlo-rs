@@ -72,6 +72,7 @@ impl InfeedOp {
         crate::verification::control::asynchronous::feed_config(ctx, self.op, "hlo_infeed_config")
     }
 
+    /// Replaces the backend-defined input-feed configuration without interpreting it.
     pub fn set_infeed_config(&self, ctx: &Context, config: String) {
         self.op.deref_mut(ctx).attributes.set(
             Identifier::new("hlo_infeed_config"),
@@ -86,6 +87,7 @@ impl OutfeedOp {
         crate::verification::control::asynchronous::feed_config(ctx, self.op, "hlo_outfeed_config")
     }
 
+    /// Replaces the backend-defined output-feed configuration without interpreting it.
     pub fn set_outfeed_config(&self, ctx: &Context, config: String) {
         self.op.deref_mut(ctx).attributes.set(
             Identifier::new("hlo_outfeed_config"),

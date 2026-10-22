@@ -149,7 +149,7 @@ pub(super) fn verify(
                     message: "missing computation name".into()
                 })
             })?;
-            computations.insert(name.as_ref().clone(), op);
+            computations.insert(name.clone(), op);
             let block = super::super::single_block(ctx, comp.body(ctx))?;
             instructions.insert(
                 op,
@@ -170,10 +170,14 @@ pub(super) fn verify(
     {
         let name = ir::entry(ctx, root)?;
         entry = computations.get(&name).copied();
-        if let Some(schedule) = optional_attr::<Schedule>(ctx, root, "hlo_schedule")? {
+        if let Some(schedule) =
+            optional_attr::<Schedule>(ctx, root, crate::attributes::keys::SCHEDULE)?
+        {
             let mut named = HashMap::new();
             for &(op, _) in all {
-                if let Some(name) = optional_attr::<InstructionName>(ctx, op, "hlo_name")? {
+                if let Some(name) =
+                    optional_attr::<InstructionName>(ctx, op, crate::attributes::keys::NAME)?
+                {
                     named.insert(name.0.clone(), op);
                 }
             }
@@ -202,7 +206,8 @@ pub(super) fn verify(
         if matches!(
             asynchronous::opcode(ctx, op),
             Some(Opcode::AsyncStart | Opcode::AsyncUpdate | Opcode::AsyncDone)
-        ) && let Some(callees) = optional_attr::<Callees>(ctx, op, "hlo_callees")?
+        ) && let Some(callees) =
+            optional_attr::<Callees>(ctx, op, crate::attributes::keys::CALLEES)?
         {
             for name in &callees.0 {
                 if let Some(&callee) = computations.get(name) {
@@ -269,7 +274,7 @@ pub(super) fn verify(
             )?;
         }
         pending.push(Work::Visit(computation, index + 1, state));
-        if let Some(callees) = optional_attr::<Callees>(ctx, op, "hlo_callees")?
+        if let Some(callees) = optional_attr::<Callees>(ctx, op, crate::attributes::keys::CALLEES)?
             && !callees.0.is_empty()
         {
             for name in callees.0.iter().rev() {
@@ -284,8 +289,11 @@ pub(super) fn verify(
         }
         match asynchronous::opcode(ctx, op) {
             Some(kind @ (Opcode::Send | Opcode::Recv)) => {
-                let frontend =
-                    optional_attr::<FrontendAttributes>(ctx, op, "hlo_frontend_attributes")?;
+                let frontend = optional_attr::<FrontendAttributes>(
+                    ctx,
+                    op,
+                    crate::attributes::keys::FRONTEND_ATTRIBUTES,
+                )?;
                 if flag(ctx, op, "hlo_host_transfer")?
                     || frontend
                         .as_ref()

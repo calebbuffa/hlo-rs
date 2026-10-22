@@ -9,8 +9,8 @@ use crate::{
     },
     opcode::{Opcode, Opcode::*},
     ops::control::{AllReduceOp, AllReduceStartOp, DynamicSliceSizes},
-    replica_groups::{IotaReplicaGroupList, MeshAxesReplicaGroupList},
-    shape::Shape,
+    shape,
+    sharding::{IotaReplicaGroupList, MeshAxesReplicaGroupList},
 };
 use pliron::result::Result;
 use pliron::{
@@ -248,7 +248,11 @@ fn subgroup(
     let global = if matches!(opcode, Opcode::AllToAll | Opcode::RaggedAllToAll) {
         None
     } else {
-        Some(flag(ctx, op, "hlo_use_global_device_ids")?)
+        Some(flag(
+            ctx,
+            op,
+            crate::attributes::keys::USE_GLOBAL_DEVICE_IDS,
+        )?)
     };
     let mode = group_mode(channel(ctx, op)?.is_some(), global)?;
     let context = options.collective_context;
@@ -309,7 +313,7 @@ fn shard_count(
     gather: bool,
     subgroup: i64,
 ) -> Result<(i64, i64)> {
-    let dimensions: Ref<'_, Axes> = required(ctx, op, "hlo_dimensions")?;
+    let dimensions: Ref<'_, Axes> = required(ctx, op, crate::attributes::keys::DIMENSIONS)?;
     let [axis] = dimensions.0.as_slice() else {
         return Err(pliron::verify_error_noloc!(Diagnostic::Verification {
             message: "collective requires exactly one dimension".into()
@@ -321,12 +325,12 @@ fn shard_count(
         })
     })?;
     require(!operands.is_empty(), "collective requires operands")?;
-    let children = Shape::children(ctx, result);
+    let children = shape::children(ctx, result);
     let results = if operands.len() == 1 {
         std::slice::from_ref(&result)
     } else {
         require(
-            Shape::is_tuple(ctx, result),
+            shape::is_tuple(ctx, result),
             "variadic collective result requires a tuple",
         )?;
         &children
@@ -337,12 +341,12 @@ fn shard_count(
     )?;
     for (&operand, &result) in operands.iter().zip(results) {
         require(
-            index < Shape::rank(ctx, operand)? && index < Shape::rank(ctx, result)?,
+            index < shape::rank(ctx, operand)? && index < shape::rank(ctx, result)?,
             "collective dimension out of bounds",
         )?;
     }
-    let a = Shape::dimensions(ctx, operands[0])?[index];
-    let b = Shape::dimensions(ctx, results[0])?[index];
+    let a = shape::dimensions(ctx, operands[0])?[index];
+    let b = shape::dimensions(ctx, results[0])?[index];
     let (numerator, denominator) = if gather { (b, a) } else { (a, b) };
     require(
         denominator > 0 && numerator >= 0,
@@ -383,7 +387,7 @@ pub(super) fn infer(
         return if opcode == CollectivePermute {
             ci::infer_collective_permute(ctx, operands, inplace)
         } else {
-            let children = Shape::children(ctx, result);
+            let children = shape::children(ctx, result);
             ci::infer_collective_permute_start(
                 ctx,
                 operands,
@@ -402,7 +406,7 @@ pub(super) fn infer(
         opcode,
         AllReduce | AllReduceStart | ReduceScatter | CollectiveReduce
     ) {
-        let callees: Ref<'_, Callees> = required(ctx, op, "hlo_callees")?;
+        let callees: Ref<'_, Callees> = required(ctx, op, crate::attributes::keys::CALLEES)?;
         require(
             callees.0.len() == 1,
             "collective reduction requires one reducer",
@@ -420,7 +424,7 @@ pub(super) fn infer(
         }
         AllGatherStart => {
             require(
-                Shape::is_tuple(ctx, result) && Shape::children(ctx, result).len() == 2,
+                shape::is_tuple(ctx, result) && shape::children(ctx, result).len() == 2,
                 "all-gather-start requires an input/result tuple",
             )?;
             let output = infer::infer_get_tuple_element(ctx, result, 1)?;
@@ -433,7 +437,7 @@ pub(super) fn infer(
         }
         AllReduce | AllReduceStart => ci::infer_all_reduce(ctx, operands),
         AllToAll => {
-            let dims: Ref<'_, Axes> = required(ctx, op, "hlo_dimensions")?;
+            let dims: Ref<'_, Axes> = required(ctx, op, crate::attributes::keys::DIMENSIONS)?;
             match dims.0.as_slice() {
                 [axis] => {
                     require(operands.len() == 1, "array all-to-all requires one operand")?;
@@ -458,7 +462,7 @@ pub(super) fn infer(
             )?;
             for index in 2..5 {
                 require(
-                    matches!(Shape::rank(ctx, operands[index])?, 1 | 2)
+                    matches!(shape::rank(ctx, operands[index])?, 1 | 2)
                         && same_ignoring_memory(ctx, operands[index], operands[index + 1], false)?,
                     "ragged offsets/sizes must be identical rank-one/two shapes apart from memory space",
                 )?;
@@ -478,22 +482,22 @@ pub(super) fn infer(
 
 fn buffer_offset(ctx: &Context, buffer: TypeHandle, offset: TypeHandle) -> Result<()> {
     require(
-        Shape::is_tuple(ctx, offset),
+        shape::is_tuple(ctx, offset),
         "permute buffer offsets must be tuples",
     )?;
-    let children = Shape::children(ctx, offset);
-    let arrays = children.iter().all(|&s| Shape::is_array_or_buffer(ctx, s));
-    let tuples = children.iter().all(|&s| Shape::is_tuple(ctx, s));
+    let children = shape::children(ctx, offset);
+    let arrays = children.iter().all(|&s| shape::is_array_or_buffer(ctx, s));
+    let tuples = children.iter().all(|&s| shape::is_tuple(ctx, s));
     require(
         arrays || tuples,
         "permute offset tuple must contain only arrays or only tuples",
     )?;
-    let rank = Shape::rank(ctx, Shape::array_view(ctx, buffer)?)?;
+    let rank = shape::rank(ctx, shape::array_view(ctx, buffer)?)?;
     require(
         if tuples {
             children
                 .iter()
-                .all(|&s| Shape::children(ctx, s).len() == rank)
+                .all(|&s| shape::children(ctx, s).len() == rank)
         } else {
             children.len() == rank
         },
@@ -515,22 +519,22 @@ fn verify_permute(
             "in-place permute requires four operands",
         )?;
         let (input, output, io, oo) = (operands[0], operands[1], operands[2], operands[3]);
-        if Shape::is_array_or_buffer(ctx, input) && Shape::is_array_or_buffer(ctx, output) {
+        if shape::is_array_or_buffer(ctx, input) && shape::is_array_or_buffer(ctx, output) {
             buffer_offset(ctx, input, io)?;
             buffer_offset(ctx, output, oo)?;
-            Shape::children(ctx, io).len()
+            shape::children(ctx, io).len()
         } else {
             require(
-                Shape::is_tuple(ctx, input)
-                    && Shape::is_tuple(ctx, output)
-                    && Shape::is_tuple(ctx, io)
-                    && Shape::is_tuple(ctx, oo),
+                shape::is_tuple(ctx, input)
+                    && shape::is_tuple(ctx, output)
+                    && shape::is_tuple(ctx, io)
+                    && shape::is_tuple(ctx, oo),
                 "in-place permute input/output must both be arrays or both tuples",
             )?;
-            let inputs = Shape::children(ctx, input);
-            let outputs = Shape::children(ctx, output);
-            let ios = Shape::children(ctx, io);
-            let oos = Shape::children(ctx, oo);
+            let inputs = shape::children(ctx, input);
+            let outputs = shape::children(ctx, output);
+            let ios = shape::children(ctx, io);
+            let oos = shape::children(ctx, oo);
             require(
                 inputs.len() == outputs.len()
                     && inputs.len() == ios.len()
@@ -545,7 +549,7 @@ fn verify_permute(
             {
                 buffer_offset(ctx, buffer, offset)?;
             }
-            Shape::children(ctx, ios[0]).len()
+            shape::children(ctx, ios[0]).len()
         }
     } else {
         1
@@ -610,7 +614,7 @@ pub(crate) fn verify_module(ctx: &Context, instructions: &[Ptr<Operation>]) -> R
     for &op in instructions {
         if Operation::is_op::<AllReduceOp>(op, ctx) || Operation::is_op::<AllReduceStartOp>(op, ctx)
         {
-            let value = flag(ctx, op, "hlo_constrain_layout")?;
+            let value = flag(ctx, op, crate::attributes::keys::CONSTRAIN_LAYOUT)?;
             require(
                 constrain.is_none_or(|previous| previous == value),
                 "module mixes layout-constrained and unconstrained all-reduces",

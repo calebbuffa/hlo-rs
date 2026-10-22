@@ -7,7 +7,6 @@ use crate::{
 };
 use pliron::{
     context::{Context, Ptr},
-    identifier::Identifier,
     linked_list::ContainsLinkedList,
     op::op_cast,
     operation::Operation,
@@ -19,7 +18,7 @@ use std::collections::HashMap;
 pub(super) fn verify(
     ctx: &Context,
     instructions: &[(Ptr<Operation>, Option<Ptr<Operation>>)],
-    computations: &HashMap<Identifier, Ptr<Operation>>,
+    computations: &HashMap<crate::ir::ComputationName, Ptr<Operation>>,
     options: VerifyOptions,
 ) -> Result<()> {
     let partitions = options.collective_context.partition_count;
@@ -34,13 +33,17 @@ pub(super) fn verify(
         if data.get_num_results() != 1 {
             continue;
         }
-        if let Some(sharding) = optional_attr::<Sharding>(ctx, op, "hlo_sharding")? {
+        if let Some(sharding) =
+            optional_attr::<Sharding>(ctx, op, crate::attributes::keys::SHARDING)?
+        {
             let shape = data.get_type(0);
             let sharding = sharding.normalize_tuple(ctx, shape)?;
             sharding.validate(ctx, shape, devices)?;
             shardings.insert(op, sharding);
         }
-        if let Some(named) = optional_attr::<NamedSharding>(ctx, op, "hlo_named_sharding")? {
+        if let Some(named) =
+            optional_attr::<NamedSharding>(ctx, op, crate::attributes::keys::NAMED_SHARDING)?
+        {
             named.validate_shape(ctx, data.get_type(0), devices)?;
         }
         let dynamic = Operation::get_op_dyn(op, ctx);
@@ -73,7 +76,7 @@ pub(super) fn verify(
         }
     }
     for (op, opcode) in control_flow {
-        let callees = optional_attr::<Callees>(ctx, op, "hlo_callees")?
+        let callees = optional_attr::<Callees>(ctx, op, crate::attributes::keys::CALLEES)?
             .ok_or_else(|| error("missing control-flow callees"))?;
         let mut related = vec![op];
         for (index, callee) in callees.0.iter().enumerate() {

@@ -4,7 +4,7 @@ use crate::{
     Diagnostic,
     attributes::{
         Axes, BatchNormOptions, BlockScalingConfig, Callees, CholeskyOptions,
-        ConvolutionDimensionNumbers, ConvolutionKind, DotDimensionNumbers, FftType,
+        ConvolutionDimensionNumbers, ConvolutionKind, DotDimensionNumbers, FftKind,
         OptionalInteger, OptionalTensorBlockScalingConfig, OptionalTensorSparsityConfig,
         PrecisionConfig, RaggedDotDimensionNumbers, SortOptions, SparsityConfig, TriState,
         TriangularSolveOptions, Window,
@@ -12,7 +12,7 @@ use crate::{
     inference::{Signature, numerical as infer, require},
     opcode::{Opcode, Opcode::*},
     ops::numerical::NumericalInteger,
-    shape::Shape,
+    shape,
     types::ElementType,
 };
 use pliron::{
@@ -50,10 +50,10 @@ fn boolean(ctx: &Context, op: Ptr<Operation>, name: &'static str) -> Result<bool
     Ok(optional_attr::<BoolAttr>(ctx, op, name)?.is_some_and(|value| bool::from((*value).clone())))
 }
 fn dimension(ctx: &Context, op: Ptr<Operation>) -> Result<i64> {
-    let dims = required::<Axes>(ctx, op, "hlo_dimensions")?;
+    let dims = required::<Axes>(ctx, op, crate::attributes::keys::DIMENSIONS)?;
     if dims.0.len() != 1 {
         return pliron::verify_err_noloc!(Diagnostic::InvalidAttribute {
-            attribute: "hlo_dimensions",
+            attribute: crate::attributes::keys::DIMENSIONS,
             message: format!(
                 "instruction requires exactly one dimension; got {}",
                 dims.0.len()
@@ -63,24 +63,25 @@ fn dimension(ctx: &Context, op: Ptr<Operation>) -> Result<i64> {
     Ok(dims.0[0])
 }
 fn scalar(ctx: &Context, shape: TypeHandle) -> Result<TypeHandle> {
-    Shape::scalar(
+    shape::scalar(
         ctx,
-        Shape::element_type(ctx, Shape::array_view(ctx, shape)?)?,
+        shape::element_type(ctx, shape::array_view(ctx, shape)?)?,
     )
 }
 fn same(ctx: &Context, a: TypeHandle, b: TypeHandle, options: VerifyOptions) -> bool {
     if options.allow_mixed_precision {
-        Shape::compatible_ignoring_fp_precision(ctx, a, b)
+        shape::compatible_ignoring_fp_precision(ctx, a, b)
     } else {
-        Shape::compatible(ctx, a, b)
+        shape::compatible(ctx, a, b)
     }
 }
 fn callee_count(ctx: &Context, op: Ptr<Operation>, opcode: Opcode) -> Result<()> {
-    let actual = optional_attr::<Callees>(ctx, op, "hlo_callees")?.map_or(0, |c| c.0.len());
+    let actual = optional_attr::<Callees>(ctx, op, crate::attributes::keys::CALLEES)?
+        .map_or(0, |c| c.0.len());
     let expected = expected_callees(opcode);
     if actual != expected {
         return pliron::verify_err_noloc!(Diagnostic::InvalidAttribute {
-            attribute: "hlo_callees",
+            attribute: crate::attributes::keys::CALLEES,
             message: format!(
                 "incorrect numerical computation count for {opcode:?}: expected {expected}, got {actual}"
             ),
@@ -106,8 +107,9 @@ fn auxiliary_operands<'a>(
         operands.len() >= 2,
         "dot/convolution requires at least two operands",
     )?;
-    let sparsity = optional_attr::<SparsityConfig>(ctx, op, "hlo_sparsity")?;
-    let scaling = optional_attr::<BlockScalingConfig>(ctx, op, "hlo_block_scaling")?;
+    let sparsity = optional_attr::<SparsityConfig>(ctx, op, crate::attributes::keys::SPARSITY)?;
+    let scaling =
+        optional_attr::<BlockScalingConfig>(ctx, op, crate::attributes::keys::BLOCK_SCALING)?;
     let mut seen = BTreeSet::new();
     let mut check = |raw_index: i64, attribute: &'static str| -> Result<()> {
         let index = usize::try_from(raw_index).map_err(|_| {
@@ -126,23 +128,26 @@ fn auxiliary_operands<'a>(
             });
         }
         require(
-            Shape::is_array_or_buffer(ctx, operands[index]),
+            shape::is_array_or_buffer(ctx, operands[index]),
             "auxiliary operand must be an array",
         )
     };
     if let Some(config) = &sparsity {
         for side in [&config.lhs, &config.rhs] {
             if let OptionalTensorSparsityConfig::Present(side) = side {
-                check(i64::from(side.idx), "hlo_sparsity")?;
+                check(i64::from(side.idx), crate::attributes::keys::SPARSITY)?;
             }
         }
     }
     if let Some(config) = &scaling {
         for side in [&config.lhs, &config.rhs] {
             if let OptionalTensorBlockScalingConfig::Present(side) = side {
-                check(i64::from(side.scale_idx), "hlo_block_scaling")?;
+                check(
+                    i64::from(side.scale_idx),
+                    crate::attributes::keys::BLOCK_SCALING,
+                )?;
                 if let OptionalInteger::Value(index) = side.zero_idx {
-                    check(index, "hlo_block_scaling")?;
+                    check(index, crate::attributes::keys::BLOCK_SCALING)?;
                 }
             }
         }
@@ -169,8 +174,8 @@ fn local_reducer(ctx: &Context, operands: &[TypeHandle], result: TypeHandle) -> 
         .iter()
         .map(|&ty| scalar(ctx, ty))
         .collect::<Result<Vec<_>>>()?;
-    let root = if Shape::is_tuple(ctx, result) {
-        Shape::tuple(ctx, roots.clone())?
+    let root = if shape::is_tuple(ctx, result) {
+        shape::tuple(ctx, roots.clone())?
     } else {
         roots[0]
     };
@@ -205,7 +210,7 @@ pub(crate) fn instruction(
     {
         let mut precision = None;
         for &operand in &operands {
-            let et = Shape::element_type(ctx, Shape::array_view(ctx, operand)?)?;
+            let et = shape::element_type(ctx, shape::array_view(ctx, operand)?)?;
             if et.is_float() {
                 require(
                     precision.is_none_or(|previous| previous == et),
@@ -218,45 +223,50 @@ pub(crate) fn instruction(
     let expected = match opcode {
         Dot => {
             let sparsity = auxiliary_operands(ctx, op, &operands)?;
-            let dims = required::<DotDimensionNumbers>(ctx, op, "hlo_dimensions")?;
-            required::<PrecisionConfig>(ctx, op, "hlo_precision")?;
+            let dims =
+                required::<DotDimensionNumbers>(ctx, op, crate::attributes::keys::DIMENSIONS)?;
+            required::<PrecisionConfig>(ctx, op, crate::attributes::keys::PRECISION)?;
             infer::infer_dot_with_sparsity(
                 ctx,
                 operands[0],
                 operands[1],
                 &dims,
-                Some(Shape::element_type(ctx, result)?),
+                Some(shape::element_type(ctx, result)?),
                 sparsity.as_deref(),
             )?
         }
         RaggedDot => {
             require(operands.len() == 3, "ragged-dot requires three operands")?;
-            required::<PrecisionConfig>(ctx, op, "hlo_precision")?;
+            required::<PrecisionConfig>(ctx, op, crate::attributes::keys::PRECISION)?;
             infer::infer_ragged_dot(
                 ctx,
                 operands[0],
                 operands[1],
                 operands[2],
-                &*required::<RaggedDotDimensionNumbers>(ctx, op, "hlo_dimensions")?,
-                Some(Shape::element_type(ctx, result)?),
+                &*required::<RaggedDotDimensionNumbers>(
+                    ctx,
+                    op,
+                    crate::attributes::keys::DIMENSIONS,
+                )?,
+                Some(shape::element_type(ctx, result)?),
             )?
         }
         ScaledDot => {
             require(operands.len() == 4, "scaled-dot requires four operands")?;
-            required::<PrecisionConfig>(ctx, op, "hlo_precision")?;
+            required::<PrecisionConfig>(ctx, op, crate::attributes::keys::PRECISION)?;
             infer::infer_scaled_dot(
                 ctx,
                 operands[0],
                 operands[1],
                 operands[2],
                 operands[3],
-                &*required::<DotDimensionNumbers>(ctx, op, "hlo_dimensions")?,
-                Some(Shape::element_type(ctx, result)?),
+                &*required::<DotDimensionNumbers>(ctx, op, crate::attributes::keys::DIMENSIONS)?,
+                Some(shape::element_type(ctx, result)?),
             )?
         }
         Convolution => {
             let sparsity = auxiliary_operands(ctx, op, &operands)?;
-            required::<PrecisionConfig>(ctx, op, "hlo_precision")?;
+            required::<PrecisionConfig>(ctx, op, crate::attributes::keys::PRECISION)?;
             required::<ConvolutionKind>(ctx, op, "hlo_kind")?;
             // HLO instruction verification ignores gradient metadata; the explicit
             // inference API remains available for gradient geometry.
@@ -264,11 +274,15 @@ pub(crate) fn instruction(
                 ctx,
                 operands[0],
                 operands[1],
-                integer(ctx, op, "hlo_feature_groups")?,
-                integer(ctx, op, "hlo_batch_groups")?,
-                &*required::<Window>(ctx, op, "hlo_window")?,
-                &*required::<ConvolutionDimensionNumbers>(ctx, op, "hlo_dimensions")?,
-                Some(Shape::element_type(ctx, result)?),
+                integer(ctx, op, crate::attributes::keys::FEATURE_GROUPS)?,
+                integer(ctx, op, crate::attributes::keys::BATCH_GROUPS)?,
+                &*required::<Window>(ctx, op, crate::attributes::keys::WINDOW)?,
+                &*required::<ConvolutionDimensionNumbers>(
+                    ctx,
+                    op,
+                    crate::attributes::keys::DIMENSIONS,
+                )?,
+                Some(shape::element_type(ctx, result)?),
                 sparsity.as_deref(),
             )?
         }
@@ -290,7 +304,7 @@ pub(crate) fn instruction(
         Fft => infer::infer_fft(
             ctx,
             operands[0],
-            *required::<FftType>(ctx, op, "hlo_kind")?,
+            *required::<FftKind>(ctx, op, "hlo_kind")?,
             &required::<Axes>(ctx, op, "hlo_lengths")?.0,
         )?,
         BatchNormTraining | BatchNormInference | BatchNormGrad => {
@@ -302,7 +316,7 @@ pub(crate) fn instruction(
             let output = infer::infer_sort_result(ctx, &operands)?;
             require(
                 dimension(ctx, op)?
-                    < Shape::rank(ctx, Shape::array_view(ctx, operands[0])?)? as i64,
+                    < shape::rank(ctx, shape::array_view(ctx, operands[0])?)? as i64,
                 "sort dimension exceeds operand rank",
             )?;
             output
@@ -313,14 +327,14 @@ pub(crate) fn instruction(
                 infer::infer_reduce(
                     ctx,
                     &operands,
-                    &required::<Axes>(ctx, op, "hlo_dimensions")?.0,
+                    &required::<Axes>(ctx, op, crate::attributes::keys::DIMENSIONS)?.0,
                     &reducer,
                 )?
             } else {
                 infer::infer_reduce_window(
                     ctx,
                     &operands,
-                    &*required::<Window>(ctx, op, "hlo_window")?,
+                    &*required::<Window>(ctx, op, crate::attributes::keys::WINDOW)?,
                     &reducer,
                 )?
             }
@@ -332,7 +346,7 @@ pub(crate) fn instruction(
                 .collect::<Result<Vec<_>>>()?;
             let rank = operands
                 .iter()
-                .map(|&ty| Shape::rank(ctx, Shape::array_view(ctx, ty)?))
+                .map(|&ty| shape::rank(ctx, shape::array_view(ctx, ty)?))
                 .collect::<Result<Vec<_>>>()?
                 .into_iter()
                 .max()
@@ -347,7 +361,7 @@ pub(crate) fn instruction(
         SelectAndScatter => {
             let select = (
                 vec![scalar(ctx, operands[0])?; 2],
-                Shape::scalar(ctx, ElementType::Pred)?,
+                shape::scalar(ctx, ElementType::Pred)?,
             );
             let scatter = (
                 vec![scalar(ctx, operands[2])?, scalar(ctx, operands[1])?],
@@ -358,7 +372,7 @@ pub(crate) fn instruction(
                 operands[0],
                 operands[1],
                 operands[2],
-                &*required::<Window>(ctx, op, "hlo_window")?,
+                &*required::<Window>(ctx, op, crate::attributes::keys::WINDOW)?,
                 &select,
                 &scatter,
             )?
@@ -387,11 +401,11 @@ pub(crate) fn instruction(
             let source = if inputs > 0 { operands[0] } else { results[0] };
             let axis = usize::try_from(axis).map_err(|_| {
                 pliron::verify_error_noloc!(Diagnostic::InvalidAttribute {
-                    attribute: "hlo_dimensions",
+                    attribute: crate::attributes::keys::DIMENSIONS,
                     message: format!("scan axis {axis} must be nonnegative and fit usize")
                 })
             })?;
-            let bound = Shape::dimensions(ctx, source)?
+            let bound = shape::dimensions(ctx, source)?
                 .get(axis)
                 .copied()
                 .ok_or_else(|| {
@@ -401,7 +415,7 @@ pub(crate) fn instruction(
                 })?;
             for &shape in operands[..inputs].iter().chain(&results[..outputs]) {
                 require(
-                    Shape::dimensions(ctx, shape)?.get(axis) == Some(&bound),
+                    shape::dimensions(ctx, shape)?.get(axis) == Some(&bound),
                     "scan input/output extents differ or axis exceeds rank",
                 )?;
             }
@@ -447,19 +461,19 @@ pub(crate) fn verify_callees(
         Reduce => infer::infer_reduce(
             ctx,
             &operands,
-            &required::<Axes>(ctx, op, "hlo_dimensions")?.0,
+            &required::<Axes>(ctx, op, crate::attributes::keys::DIMENSIONS)?.0,
             signatures[0],
         )?,
         ReduceWindow => infer::infer_reduce_window(
             ctx,
             &operands,
-            &*required::<Window>(ctx, op, "hlo_window")?,
+            &*required::<Window>(ctx, op, crate::attributes::keys::WINDOW)?,
             signatures[0],
         )?,
         Map => {
             let rank = operands
                 .iter()
-                .map(|&ty| Shape::rank(ctx, Shape::array_view(ctx, ty)?))
+                .map(|&ty| shape::rank(ctx, shape::array_view(ctx, ty)?))
                 .collect::<Result<Vec<_>>>()?
                 .into_iter()
                 .max()
@@ -477,7 +491,7 @@ pub(crate) fn verify_callees(
             operands[0],
             operands[1],
             operands[2],
-            &*required::<Window>(ctx, op, "hlo_window")?,
+            &*required::<Window>(ctx, op, crate::attributes::keys::WINDOW)?,
             signatures[0],
             signatures[1],
         )?,
@@ -503,8 +517,8 @@ pub(crate) fn verify_callees(
     if !options.allow_mixed_precision && matches!(opcode, Map | Reduce | ReduceWindow) {
         for (&operand, &parameter) in operands.iter().zip(&signatures[0].0) {
             require(
-                Shape::element_type(ctx, Shape::array_view(ctx, operand)?)?
-                    == Shape::element_type(ctx, Shape::array_view(ctx, parameter)?)?,
+                shape::element_type(ctx, shape::array_view(ctx, operand)?)?
+                    == shape::element_type(ctx, shape::array_view(ctx, parameter)?)?,
                 "callee parameter and operand element types differ",
             )?;
         }

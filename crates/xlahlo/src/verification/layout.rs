@@ -1,7 +1,7 @@
 use super::{VerifyOptions, require};
 use crate::{
     opcode::Opcode,
-    shape::Shape,
+    shape,
     types::{ElementType, tensor},
 };
 use pliron::{
@@ -21,12 +21,12 @@ pub(super) fn verify_instruction(
     }
     let data = op.deref(ctx);
     let result = data.get_type(0);
-    if !Shape::is_array_or_buffer(ctx, result) {
+    if !shape::is_array_or_buffer(ctx, result) {
         return Ok(());
     }
-    let result = Shape::array_view(ctx, result)?;
+    let result = shape::array_view(ctx, result)?;
     let result_array = tensor(ctx, result)?;
-    let Some(result_layout) = Shape::layout(ctx, result)? else {
+    let Some(result_layout) = shape::layout(ctx, result)? else {
         return Ok(());
     };
     if options.layout_sensitive {
@@ -42,15 +42,15 @@ pub(super) fn verify_instruction(
         return Ok(());
     }
     for operand in data.operand_types(ctx) {
-        if !Shape::is_array_or_buffer(ctx, operand) {
+        if !shape::is_array_or_buffer(ctx, operand) {
             continue;
         }
-        let operand = Shape::array_view(ctx, operand)?;
+        let operand = shape::array_view(ctx, operand)?;
         let operand_array = tensor(ctx, operand)?;
         if operand_array.dimensions.len() != result_array.dimensions.len() {
             continue;
         }
-        let Some(operand_layout) = Shape::layout(ctx, operand)? else {
+        let Some(operand_layout) = shape::layout(ctx, operand)? else {
             continue;
         };
         let (mut output, mut input) = (result_layout.clone(), operand_layout.clone());

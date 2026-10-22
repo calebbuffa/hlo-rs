@@ -223,6 +223,10 @@ impl Opcode {
         }
     }
 
+    /// Returns whether this opcode accepts an explicit result-accuracy annotation.
+    ///
+    /// This describes the IR attribute contract, not a guarantee that a
+    /// particular execution backend implements every requested tolerance.
     pub const fn supports_result_accuracy(self) -> bool {
         matches!(
             self,

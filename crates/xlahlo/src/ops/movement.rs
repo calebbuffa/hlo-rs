@@ -1,4 +1,4 @@
-//! Shape and data-movement operations with explicitly typed geometry.
+//! shape and data-movement operations with explicitly typed geometry.
 
 use crate::attributes::{
     Axes, Callees, GatherDimensionNumbers, Index, IndexFlags, PaddingConfig,
@@ -35,10 +35,10 @@ impl ReshapeOp {
         } else {
             vec![dimension]
         };
-        self.op
-            .deref_mut(ctx)
-            .attributes
-            .set(Identifier::new("hlo_dimensions"), Axes(dimensions));
+        self.op.deref_mut(ctx).attributes.set(
+            Identifier::new(crate::attributes::keys::DIMENSIONS),
+            Axes(dimensions),
+        );
     }
 }
 
