@@ -19,7 +19,8 @@ pub enum RecoveryCategory {
 ///
 /// These errors are wrapped in [`pliron::result::Error`]. Inspect its underlying
 /// error with `downcast_ref::<Diagnostic>()` to recover the structured details.
-/// Neither variant currently represents an unsupported feature or internal bug.
+/// Current variants report invalid input, retaining inference sources when
+/// verification adds operation context.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum Diagnostic {

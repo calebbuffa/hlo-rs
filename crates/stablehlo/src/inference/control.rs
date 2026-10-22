@@ -15,9 +15,7 @@ fn ranked_parts(ctx: &Context, ty: TypeHandle) -> Option<(Vec<i64>, TypeHandle)>
 /// error. An empty input produces the empty tuple type.
 pub fn infer_tuple_type(ctx: &Context, operands: &[TypeHandle]) -> Result<TypeHandle> {
     for &ty in operands {
-        ty.deref(ctx)
-            .verify(ctx)
-            .map_err(|_| Diagnostic::UnsupportedType)?;
+        ty.deref(ctx).verify(ctx)?;
     }
     Ok(TupleType::get(ctx, operands.to_vec()).into())
 }
@@ -56,9 +54,7 @@ pub fn infer_while_types(ctx: &Context, operands: &[TypeHandle]) -> Result<Vec<T
 }
 fn check_values(ctx: &Context, types: &[TypeHandle]) -> Result<()> {
     for &ty in types {
-        ty.deref(ctx)
-            .verify(ctx)
-            .map_err(|_| Diagnostic::UnsupportedType)?;
+        ty.deref(ctx).verify(ctx)?;
         if !crate::types::is_value_type(ctx, ty) {
             return Err(Diagnostic::UnsupportedType.into());
         }

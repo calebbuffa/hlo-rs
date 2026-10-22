@@ -26,9 +26,7 @@ pub fn infer_elementwise(
         .into_error()
     })?;
     let first_ty = first.deref(ctx);
-    first_ty
-        .verify(ctx)
-        .map_err(|_| Diagnostic::InvalidDomain)?;
+    first_ty.verify(ctx)?;
     let tensor = first_ty
         .downcast_ref::<TensorType>()
         .ok_or_else(|| Diagnostic::UnsupportedType.into_error())?;
@@ -118,15 +116,12 @@ fn result_tensor(
     }
 }
 fn checked_result(ctx: &Context, result: TypeHandle) -> Result<TypeHandle> {
-    result
-        .deref(ctx)
-        .verify(ctx)
-        .map_err(|_| Diagnostic::InvalidDomain)?;
+    result.deref(ctx).verify(ctx)?;
     Ok(result)
 }
 fn parts(ctx: &Context, ty: TypeHandle) -> Result<(Vec<i64>, TypeHandle, Option<AttrObj>)> {
     let object = ty.deref(ctx);
-    object.verify(ctx).map_err(|_| Diagnostic::InvalidDomain)?;
+    object.verify(ctx)?;
     let tensor = object
         .downcast_ref::<TensorType>()
         .ok_or_else(|| Diagnostic::UnsupportedType.into_error())?;
