@@ -13,6 +13,7 @@ use pliron::{
     value::Value,
 };
 
+/// Materializes a tensor from an inline scalar, dense, or sparse constant value.
 #[pliron_op(name="stablehlo.constant",format,interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<0>,pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_constant_bits:VecAttr,stablehlo_constant_splat:BoolAttr,stablehlo_constant_sparse:SparseElementsAttr))]
 pub struct ConstantOp;
 impl ConstantOp {
@@ -193,6 +194,7 @@ impl Verify for ConstantOp {
     }
 }
 
+/// Produces a coordinate sequence along an axis whose extent is provided at runtime.
 #[pliron_op(name="stablehlo.dynamic_iota",format,interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<1>,pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dynamic_iota_dimension:IntegerAttr))]
 pub struct DynamicIotaOp;
 impl DynamicIotaOp {
@@ -231,7 +233,11 @@ impl DynamicIotaOp {
         )
         .ok()
     }
-    /// Builds a dynamic iota whose result tensor type is formed from `result_shape` and `element`; `dimension_size` supplies the runtime extent. This builder returns the constructed operation in `Result` for API consistency.
+    /// Constructs a dynamic iota with a result type formed from `result_shape` and `element`.
+    ///
+    /// `dimension_size` supplies the runtime extent. Returns `Ok` without checking whether
+    /// `dimension` is within the result rank or whether the size operand is valid; call
+    /// [`Verify::verify`] to validate the operation.
     pub fn new_inferred(
         ctx: &mut Context,
         dimension_size: Value,

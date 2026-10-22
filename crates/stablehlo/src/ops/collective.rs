@@ -220,6 +220,7 @@ fn reducer_contract(ctx: &Context, ir: &Operation, check_shape: bool, count: usi
     true
 }
 
+/// Collects values from participating devices by concatenating along a selected tensor axis.
 #[pliron_op(name="stablehlo.all_gather",format,attributes=(stablehlo_all_gather_dimension:IntegerAttr,stablehlo_all_gather_replica_groups:VecAttr,stablehlo_all_gather_channel_handle:ChannelHandleAttr,stablehlo_all_gather_use_global_device_ids:BoolAttr))]
 pub struct AllGatherOp;
 impl AllGatherOp {
@@ -322,6 +323,7 @@ impl Verify for AllGatherOp {
     }
 }
 
+/// Combines values from participating devices using a reduction computation.
 #[pliron_op(name="stablehlo.all_reduce",format,attributes=(stablehlo_all_reduce_replica_groups:VecAttr,stablehlo_all_reduce_channel_handle:ChannelHandleAttr,stablehlo_all_reduce_use_global_device_ids:BoolAttr))]
 pub struct AllReduceOp;
 impl AllReduceOp {
@@ -379,6 +381,7 @@ impl Verify for AllReduceOp {
     }
 }
 
+/// Reduces values across devices and distributes disjoint result slices along an axis.
 #[pliron_op(name="stablehlo.reduce_scatter",format,attributes=(stablehlo_reduce_scatter_dimension:IntegerAttr,stablehlo_reduce_scatter_replica_groups:VecAttr,stablehlo_reduce_scatter_channel_handle:ChannelHandleAttr,stablehlo_reduce_scatter_use_global_device_ids:BoolAttr))]
 pub struct ReduceScatterOp;
 impl ReduceScatterOp {
@@ -473,6 +476,7 @@ impl Verify for ReduceScatterOp {
     }
 }
 
+/// Splits tensors across participating devices and concatenates the received pieces.
 #[pliron_op(name="stablehlo.all_to_all",format,attributes=(stablehlo_all_to_all_split_dimension:IntegerAttr,stablehlo_all_to_all_concat_dimension:IntegerAttr,stablehlo_all_to_all_split_count:IntegerAttr,stablehlo_all_to_all_replica_groups:VecAttr,stablehlo_all_to_all_channel_handle:ChannelHandleAttr,stablehlo_all_to_all_use_global_device_ids:BoolAttr))]
 pub struct AllToAllOp;
 impl AllToAllOp {
@@ -594,6 +598,7 @@ impl Verify for AllToAllOp {
     }
 }
 
+/// Broadcasts values from a root device to the other devices in each group.
 #[pliron_op(name="stablehlo.collective_broadcast",format,attributes=(stablehlo_collective_broadcast_has_dynamic_root:BoolAttr,stablehlo_collective_broadcast_replica_groups:VecAttr,stablehlo_collective_broadcast_channel_handle:ChannelHandleAttr))]
 pub struct CollectiveBroadcastOp;
 impl CollectiveBroadcastOp {
@@ -683,6 +688,7 @@ impl Verify for CollectiveBroadcastOp {
     }
 }
 
+/// Reduces values across devices and returns the result to each group's root device.
 #[pliron_op(name="stablehlo.collective_reduce",format,attributes=(stablehlo_collective_reduce_replica_groups:VecAttr,stablehlo_collective_reduce_has_dynamic_root:BoolAttr,stablehlo_collective_reduce_channel_handle:ChannelHandleAttr,stablehlo_collective_reduce_use_global_device_ids:BoolAttr))]
 pub struct CollectiveReduceOp;
 impl CollectiveReduceOp {
@@ -755,6 +761,7 @@ impl Verify for CollectiveReduceOp {
     }
 }
 
+/// Routes tensor values from source devices to their paired target devices.
 #[pliron_op(name="stablehlo.collective_permute",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_collective_permute_source_target_pairs:VecAttr,stablehlo_collective_permute_channel_handle:ChannelHandleAttr))]
 pub struct CollectivePermuteOp;
 impl CollectivePermuteOp {
@@ -796,6 +803,7 @@ impl Verify for CollectivePermuteOp {
     }
 }
 
+/// Sums corresponding tensor elements across replicas in each replica group.
 #[pliron_op(name="stablehlo.cross_replica_sum",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_cross_replica_sum_replica_groups:VecAttr))]
 pub struct CrossReplicaSumOp;
 impl CrossReplicaSumOp {

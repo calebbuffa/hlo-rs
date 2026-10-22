@@ -3,6 +3,7 @@ use thiserror::Error;
 
 /// Recovery guidance associated with a StableHLO diagnostic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RecoveryCategory {
     /// Correct the StableHLO input or supplied operation attributes.
     InvalidInput,
@@ -14,6 +15,7 @@ pub enum RecoveryCategory {
 
 /// Structured StableHLO diagnostic payload carried by pliron errors.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Diagnostic {
     /// The requested type is not supported by the native StableHLO API.
     #[error("unsupported StableHLO type")]
@@ -341,6 +343,25 @@ pub enum Diagnostic {
 }
 
 impl Diagnostic {
+    /// Finds the first StableHLO diagnostic in an error and its source chain.
+    ///
+    /// Also traverses pliron's `err` payload, which the framework does not expose
+    /// through `std::error::Error::source`. Returns `None` for errors originating
+    /// entirely in the framework or another dialect.
+    pub fn from_error(error: &pliron::result::Error) -> Option<&Self> {
+        let mut source: &dyn StdError = error;
+        loop {
+            if let Some(diagnostic) = source.downcast_ref::<Self>() {
+                return Some(diagnostic);
+            }
+            source = if let Some(envelope) = source.downcast_ref::<pliron::result::Error>() {
+                envelope.err.as_ref()
+            } else {
+                source.source()?
+            };
+        }
+    }
+
     pub(crate) fn into_error(self) -> pliron::result::Error {
         self.into()
     }
@@ -359,6 +380,18 @@ impl Diagnostic {
     }
 }
 
+impl From<crate::attributes::enums::EnumParseError> for pliron::result::Error {
+    fn from(error: crate::attributes::enums::EnumParseError) -> Self {
+        pliron::arg_error_noloc!(error)
+    }
+}
+
+impl From<crate::integer::IntegerParseError> for pliron::result::Error {
+    fn from(error: crate::integer::IntegerParseError) -> Self {
+        pliron::arg_error_noloc!(error)
+    }
+}
+
 impl From<Diagnostic> for pliron::result::Error {
     fn from(diagnostic: Diagnostic) -> Self {
         match diagnostic.recovery_category() {
@@ -374,9 +407,7 @@ impl Diagnostic {
         operation: &'static str,
         error: pliron::result::Error,
     ) -> pliron::result::Error {
-        let category = error
-            .err
-            .downcast_ref::<Self>()
+        let category = Self::from_error(&error)
             .map_or(RecoveryCategory::InvalidInput, Self::recovery_category);
         let location = format!("{:?}", error.loc);
         Self::BuilderFailure {

@@ -15,6 +15,7 @@ use pliron::{
     value::Value,
 };
 
+/// Extracts a statically specified strided slice from a ranked tensor.
 #[pliron_op(name="stablehlo.slice",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_slice_starts:VecAttr,stablehlo_slice_limits:VecAttr,stablehlo_slice_strides:VecAttr))]
 pub struct SliceOp;
 impl SliceOp {
@@ -45,7 +46,11 @@ impl SliceOp {
         op.set_attr_stablehlo_slice_strides(ctx, c);
         op
     }
-    /// Builds a `stablehlo.slice` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Slices `input` using per-axis inclusive `starts`, exclusive `limits`, and positive `strides`.
+    ///
+    /// The result element type is preserved and each result dimension is the ceiling of
+    /// `(limit - start) / stride`. Returns an error if the operand is not ranked, metadata ranks
+    /// differ, a stride is zero, a limit precedes its start, or a limit exceeds a known input bound.
     pub fn new_inferred(
         ctx: &mut Context,
         input: Value,
@@ -168,6 +173,7 @@ impl Verify for SliceOp {
     }
 }
 
+/// Concatenates a nonempty sequence of tensors along a selected axis.
 #[pliron_op(name="stablehlo.concatenate",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_concatenate_dimension:IntegerAttr))]
 pub struct ConcatenateOp;
 impl ConcatenateOp {
@@ -238,7 +244,11 @@ impl ConcatenateOp {
         self.get_attr_stablehlo_concatenate_dimension(ctx)
             .and_then(|a| a.value().to_string_decimal(false).parse::<usize>().ok())
     }
-    /// Builds a `stablehlo.concatenate` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Concatenates `inputs` along `dimension`, inferring the combined result shape.
+    ///
+    /// Inputs must have matching ranks and element types, and dimensions other than the
+    /// concatenation axis must be compatible. Returns an error for an empty input list, invalid
+    /// axis, incompatible operands, or shape overflow.
     pub fn new_inferred(ctx: &mut Context, inputs: Vec<Value>, dimension: usize) -> Result<Self> {
         let tys = inputs.iter().map(|v| v.get_type(ctx)).collect::<Vec<_>>();
         let out = crate::ops::builder_result(
@@ -249,6 +259,7 @@ impl ConcatenateOp {
     }
 }
 
+/// Extracts a fixed-size slice whose start indices are provided at runtime.
 #[pliron_op(name="stablehlo.dynamic_slice",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dynamic_slice_sizes:VecAttr))]
 pub struct DynamicSliceOp;
 impl DynamicSliceOp {
@@ -275,7 +286,11 @@ impl DynamicSliceOp {
         op.set_attr_stablehlo_dynamic_slice_sizes(ctx, vec_i64(ctx, sizes));
         op
     }
-    /// Builds a `stablehlo.dynamic_slice` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Extracts a fixed-size window from `input` at runtime start indices in `starts`.
+    ///
+    /// `sizes` supplies one nonnegative extent per input axis; it determines the result shape while
+    /// the input element type is preserved. Returns an error for an unsupported input tensor or
+    /// invalid size vector.
     pub fn new_inferred(
         ctx: &mut Context,
         input: Value,
@@ -361,7 +376,10 @@ impl DynamicUpdateSliceOp {
             ),
         }
     }
-    /// Builds a `stablehlo.dynamic_update_slice` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Updates `input` with `update` at runtime start indices in `starts`.
+    ///
+    /// The result has the input shape and element type. Returns an error when the ranked tensors
+    /// have incompatible ranks or element types, or when update extents cannot fit the input.
     pub fn new_inferred(
         ctx: &mut Context,
         input: Value,
@@ -448,7 +466,11 @@ impl RealDynamicSliceOp {
             ),
         }
     }
-    /// Builds a `stablehlo.real_dynamic_slice` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Extracts a slice using runtime `start`, `limit`, and `stride` index vectors.
+    ///
+    /// The inferred result preserves the input rank and element type; each index vector must have
+    /// one entry per input axis. Returns an error for unsupported tensor or index types, mismatched
+    /// vector shapes, or an unrepresentable inferred result.
     pub fn new_inferred(
         ctx: &mut Context,
         input: Value,
@@ -507,6 +529,7 @@ impl Verify for RealDynamicSliceOp {
     }
 }
 
+/// Adds edge and interior padding around values in an input tensor.
 #[pliron_op(name="stablehlo.pad",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_pad_low:VecAttr,stablehlo_pad_high:VecAttr,stablehlo_pad_interior:VecAttr))]
 pub struct PadOp;
 impl PadOp {
@@ -535,7 +558,11 @@ impl PadOp {
         op.set_attr_stablehlo_pad_interior(ctx, vec_i64(ctx, interior));
         op
     }
-    /// Builds a `stablehlo.pad` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Pads `input` with the scalar `padding` value using per-axis edge and interior widths.
+    ///
+    /// `low`, `high`, and `interior` must each describe every input axis. The result preserves the
+    /// input element type. Returns an error for incompatible ranks or elements, invalid widths, or
+    /// shape overflow.
     pub fn new_inferred(
         ctx: &mut Context,
         input: Value,
@@ -638,7 +665,11 @@ impl DynamicPadOp {
             ),
         }
     }
-    /// Builds a `stablehlo.dynamic_pad` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Pads `input` with `padding` using runtime `low`, `high`, and `interior` width tensors.
+    ///
+    /// The inferred result preserves the input rank and element type. Returns an error when the
+    /// input or padding tensor is unsupported or their ranks and element types are incompatible;
+    /// runtime widths are validated separately by operation verification.
     pub fn new_inferred(
         ctx: &mut Context,
         input: Value,

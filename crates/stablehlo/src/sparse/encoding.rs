@@ -38,7 +38,7 @@ pub enum SparseLevelFormat {
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Sparse level format and its ordering, uniqueness, and layout flags.
-pub struct SparseLevelType {
+pub struct SparseLevelAttr {
     /// Encoded level format discriminant.
     pub format: u8,
     /// Numerator of the structured level's `n`-of-`m` ratio.
@@ -52,7 +52,7 @@ pub struct SparseLevelType {
     /// Whether singleton values use the structure-of-arrays representation.
     pub soa: bool,
 }
-impl SparseLevelType {
+impl SparseLevelAttr {
     /// Creates a level descriptor with the format's default properties.
     pub fn new(format: SparseLevelFormat) -> Self {
         let (kind, n, m) = match format {
@@ -103,7 +103,7 @@ impl SparseLevelType {
         Ok(())
     }
 }
-impl Verify for SparseLevelType {
+impl Verify for SparseLevelAttr {
     fn verify(&self, _: &Context) -> Result<()> {
         self.validate()
     }
@@ -162,7 +162,7 @@ impl Verify for SparseTensorDimSlice {
 /// Sparse tensor storage layout, mappings, widths, values, and dimension slices.
 pub struct SparseTensorEncoding {
     /// Storage format for each sparse level.
-    pub levels: Vec<SparseLevelType>,
+    pub levels: Vec<SparseLevelAttr>,
     /// Mapping from tensor dimensions to sparse levels.
     pub dimension_to_level: AffineMap,
     /// Inverse mapping when it can be inferred from `dimension_to_level`.
@@ -180,7 +180,7 @@ pub struct SparseTensorEncoding {
 }
 impl SparseTensorEncoding {
     /// Builds an encoding with inferred inverse mapping and default widths and values.
-    pub fn new(ctx: &Context, levels: Vec<SparseLevelType>, map: AffineMap) -> Result<Self> {
+    pub fn new(ctx: &Context, levels: Vec<SparseLevelAttr>, map: AffineMap) -> Result<Self> {
         let inverse = infer_sparse_level_to_dimension(&map)?;
         let encoding = Self {
             levels,

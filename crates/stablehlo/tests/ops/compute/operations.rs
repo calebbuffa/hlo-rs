@@ -313,7 +313,7 @@ fn fft_rejects_invalid_fft_rank_and_lengths() {
     let mut ctx = Context::new();
     let input = value(&mut ctx, &[8], ElementType::C64);
     let output = tensor(&ctx, &[8], ElementType::C64);
-    let bad = FftOp::new(&mut ctx, input, output, FftTypeAttr::Fft, vec![8, 8, 8, 8]);
+    let bad = FftOp::new(&mut ctx, input, output, FftKind::Fft, vec![8, 8, 8, 8]);
     assert!(bad.verify(&ctx).is_err());
 }
 

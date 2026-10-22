@@ -69,12 +69,12 @@ fn enum_attributes_accept_only_known_values() {
         assert!(value.verify(&ctx).is_ok());
     }
     for value in [
-        ComparisonType::NoType,
-        ComparisonType::Float,
-        ComparisonType::TotalOrder,
-        ComparisonType::Signed,
-        ComparisonType::Unsigned,
-        ComparisonType::WeakOrder,
+        ComparisonKind::NoType,
+        ComparisonKind::Float,
+        ComparisonKind::TotalOrder,
+        ComparisonKind::Signed,
+        ComparisonKind::Unsigned,
+        ComparisonKind::WeakOrder,
     ] {
         assert!(value.verify(&ctx).is_ok());
     }
@@ -95,12 +95,7 @@ fn enum_attributes_accept_only_known_values() {
     for value in [RngDistributionAttr::Uniform, RngDistributionAttr::Normal] {
         assert!(value.verify(&ctx).is_ok());
     }
-    for fft_type in [
-        FftTypeAttr::Fft,
-        FftTypeAttr::Ifft,
-        FftTypeAttr::Rfft,
-        FftTypeAttr::Irfft,
-    ] {
+    for fft_type in [FftKind::Fft, FftKind::Ifft, FftKind::Rfft, FftKind::Irfft] {
         assert!(fft_type.verify(&ctx).is_ok());
     }
     assert!(
@@ -141,6 +136,7 @@ fn stablehlo_enums_parse_and_print_their_own_spellings() {
     ] {
         assert_eq!(spelling.parse::<Precision>(), Ok(value));
         assert_eq!(value.as_str(), spelling);
+        assert_eq!(value.to_string(), spelling);
     }
     for (value, spelling) in [
         (ComparisonDirection::Eq, "EQ"),
@@ -152,15 +148,17 @@ fn stablehlo_enums_parse_and_print_their_own_spellings() {
     ] {
         assert_eq!(spelling.parse::<ComparisonDirection>(), Ok(value));
         assert_eq!(value.as_str(), spelling);
+        assert_eq!(value.to_string(), spelling);
     }
     for (value, spelling) in [
-        (FftTypeAttr::Fft, "FFT"),
-        (FftTypeAttr::Ifft, "IFFT"),
-        (FftTypeAttr::Rfft, "RFFT"),
-        (FftTypeAttr::Irfft, "IRFFT"),
+        (FftKind::Fft, "FFT"),
+        (FftKind::Ifft, "IFFT"),
+        (FftKind::Rfft, "RFFT"),
+        (FftKind::Irfft, "IRFFT"),
     ] {
-        assert_eq!(spelling.parse::<FftTypeAttr>(), Ok(value));
+        assert_eq!(spelling.parse::<FftKind>(), Ok(value));
         assert_eq!(value.as_str(), spelling);
+        assert_eq!(value.to_string(), spelling);
     }
     for (value, spelling) in [
         (ResultAccuracyMode::Default, "DEFAULT"),
@@ -169,17 +167,19 @@ fn stablehlo_enums_parse_and_print_their_own_spellings() {
     ] {
         assert_eq!(spelling.parse::<ResultAccuracyMode>(), Ok(value));
         assert_eq!(value.as_str(), spelling);
+        assert_eq!(value.to_string(), spelling);
     }
     for (value, spelling) in [
-        (ComparisonType::NoType, "NOTYPE"),
-        (ComparisonType::Float, "FLOAT"),
-        (ComparisonType::TotalOrder, "TOTALORDER"),
-        (ComparisonType::Signed, "SIGNED"),
-        (ComparisonType::Unsigned, "UNSIGNED"),
-        (ComparisonType::WeakOrder, "WEAKORDER"),
+        (ComparisonKind::NoType, "NOTYPE"),
+        (ComparisonKind::Float, "FLOAT"),
+        (ComparisonKind::TotalOrder, "TOTALORDER"),
+        (ComparisonKind::Signed, "SIGNED"),
+        (ComparisonKind::Unsigned, "UNSIGNED"),
+        (ComparisonKind::WeakOrder, "WEAKORDER"),
     ] {
-        assert_eq!(spelling.parse::<ComparisonType>(), Ok(value));
+        assert_eq!(spelling.parse::<ComparisonKind>(), Ok(value));
         assert_eq!(value.as_str(), spelling);
+        assert_eq!(value.to_string(), spelling);
     }
     for (value, spelling) in [
         (RngAlgorithmAttr::Default, "DEFAULT"),
@@ -188,6 +188,7 @@ fn stablehlo_enums_parse_and_print_their_own_spellings() {
     ] {
         assert_eq!(spelling.parse::<RngAlgorithmAttr>(), Ok(value));
         assert_eq!(value.as_str(), spelling);
+        assert_eq!(value.to_string(), spelling);
     }
     for (value, spelling) in [
         (RngDistributionAttr::Uniform, "UNIFORM"),
@@ -195,6 +196,7 @@ fn stablehlo_enums_parse_and_print_their_own_spellings() {
     ] {
         assert_eq!(spelling.parse::<RngDistributionAttr>(), Ok(value));
         assert_eq!(value.as_str(), spelling);
+        assert_eq!(value.to_string(), spelling);
     }
     assert!("unknown".parse::<Precision>().is_err());
     assert_eq!(
@@ -202,6 +204,10 @@ fn stablehlo_enums_parse_and_print_their_own_spellings() {
         Ok(stablehlo::ops::TransposeMode::None)
     );
     assert_eq!(stablehlo::ops::TransposeMode::Adjoint.as_str(), "ADJOINT");
+    assert_eq!(
+        stablehlo::ops::TransposeMode::Adjoint.to_string(),
+        "ADJOINT"
+    );
 }
 
 #[test]
@@ -449,8 +455,8 @@ fn sparse_map_inverse_levels_and_tensor_dtype_rules() {
     let mut encoding = SparseTensorEncoding::new(
         &ctx,
         vec![
-            SparseLevelType::new(SparseLevelFormat::Dense),
-            SparseLevelType::new(SparseLevelFormat::Compressed),
+            SparseLevelAttr::new(SparseLevelFormat::Dense),
+            SparseLevelAttr::new(SparseLevelFormat::Compressed),
         ],
         map,
     )
@@ -461,7 +467,7 @@ fn sparse_map_inverse_levels_and_tensor_dtype_rules() {
     encoding.position_width = 7;
     assert!(encoding.verify(&ctx).is_err());
     assert!(
-        SparseLevelType::new(SparseLevelFormat::Structured { n: 3, m: 2 })
+        SparseLevelAttr::new(SparseLevelFormat::Structured { n: 3, m: 2 })
             .verify(&ctx)
             .is_err()
     );

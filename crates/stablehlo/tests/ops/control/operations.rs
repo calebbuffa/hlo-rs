@@ -638,7 +638,7 @@ fn communication_channel_kinds_follow_host_transfer_mode() {
         .get_result(0);
     let channel = ChannelHandleAttr {
         handle: 7,
-        channel_type: ChannelType::DeviceToDevice,
+        channel_kind: ChannelKind::DeviceToDevice,
     };
     assert!(
         stablehlo::ops::SendOp::new(&mut ctx, input, tv, channel, false)
@@ -647,7 +647,7 @@ fn communication_channel_kinds_follow_host_transfer_mode() {
     );
     let bad = ChannelHandleAttr {
         handle: 7,
-        channel_type: ChannelType::DeviceToHost,
+        channel_kind: ChannelKind::DeviceToHost,
     };
     assert!(
         stablehlo::ops::SendOp::new(&mut ctx, input, tv, bad, false)

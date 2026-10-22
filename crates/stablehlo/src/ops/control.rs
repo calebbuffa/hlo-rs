@@ -98,6 +98,7 @@ impl Verify for ModuleOp {
     }
 }
 
+/// Invokes a function by symbol, passing operands and returning its results.
 #[pliron_op(name="stablehlo.call",format,attributes=(stablehlo_call_callee:StringAttr))]
 pub struct CallOp;
 impl CallOp {
@@ -196,6 +197,7 @@ impl Verify for WhileOp {
     }
 }
 
+/// Defines a named function with an isolated body region and function signature.
 #[pliron_op(name="stablehlo.func",format,interfaces=[pliron::builtin::op_interfaces::OneRegionInterface,pliron::builtin::op_interfaces::IsolatedFromAboveInterface],attributes=(stablehlo_function_name: StringAttr, stablehlo_function_signature: PlironTypeAttr))]
 pub struct FuncOp;
 impl FuncOp {
@@ -474,6 +476,7 @@ impl Verify for TupleOp {
     }
 }
 
+/// Extracts one element from a tuple value by its zero-based index.
 #[pliron_op(name="stablehlo.get_tuple_element",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_get_tuple_element_index:IntegerAttr))]
 pub struct GetTupleElementOp;
 impl GetTupleElementOp {
@@ -528,6 +531,7 @@ impl Verify for GetTupleElementOp {
     }
 }
 
+/// Represents a named composite operation with versioned metadata and optional decomposition.
 #[pliron_op(name="stablehlo.composite",format,attributes=(stablehlo_composite_name:StringAttr,stablehlo_composite_version:IntegerAttr,stablehlo_composite_decomposition:StringAttr,stablehlo_composite_attributes:DictAttr))]
 pub struct CompositeOp;
 impl CompositeOp {
@@ -574,6 +578,7 @@ impl Verify for CompositeOp {
     }
 }
 
+/// Invokes an implementation-specific target with explicit layouts and call metadata.
 #[pliron_op(name="stablehlo.custom_call",format,attributes=(stablehlo_custom_call_target:StringAttr,stablehlo_custom_call_has_side_effect:BoolAttr,stablehlo_custom_call_api_version:IntegerAttr,stablehlo_custom_call_called_computations:VecAttr,stablehlo_custom_call_output_operand_aliases:VecAttr,stablehlo_custom_call_operand_layouts:ArrayOfLayoutAttr,stablehlo_custom_call_result_layouts:ArrayOfLayoutAttr))]
 pub struct CustomCallOp;
 static CUSTOM_CALL_BACKEND_CONFIG: std::sync::LazyLock<Identifier> =
@@ -1089,8 +1094,8 @@ fn typed_integer_attr(ctx: &Context, value: u64, width: u32) -> IntegerAttr {
 fn scalar_element_is(ctx: &Context, ty: TypeHandle, e: ElementType) -> bool {
     tensor_parts(ctx, ty).is_some_and(|(shape, element)| shape.is_empty() && element == e)
 }
-fn valid_transfer_channel(attr: Option<&ChannelHandleAttr>, expected: ChannelType) -> bool {
-    attr.is_some_and(|channel| channel.channel_type == expected)
+fn valid_transfer_channel(attr: Option<&ChannelHandleAttr>, expected: ChannelKind) -> bool {
+    attr.is_some_and(|channel| channel.channel_kind == expected)
 }
 fn is_token(ctx: &Context, ty: TypeHandle) -> bool {
     ty.deref(ctx).downcast_ref::<TokenType>().is_some()
@@ -1217,6 +1222,7 @@ impl Verify for PartitionIdOp {
     }
 }
 
+/// Receives a tensor value from the device's input stream.
 #[pliron_op(name="stablehlo.infeed",format,attributes=(stablehlo_infeed_config:StringAttr,stablehlo_infeed_layout:ArrayOfLayoutAttr))]
 pub struct InfeedOp;
 impl InfeedOp {
@@ -1286,6 +1292,7 @@ impl Verify for InfeedOp {
     }
 }
 
+/// Sends a tensor value to the device's output stream.
 #[pliron_op(name="stablehlo.outfeed",format,attributes=(stablehlo_outfeed_config:StringAttr))]
 pub struct OutfeedOp;
 impl OutfeedOp {
@@ -1325,6 +1332,7 @@ impl Verify for OutfeedOp {
     }
 }
 
+/// Sends a value to another device or the host over a communication channel.
 #[pliron_op(name="stablehlo.send",format,attributes=(stablehlo_send_channel_handle:ChannelHandleAttr,stablehlo_send_is_host_transfer:BoolAttr))]
 pub struct SendOp;
 impl SendOp {
@@ -1369,9 +1377,9 @@ impl Verify for SendOp {
         if !valid_transfer_channel(
             self.get_attr_stablehlo_send_channel_handle(ctx).as_deref(),
             if host {
-                ChannelType::DeviceToHost
+                ChannelKind::DeviceToHost
             } else {
-                ChannelType::DeviceToDevice
+                ChannelKind::DeviceToDevice
             },
         ) {
             return invalid(
@@ -1384,6 +1392,7 @@ impl Verify for SendOp {
     }
 }
 
+/// Receives a value from another device or the host over a communication channel.
 #[pliron_op(name="stablehlo.recv",format,attributes=(stablehlo_recv_channel_handle:ChannelHandleAttr,stablehlo_recv_is_host_transfer:BoolAttr))]
 pub struct RecvOp;
 impl RecvOp {
@@ -1428,9 +1437,9 @@ impl Verify for RecvOp {
         if !valid_transfer_channel(
             self.get_attr_stablehlo_recv_channel_handle(ctx).as_deref(),
             if host {
-                ChannelType::HostToDevice
+                ChannelKind::HostToDevice
             } else {
-                ChannelType::DeviceToDevice
+                ChannelKind::DeviceToDevice
             },
         ) {
             return invalid(

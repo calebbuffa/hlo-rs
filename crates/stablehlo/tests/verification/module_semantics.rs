@@ -37,7 +37,7 @@ fn typed_dimension_and_comparison_attributes_verify() {
         input_value,
         pred_ty,
         ComparisonDirection::Ge,
-        ComparisonType::Float,
+        ComparisonKind::Float,
     );
     assert!(compare.verify(&ctx).is_ok());
 }

@@ -21,6 +21,11 @@ use pliron::{location::Location, verify_err};
 use std::fmt;
 
 /// Primitive element types used by tensor values.
+///
+/// [`Display`](fmt::Display) writes the canonical MLIR scalar type spelling, such as `i32`,
+/// `f32`, `bf16`, or `complex<f32>`. Nonstandard integer widths and complex component types are
+/// represented directly in the spelling. [`Debug`](fmt::Debug) remains intended for Rust
+/// diagnostics and displays the enum variant names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ElementType {
     /// Target-dependent index integer.
@@ -423,11 +428,66 @@ impl ElementType {
     }
 }
 
-impl ElementType {
-    /// Returns the canonical spelling used by the element's debug representation.
-    pub fn spelling(self) -> String {
-        format!("{self:?}")
+impl fmt::Display for ElementType {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use ElementType::*;
+        match self {
+            Index => formatter.write_str("index"),
+            I1 => formatter.write_str("i1"),
+            I2 => formatter.write_str("i2"),
+            I4 => formatter.write_str("i4"),
+            I8 => formatter.write_str("i8"),
+            I16 => formatter.write_str("i16"),
+            I32 => formatter.write_str("i32"),
+            I64 => formatter.write_str("i64"),
+            Si1 => formatter.write_str("si1"),
+            Si2 => formatter.write_str("si2"),
+            Si4 => formatter.write_str("si4"),
+            Si8 => formatter.write_str("si8"),
+            Si16 => formatter.write_str("si16"),
+            Si32 => formatter.write_str("si32"),
+            Si64 => formatter.write_str("si64"),
+            Ui1 => formatter.write_str("ui1"),
+            Ui2 => formatter.write_str("ui2"),
+            Ui4 => formatter.write_str("ui4"),
+            Ui8 => formatter.write_str("ui8"),
+            Ui16 => formatter.write_str("ui16"),
+            Ui32 => formatter.write_str("ui32"),
+            Ui64 => formatter.write_str("ui64"),
+            F4E2M1Fn => formatter.write_str("f4E2M1FN"),
+            F6E2M3Fn => formatter.write_str("f6E2M3FN"),
+            F6E3M2Fn => formatter.write_str("f6E3M2FN"),
+            F16 => formatter.write_str("f16"),
+            Bf16 => formatter.write_str("bf16"),
+            F32 => formatter.write_str("f32"),
+            F64 => formatter.write_str("f64"),
+            Tf32 => formatter.write_str("tf32"),
+            F8E3M4 => formatter.write_str("f8E3M4"),
+            F8E4M3 => formatter.write_str("f8E4M3"),
+            F8E4M3Fn => formatter.write_str("f8E4M3FN"),
+            F8E4M3FnUz => formatter.write_str("f8E4M3FNUZ"),
+            F8E4M3B11FnUz => formatter.write_str("f8E4M3B11FNUZ"),
+            F8E5M2 => formatter.write_str("f8E5M2"),
+            F8E5M2FnUz => formatter.write_str("f8E5M2FNUZ"),
+            F8E8M0FnUz => formatter.write_str("f8E8M0FNU"),
+            C64 => formatter.write_str("complex<f32>"),
+            C128 => formatter.write_str("complex<f64>"),
+            Integer(element) => write!(
+                formatter,
+                "{}i{}",
+                match element.signedness {
+                    IntegerSignedness::Signless => "",
+                    IntegerSignedness::Signed => "s",
+                    IntegerSignedness::Unsigned => "u",
+                },
+                element.width
+            ),
+            Complex(element) => write!(formatter, "complex<{}>", element.component()),
+        }
     }
+}
+
+impl ElementType {
     /// Converts this primitive element descriptor to an interned native type.
     pub fn native(self, ctx: &Context) -> TypeHandle {
         use pliron::builtin::types::{BF16Type, FP16Type, FP32Type, FP64Type};

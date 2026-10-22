@@ -195,7 +195,7 @@ fn conversion_comparison_select_and_clamp_verify() {
         i,
         i,
         ComparisonDirection::Lt,
-        Some(ComparisonType::Signed),
+        Some(ComparisonKind::Signed),
     )
     .unwrap();
     assert!(cmp.verify(&ctx).is_ok());
@@ -443,7 +443,7 @@ fn native_inference_helpers_preserve_shape_and_apply_element_rules() {
     );
     let i = tensor(&ctx, &[3], ElementType::I32);
     let compare =
-        stablehlo::inference::infer_compare_type(&ctx, i, i, Some(ComparisonType::Signed)).unwrap();
+        stablehlo::inference::infer_compare_type(&ctx, i, i, Some(ComparisonKind::Signed)).unwrap();
     assert_eq!(
         tensor_parts(&ctx, compare).unwrap(),
         (vec![3], ElementType::I1)
@@ -463,7 +463,7 @@ fn native_inference_helpers_preserve_shape_and_apply_element_rules() {
         stablehlo::inference::infer_abs_type(&ctx, tensor(&ctx, &[3], ElementType::I1)).is_err()
     );
     assert!(
-        stablehlo::inference::infer_compare_type(&ctx, i, i, Some(ComparisonType::Float)).is_err()
+        stablehlo::inference::infer_compare_type(&ctx, i, i, Some(ComparisonKind::Float)).is_err()
     );
 }
 
@@ -535,29 +535,29 @@ fn compare_modes_follow_integer_float_and_complex_domains() {
         (
             ElementType::I32,
             vec![
-                ComparisonType::NoType,
-                ComparisonType::Signed,
-                ComparisonType::Unsigned,
+                ComparisonKind::NoType,
+                ComparisonKind::Signed,
+                ComparisonKind::Unsigned,
             ],
         ),
         (
             ElementType::F32,
             vec![
-                ComparisonType::Float,
-                ComparisonType::TotalOrder,
-                ComparisonType::WeakOrder,
+                ComparisonKind::Float,
+                ComparisonKind::TotalOrder,
+                ComparisonKind::WeakOrder,
             ],
         ),
-        (ElementType::C64, vec![ComparisonType::Float]),
+        (ElementType::C64, vec![ComparisonKind::Float]),
     ] {
         let input = value(&mut ctx, &[2], element, 0);
         for mode in [
-            ComparisonType::NoType,
-            ComparisonType::Float,
-            ComparisonType::TotalOrder,
-            ComparisonType::Signed,
-            ComparisonType::Unsigned,
-            ComparisonType::WeakOrder,
+            ComparisonKind::NoType,
+            ComparisonKind::Float,
+            ComparisonKind::TotalOrder,
+            ComparisonKind::Signed,
+            ComparisonKind::Unsigned,
+            ComparisonKind::WeakOrder,
         ] {
             let result = tensor(&ctx, &[2], ElementType::I1);
             let op = CompareOp::new(
@@ -578,7 +578,7 @@ fn compare_modes_follow_integer_float_and_complex_domains() {
     let i = value(&mut ctx, &[2], ElementType::I32, 0);
     let pred_result = tensor(&ctx, &[2], ElementType::I1);
     assert!(
-        CompareOp::new_without_comparison_type(
+        CompareOp::new_without_comparison_kind(
             &mut ctx,
             i,
             i,

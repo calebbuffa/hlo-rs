@@ -73,7 +73,10 @@ impl ConvertOp {
     pub fn input(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(0)
     }
-    /// Builds a `stablehlo.convert` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Converts `input` to `to`, preserving its shape and tensor encoding.
+    ///
+    /// The source and target must be supported primitive element types; index, `tf32`, and
+    /// signless integer element types are not supported. Returns an error if type inference fails.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value, to: ElementType) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -105,7 +108,11 @@ impl SelectOp {
     pub fn on_false(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(2)
     }
-    /// Builds a `stablehlo.select` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Selects the corresponding element from `yes` or `no` using the `i1` predicate in `pred`.
+    ///
+    /// The value operands must have compatible element types and shapes. `pred` must contain `i1`
+    /// elements; a scalar predicate is allowed, otherwise its shape must also be compatible with
+    /// the value operands. Returns an error when the element types or shapes cannot be reconciled.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, pred: Value, yes: Value, no: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -140,7 +147,8 @@ impl Verify for SelectOp {
     }
 }
 
-#[pliron_op(name="stablehlo.compare",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compare_direction:ComparisonDirection,stablehlo_compare_type:ComparisonType))]
+/// Compares tensor elements and produces a predicate tensor.
+#[pliron_op(name="stablehlo.compare",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compare_direction:ComparisonDirection,stablehlo_compare_type:ComparisonKind))]
 pub struct CompareOp;
 impl CompareOp {
     /// Returns the left-hand operand.
@@ -151,14 +159,19 @@ impl CompareOp {
     pub fn rhs(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(1)
     }
-    /// Builds a `stablehlo.compare` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Compares corresponding elements of `lhs` and `rhs` using `direction`.
+    ///
+    /// The result has predicate elements and a shape compatible with both operands (dynamic
+    /// dimensions may match known extents). `comparison` selects comparison semantics when
+    /// present; valid element domains depend on that kind. Per-axis quantized operands are not
+    /// supported. Returns an error for unsupported element types or incompatible shapes.
     #[inline]
     pub fn new_inferred(
         ctx: &mut Context,
         lhs: Value,
         rhs: Value,
         direction: ComparisonDirection,
-        comparison: Option<ComparisonType>,
+        comparison: Option<ComparisonKind>,
     ) -> Result<Self> {
         let result = crate::ops::builder_result(
             crate::inference::infer_compare_type(
@@ -172,12 +185,12 @@ impl CompareOp {
         Ok(if let Some(comparison) = comparison {
             Self::new(ctx, lhs, rhs, result, direction, comparison)
         } else {
-            Self::new_without_comparison_type(ctx, lhs, rhs, result, direction)
+            Self::new_without_comparison_kind(ctx, lhs, rhs, result, direction)
         })
     }
-    /// Creates a comparison with the supplied result type and direction, omitting the optional comparison-type attribute.
+    /// Creates a comparison with the supplied result type and direction, omitting the optional comparison-kind attribute.
     #[inline]
-    pub fn new_without_comparison_type(
+    pub fn new_without_comparison_kind(
         ctx: &mut Context,
         lhs: Value,
         rhs: Value,
@@ -205,7 +218,7 @@ impl CompareOp {
         rhs: Value,
         result: TypeHandle,
         direction: ComparisonDirection,
-        comparison: ComparisonType,
+        comparison: ComparisonKind,
     ) -> Self {
         let op = Self {
             op: Operation::new(
@@ -226,8 +239,8 @@ impl CompareOp {
         self.get_attr_stablehlo_compare_direction(ctx)
             .map(|direction| *direction)
     }
-    /// Return the explicit comparison type; `None` when omitted or invalid.
-    pub fn compare_type(&self, ctx: &Context) -> Option<ComparisonType> {
+    /// Return the explicit comparison kind; `None` when omitted or invalid.
+    pub fn comparison_kind(&self, ctx: &Context) -> Option<ComparisonKind> {
         self.get_attr_stablehlo_compare_type(ctx)
             .map(|comparison| *comparison)
     }
@@ -260,7 +273,11 @@ impl ClampOp {
     pub fn max(&self, ctx: &Context) -> Value {
         self.get_operation().deref(ctx).get_operand(2)
     }
-    /// Builds a `stablehlo.clamp` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Clamps corresponding elements of `operand` between `min` and `max`.
+    ///
+    /// Bounds may be scalars or tensors with shapes compatible with `value`; their element types
+    /// must be compatible with the value element type. Returns an error if these types or shapes
+    /// cannot be reconciled.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, min: Value, value: Value, max: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -301,6 +318,7 @@ impl Verify for ClampOp {
     }
 }
 
+/// Produces the coordinates of a ranked tensor along one selected axis.
 #[pliron_op(name="stablehlo.iota",format,interfaces=[pliron::builtin::op_interfaces::NOpdsInterface<0>,pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_iota_dimension:IntegerAttr))]
 pub struct IotaOp;
 impl IotaOp {
@@ -356,7 +374,9 @@ impl AbsOp {
             ),
         }
     }
-    /// Builds a `stablehlo.abs` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for element-wise absolute value of `operand`.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -394,7 +414,9 @@ impl CbrtOp {
             ),
         }
     }
-    /// Builds a `stablehlo.cbrt` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for the element-wise cube root of `operand`.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -432,7 +454,9 @@ impl CeilOp {
             ),
         }
     }
-    /// Builds a `stablehlo.ceil` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for element-wise rounding of `operand` toward positive infinity.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -470,7 +494,9 @@ impl CountLeadingZerosOp {
             ),
         }
     }
-    /// Builds a `stablehlo.count_leading_zeros` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for counting leading zero bits in each integer element of `operand`.
+    ///
+    /// Returns an error unless the operand has a supported integer element type.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -508,7 +534,9 @@ impl CosineOp {
             ),
         }
     }
-    /// Builds a `stablehlo.cosine` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for the element-wise cosine of `operand`.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -546,7 +574,9 @@ impl ExponentialOp {
             ),
         }
     }
-    /// Builds a `stablehlo.exponential` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for the element-wise natural exponential of `operand`.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -584,7 +614,9 @@ impl ExponentialMinusOneOp {
             ),
         }
     }
-    /// Builds a `stablehlo.exponential_minus_one` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for computing `exp(x) - 1` element-wise over `operand`.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -626,7 +658,9 @@ impl Exp2Op {
             ),
         }
     }
-    /// Builds a `stablehlo.exp2` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for computing `2^x` element-wise over `operand`.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -664,7 +698,9 @@ impl FloorOp {
             ),
         }
     }
-    /// Builds a `stablehlo.floor` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for element-wise rounding of `operand` toward negative infinity.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -702,7 +738,9 @@ impl ImagOp {
             ),
         }
     }
-    /// Builds a `stablehlo.imag` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type containing the imaginary component of each element in `operand`.
+    ///
+    /// Returns an error when the operand does not have a supported complex element type.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -740,7 +778,9 @@ impl IsFiniteOp {
             ),
         }
     }
-    /// Builds a `stablehlo.is_finite` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers a predicate result type for testing each `operand` element for finiteness.
+    ///
+    /// The result preserves the operand shape. Returns an error when the element type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -778,7 +818,9 @@ impl LogOp {
             ),
         }
     }
-    /// Builds a `stablehlo.log` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for the element-wise natural logarithm of `operand`.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -816,7 +858,9 @@ impl LogPlusOneOp {
             ),
         }
     }
-    /// Builds a `stablehlo.log_plus_one` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for computing `log(1 + x)` element-wise over `operand`.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -854,7 +898,9 @@ impl Log2Op {
             ),
         }
     }
-    /// Builds a `stablehlo.log2` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for the element-wise base-two logarithm of `operand`.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -892,7 +938,9 @@ impl LogisticOp {
             ),
         }
     }
-    /// Builds a `stablehlo.logistic` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for the element-wise logistic function `1 / (1 + exp(-x))`.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -930,7 +978,9 @@ impl NotOp {
             ),
         }
     }
-    /// Builds a `stablehlo.not` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for the element-wise logical or bitwise complement of `operand`.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -968,7 +1018,9 @@ impl NegateOp {
             ),
         }
     }
-    /// Builds a `stablehlo.negate` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for negating each element of `operand`.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1006,7 +1058,9 @@ impl PopulationCountOp {
             ),
         }
     }
-    /// Builds a `stablehlo.popcnt` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for counting set bits in each integer element of `operand`.
+    ///
+    /// Returns an error unless the operand has a supported integer element type.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1044,7 +1098,9 @@ impl RealOp {
             ),
         }
     }
-    /// Builds a `stablehlo.real` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type containing the real component of each element in `operand`.
+    ///
+    /// Returns an error when the operand does not have a supported complex element type.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1082,7 +1138,9 @@ impl RoundNearestAfzOp {
             ),
         }
     }
-    /// Builds a `stablehlo.round_nearest_afz` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for rounding `operand` to the nearest integer, with ties away from zero.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1120,7 +1178,9 @@ impl RoundNearestEvenOp {
             ),
         }
     }
-    /// Builds a `stablehlo.round_nearest_even` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for rounding `operand` to the nearest integer, with ties to even.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1158,7 +1218,9 @@ impl RsqrtOp {
             ),
         }
     }
-    /// Builds a `stablehlo.rsqrt` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for the element-wise reciprocal square root of `operand`.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1196,7 +1258,9 @@ impl SignOp {
             ),
         }
     }
-    /// Builds a `stablehlo.sign` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for the element-wise sign of `operand`.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1234,7 +1298,9 @@ impl SineOp {
             ),
         }
     }
-    /// Builds a `stablehlo.sine` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for the element-wise sine of `operand`.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1272,7 +1338,9 @@ impl SqrtOp {
             ),
         }
     }
-    /// Builds a `stablehlo.sqrt` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for the element-wise square root of `operand`.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1310,7 +1378,9 @@ impl TanOp {
             ),
         }
     }
-    /// Builds a `stablehlo.tan` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for the element-wise tangent of `operand`.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1348,7 +1418,9 @@ impl TanhOp {
             ),
         }
     }
-    /// Builds a `stablehlo.tanh` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for the element-wise hyperbolic tangent of `operand`.
+    ///
+    /// Returns an error when the operand type is unsupported.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1381,7 +1453,9 @@ impl AddOp {
         Operation::push_operand(op, ctx, rhs);
         Self { op }
     }
-    /// Builds a `stablehlo.add` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Adds corresponding elements of `lhs` and `rhs`, inferring a result from compatible tensor types.
+    ///
+    /// Returns an error when element types or shapes are incompatible.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1427,7 +1501,9 @@ impl Atan2Op {
             ),
         }
     }
-    /// Builds a `stablehlo.atan2` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Infers the result type for the element-wise two-argument arctangent of `lhs` and `rhs`.
+    ///
+    /// Returns an error when operand element types or shapes are incompatible.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1473,7 +1549,10 @@ impl ComplexOp {
             ),
         }
     }
-    /// Builds a `stablehlo.complex` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Forms complex elements from the real values in `lhs` and imaginary values in `rhs`.
+    ///
+    /// Operand types and compatible shapes determine the result complex tensor type. Returns an
+    /// error when they cannot be reconciled.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1519,7 +1598,9 @@ impl DivideOp {
             ),
         }
     }
-    /// Builds a `stablehlo.divide` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Divides corresponding elements of `lhs` by `rhs`, inferring a result from compatible tensor types.
+    ///
+    /// Returns an error when element types or shapes are incompatible.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1565,7 +1646,9 @@ impl MaximumOp {
             ),
         }
     }
-    /// Builds a `stablehlo.maximum` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Selects the greater of each pair of corresponding elements in `lhs` and `rhs`.
+    ///
+    /// Returns an error when operand element types or shapes are incompatible.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1611,7 +1694,9 @@ impl MinimumOp {
             ),
         }
     }
-    /// Builds a `stablehlo.minimum` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Selects the lesser of each pair of corresponding elements in `lhs` and `rhs`.
+    ///
+    /// Returns an error when operand element types or shapes are incompatible.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1652,7 +1737,9 @@ impl MultiplyOp {
         Operation::push_operand(op, ctx, rhs);
         Self { op }
     }
-    /// Builds a `stablehlo.multiply` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Multiplies corresponding elements of `lhs` and `rhs`, inferring a result from compatible tensor types.
+    ///
+    /// Returns an error when element types or shapes are incompatible.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1698,7 +1785,9 @@ impl PowerOp {
             ),
         }
     }
-    /// Builds a `stablehlo.power` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Raises each element of `lhs` to the corresponding power in `rhs`.
+    ///
+    /// Returns an error when operand element types or shapes are incompatible.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1744,7 +1833,9 @@ impl RemainderOp {
             ),
         }
     }
-    /// Builds a `stablehlo.remainder` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Computes the element-wise remainder of `lhs` divided by `rhs`.
+    ///
+    /// Returns an error when operand element types or shapes are incompatible.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1790,7 +1881,9 @@ impl ShiftLeftOp {
             ),
         }
     }
-    /// Builds a `stablehlo.shift_left` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Shifts each integer element of `lhs` left by the corresponding amount in `rhs`.
+    ///
+    /// Returns an error when operand integer types or shapes are incompatible.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1836,7 +1929,9 @@ impl ShiftRightArithmeticOp {
             ),
         }
     }
-    /// Builds a `stablehlo.shift_right_arithmetic` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Arithmetically shifts each integer element of `lhs` right by the corresponding amount in `rhs`.
+    ///
+    /// Returns an error when operand integer types or shapes are incompatible.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1882,7 +1977,9 @@ impl ShiftRightLogicalOp {
             ),
         }
     }
-    /// Builds a `stablehlo.shift_right_logical` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Logically shifts each integer element of `lhs` right by the corresponding amount in `rhs`.
+    ///
+    /// Returns an error when operand integer types or shapes are incompatible.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1928,7 +2025,9 @@ impl SubtractOp {
             ),
         }
     }
-    /// Builds a `stablehlo.subtract` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Subtracts corresponding elements of `rhs` from `lhs`, inferring a result from compatible tensor types.
+    ///
+    /// Returns an error when element types or shapes are incompatible.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -1974,7 +2073,9 @@ impl AndOp {
             ),
         }
     }
-    /// Builds a `stablehlo.and` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Computes the element-wise logical or bitwise AND of `lhs` and `rhs`.
+    ///
+    /// Returns an error when operand element types or shapes are incompatible.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -2020,7 +2121,9 @@ impl OrOp {
             ),
         }
     }
-    /// Builds a `stablehlo.or` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Computes the element-wise logical or bitwise OR of `lhs` and `rhs`.
+    ///
+    /// Returns an error when operand element types or shapes are incompatible.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -2062,7 +2165,9 @@ impl XorOp {
             ),
         }
     }
-    /// Builds a `stablehlo.xor` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Computes the element-wise logical or bitwise exclusive OR of `lhs` and `rhs`.
+    ///
+    /// Returns an error when operand element types or shapes are incompatible.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, lhs: Value, rhs: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
@@ -2112,7 +2217,10 @@ impl BitcastConvertOp {
             ),
         }
     }
-    /// Builds a `stablehlo.bitcast_convert` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Reinterprets the bits of `operand` using `to` as its result element type.
+    ///
+    /// The inferred shape accounts for the source and target element bit widths. Returns an error
+    /// when the conversion is unsupported or shape inference overflows.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value, to: ElementType) -> Result<Self> {
         let template = TensorType::scalar(ctx, to);
@@ -2129,6 +2237,7 @@ impl Verify for BitcastConvertOp {
     }
 }
 
+/// Reduces the effective exponent and mantissa precision of floating-point elements.
 #[pliron_op(name="stablehlo.reduce_precision",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_exponent_bits:IntegerAttr,stablehlo_mantissa_bits:IntegerAttr))]
 pub struct ReducePrecisionOp;
 impl ReducePrecisionOp {
@@ -2159,7 +2268,10 @@ impl ReducePrecisionOp {
         op.set_attr_stablehlo_mantissa_bits(ctx, signed_i32_attr(ctx, mantissa_bits));
         op
     }
-    /// Builds a `stablehlo.reduce_precision` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Creates a precision-reduction operation using the input type as its result type.
+    ///
+    /// The exponent and mantissa widths are stored as attributes; the builder does not validate
+    /// their domains. Call [`Verify::verify`] to check the operation.
     #[inline]
     pub fn new_inferred(
         ctx: &mut Context,
@@ -2212,7 +2324,11 @@ impl UniformQuantizeOp {
             ),
         }
     }
-    /// Builds a `stablehlo.uniform_quantize` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Quantizes `input` using the quantized element type in `result_template`.
+    ///
+    /// The input must be a supported floating-point or quantized tensor, and its expressed type
+    /// must match the template's expressed type. The result shape comes from `input`, not the
+    /// template. Returns an error when these types are incompatible.
     #[inline]
     pub fn new_inferred(
         ctx: &mut Context,
@@ -2258,7 +2374,9 @@ impl UniformDequantizeOp {
             ),
         }
     }
-    /// Builds a `stablehlo.uniform_dequantize` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Converts each quantized element of `operand` to its expressed floating-point representation.
+    ///
+    /// Returns an error when the operand does not have a supported quantized element type.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value) -> Result<Self> {
         let result = crate::ops::builder_result(

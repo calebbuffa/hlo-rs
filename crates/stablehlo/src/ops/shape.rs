@@ -15,6 +15,7 @@ use pliron::{
     value::Value,
 };
 
+/// Broadcasts a tensor by mapping its dimensions into a larger result rank.
 #[pliron_op(name="stablehlo.broadcast_in_dim",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_broadcast_dimensions:VecAttr))]
 pub struct BroadcastInDimOp;
 impl BroadcastInDimOp {
@@ -46,7 +47,11 @@ impl BroadcastInDimOp {
             .map(|v| usize::try_from(v).ok())
             .collect()
     }
-    /// Builds a `stablehlo.broadcast_in_dim` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Broadcasts `input` into `result_shape`, mapping each input axis to `dimensions`.
+    ///
+    /// The result uses the input element type. Returns an error if `input` is not a ranked tensor;
+    /// mapping rank, uniqueness, range, and shape compatibility are checked by operation
+    /// verification.
     pub fn new_inferred(
         ctx: &mut Context,
         input: Value,
@@ -113,7 +118,11 @@ impl ReshapeOp {
             ),
         }
     }
-    /// Builds a `stablehlo.reshape` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Constructs a reshape from `input` to `shape`, retaining the input element type.
+    ///
+    /// Dimensions may be dynamic (`-1`), but values below `-1` are rejected. Returns an error if
+    /// `input` is not ranked or the requested dimensions are malformed. Element-count compatibility
+    /// is checked by operation verification, not by this builder.
     pub fn new_inferred(ctx: &mut Context, input: Value, shape: &[i64]) -> Result<Self> {
         let (_, element) = crate::ops::builder_option(
             shape_elem(ctx, input.get_type(ctx)),
@@ -167,10 +176,15 @@ impl Verify for ReshapeOp {
     }
 }
 
+/// Permutes tensor axes without changing the element values.
 #[pliron_op(name="stablehlo.transpose",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_transpose_permutation:VecAttr))]
 pub struct TransposeOp;
 impl TransposeOp {
-    /// Builds a `stablehlo.transpose` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Reorders the axes of `input` according to `permutation`.
+    ///
+    /// The result shape is inferred by permuting the input dimensions and retains its element type.
+    /// Returns an error if the input is not a ranked tensor or the permutation is not valid for
+    /// its rank.
     pub fn new_inferred(ctx: &mut Context, input: Value, permutation: Vec<usize>) -> Result<Self> {
         let ty = crate::ops::builder_result(
             crate::inference::infer_transpose(ctx, input.get_type(ctx), &permutation),
@@ -245,6 +259,7 @@ impl Verify for TransposeOp {
     }
 }
 
+/// Adds leading dimensions to a tensor by broadcasting its values.
 #[pliron_op(name="stablehlo.broadcast",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_broadcast_sizes:VecAttr))]
 pub struct BroadcastOp;
 impl BroadcastOp {
@@ -263,7 +278,10 @@ impl BroadcastOp {
         op.set_attr_stablehlo_broadcast_sizes(ctx, signed_list(ctx, sizes));
         op
     }
-    /// Builds a `stablehlo.broadcast` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Broadcasts `input` by prepending the requested `sizes` to its dimensions.
+    ///
+    /// The inferred result preserves the input element type. Returns an error when the input shape
+    /// or requested sizes are unsupported.
     pub fn new_inferred(ctx: &mut Context, input: Value, sizes: Vec<i64>) -> Result<Self> {
         let ty = crate::ops::builder_result(
             crate::inference::infer_broadcast(ctx, input.get_type(ctx), &sizes),
@@ -302,6 +320,7 @@ impl Verify for BroadcastOp {
     }
 }
 
+/// Reverses elements along each selected tensor axis.
 #[pliron_op(name="stablehlo.reverse",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_reverse_dimensions:VecAttr))]
 pub struct ReverseOp;
 impl ReverseOp {
@@ -335,7 +354,10 @@ impl ReverseOp {
             .map(|x| usize::try_from(x).ok())
             .collect()
     }
-    /// Builds a reverse operation using the input type as its result type. This builder returns the operation in `Result` for API consistency.
+    /// Constructs a reverse operation using the input type as its result type.
+    ///
+    /// Returns `Ok` without checking the axis list. Call [`Verify::verify`] to ensure the axes are
+    /// unique and within the input rank.
     pub fn new_inferred(ctx: &mut Context, input: Value, dimensions: Vec<usize>) -> Result<Self> {
         Ok(Self::new(ctx, input, input.get_type(ctx), dimensions))
     }
@@ -369,6 +391,7 @@ impl Verify for ReverseOp {
     }
 }
 
+/// Broadcasts a tensor using a runtime result shape and an explicit axis mapping.
 #[pliron_op(name="stablehlo.dynamic_broadcast_in_dim",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dynamic_broadcast_dimensions:VecAttr,stablehlo_dynamic_broadcast_known_expanding:VecAttr,stablehlo_dynamic_broadcast_known_nonexpanding:VecAttr))]
 pub struct DynamicBroadcastInDimOp;
 impl DynamicBroadcastInDimOp {
@@ -406,7 +429,12 @@ impl DynamicBroadcastInDimOp {
         );
         op
     }
-    /// Builds a `stablehlo.dynamic_broadcast_in_dim` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Broadcasts `input` to the runtime shape in `output_dimensions`, mapping input axes through
+    /// `dimensions`.
+    ///
+    /// The output rank is inferred from the length of the runtime dimension vector. Returns an
+    /// error for unsupported tensor types, invalid mappings, or an invalid shape vector. The
+    /// inferred builder leaves the optional known-expanding and known-nonexpanding axis sets empty.
     pub fn new_inferred(
         ctx: &mut Context,
         input: Value,
@@ -541,7 +569,11 @@ impl DynamicReshapeOp {
             ),
         }
     }
-    /// Builds a `stablehlo.dynamic_reshape` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Reshapes `input` to the runtime dimensions provided by `output_shape`.
+    ///
+    /// The result rank is derived from the length of the shape tensor and the input element type is
+    /// preserved. Returns an error when either operand is not a supported ranked tensor or the
+    /// result type cannot be inferred.
     pub fn new_inferred(ctx: &mut Context, input: Value, output_shape: Value) -> Result<Self> {
         let result = crate::ops::builder_result(
             crate::inference::infer_dynamic_reshape_type(
@@ -631,6 +663,7 @@ fn compatible_native_shape(ctx: &Context, a: TypeHandle, b: TypeHandle) -> bool 
     crate::verification::shape::compatible_shape(ctx, a, b)
 }
 
+/// Produces the runtime extent of one axis of a ranked tensor.
 #[pliron_op(name="stablehlo.get_dimension_size",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_get_dimension_size_dimension:IntegerAttr))]
 pub struct GetDimensionSizeOp;
 impl GetDimensionSizeOp {
@@ -652,7 +685,10 @@ impl GetDimensionSizeOp {
         );
         op
     }
-    /// Builds a `stablehlo.get_dimension_size` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Reads the runtime size of axis `dimension` in `input`.
+    ///
+    /// The result is a scalar `i32`. Returns an error if `input` is not a ranked tensor or the axis
+    /// is outside its rank.
     pub fn new_inferred(ctx: &mut Context, input: Value, dimension: usize) -> Result<Self> {
         let (s, _) = crate::ops::builder_option(
             shape_elem(ctx, input.get_type(ctx)),
@@ -713,6 +749,7 @@ impl Verify for GetDimensionSizeOp {
     }
 }
 
+/// Associates a runtime extent with one axis while preserving the tensor values.
 #[pliron_op(name="stablehlo.set_dimension_size",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_set_dimension_size_dimension:IntegerAttr))]
 pub struct SetDimensionSizeOp;
 impl SetDimensionSizeOp {
@@ -740,7 +777,11 @@ impl SetDimensionSizeOp {
         );
         op
     }
-    /// Builds a `stablehlo.set_dimension_size` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Sets the runtime size of axis `dimension` in `input` to the scalar value in `size`.
+    ///
+    /// The result retains the input element type and rank, with the selected axis made dynamic
+    /// where needed. Returns an error for unsupported operand types, a non-scalar size, or an
+    /// out-of-range axis.
     pub fn new_inferred(
         ctx: &mut Context,
         input: Value,

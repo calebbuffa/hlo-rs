@@ -138,6 +138,7 @@ fn region_for_reduce_ir(ctx: &Context, ir: &Operation, region: Ptr<Region>) -> b
     region_signature(ctx, region, &args, &rets)
 }
 
+/// Reduces one or more tensor axes using a computation region.
 #[pliron_op(name="stablehlo.reduce",format,attributes=(stablehlo_reduce_dimensions:VecAttr))]
 pub struct ReduceOp;
 impl ReduceOp {
@@ -239,6 +240,7 @@ impl Verify for ReduceOp {
     }
 }
 
+/// Applies a region-based reduction to overlapping, configurable input windows.
 #[pliron_op(name="stablehlo.reduce_window",format,attributes=(stablehlo_reduction_window:VecAttr,stablehlo_reduction_strides:VecAttr,stablehlo_reduction_base_dilations:VecAttr,stablehlo_reduction_window_dilations:VecAttr,stablehlo_reduction_padding:VecAttr))]
 pub struct ReduceWindowOp;
 
@@ -454,6 +456,7 @@ impl Verify for ReduceWindowOp {
     }
 }
 
+/// Selects input elements within windows and scatters updates to their selected positions.
 #[pliron_op(name="stablehlo.select_and_scatter",format,attributes=(stablehlo_reduction_select_window:VecAttr,stablehlo_reduction_select_strides:VecAttr,stablehlo_reduction_select_padding:VecAttr))]
 pub struct SelectAndScatterOp;
 
@@ -616,6 +619,7 @@ impl Verify for SelectAndScatterOp {
     }
 }
 
+/// Sorts one or more tensors along an axis using a comparator region.
 #[pliron_op(name="stablehlo.sort",format,attributes=(stablehlo_reduction_sort_dimension:IntegerAttr,stablehlo_reduction_sort_stable:BoolAttr))]
 pub struct SortOp;
 impl SortOp {
@@ -723,6 +727,7 @@ impl Verify for SortOp {
     }
 }
 
+/// Applies a computation region element-wise across one or more tensors.
 #[pliron_op(name="stablehlo.map",format,attributes=(stablehlo_reduction_map_dimensions:VecAttr))]
 pub struct MapOp;
 impl MapOp {

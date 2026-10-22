@@ -172,6 +172,7 @@ fn dot_element_compatible(
     }
 }
 
+/// Contracts and batches tensor axes according to explicit dimension numbers.
 #[pliron_op(name="stablehlo.dot_general",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dot_dimensions:DotDimensionNumbersAttr,stablehlo_dot_precision:VecAttr,stablehlo_dot_algorithm:DotAlgorithmAttr))]
 pub struct DotGeneralOp;
 impl DotGeneralOp {
@@ -403,6 +404,7 @@ impl Verify for DotGeneralOp {
     }
 }
 
+/// Computes the dot product of rank-one or rank-two tensors.
 #[pliron_op(name="stablehlo.dot",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_dot_precision:VecAttr))]
 pub struct DotOp;
 impl DotOp {
@@ -485,6 +487,7 @@ impl Verify for DotOp {
     }
 }
 
+/// Applies a two-operand Einstein summation specified by an equation.
 #[pliron_op(name="stablehlo.einsum",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_einsum_equation:StringAttr))]
 pub struct EinsumOp;
 impl EinsumOp {
@@ -531,6 +534,7 @@ impl Verify for EinsumOp {
         Ok(())
     }
 }
+/// Applies an Einstein summation equation to a single tensor.
 #[pliron_op(name="stablehlo.unary_einsum",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_unary_einsum_equation:StringAttr))]
 pub struct UnaryEinsumOp;
 impl UnaryEinsumOp {
@@ -571,6 +575,7 @@ impl Verify for UnaryEinsumOp {
     }
 }
 
+/// Convolves input and kernel tensors using explicit dimension and window options.
 #[pliron_op(name="stablehlo.convolution",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_conv_dims:ConvDimensionNumbersAttr,stablehlo_compute_conv_strides:VecAttr,stablehlo_compute_conv_padding:VecAttr,stablehlo_compute_conv_lhs_dilation:VecAttr,stablehlo_compute_conv_rhs_dilation:VecAttr,stablehlo_compute_conv_groups:VecAttr,stablehlo_compute_conv_reversal:VecAttr,stablehlo_compute_conv_precision:VecAttr))]
 pub struct ConvolutionOp;
 
@@ -800,6 +805,7 @@ impl Verify for ConvolutionOp {
     }
 }
 
+/// Convolves input and kernel tensors with runtime-provided padding.
 #[pliron_op(name="stablehlo.dynamic_conv",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_dynamic_conv_dims:ConvDimensionNumbersAttr,stablehlo_compute_dynamic_conv_strides:VecAttr,stablehlo_compute_dynamic_conv_lhs_dilation:VecAttr,stablehlo_compute_dynamic_conv_rhs_dilation:VecAttr,stablehlo_compute_dynamic_conv_groups:VecAttr,stablehlo_compute_dynamic_conv_reversal:VecAttr,stablehlo_compute_dynamic_conv_precision:VecAttr))]
 pub struct DynamicConvOp;
 
@@ -993,7 +999,8 @@ impl Verify for DynamicConvOp {
     }
 }
 
-#[pliron_op(name="stablehlo.fft",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_fft_type:FftTypeAttr,stablehlo_compute_fft_length:VecAttr))]
+/// Applies a real or complex Fourier transform along the selected trailing axes.
+#[pliron_op(name="stablehlo.fft",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_fft_type:FftKind,stablehlo_compute_fft_length:VecAttr))]
 pub struct FftOp;
 impl FftOp {
     /// Creates a `stablehlo.fft` operation with the supplied result type. Uses `input` as its operand. Configures the operation with `kind`, `length`.
@@ -1001,7 +1008,7 @@ impl FftOp {
         ctx: &mut Context,
         input: Value,
         result: TypeHandle,
-        kind: FftTypeAttr,
+        kind: FftKind,
         length: Vec<u64>,
     ) -> Self {
         let op = Self {
@@ -1068,6 +1075,7 @@ impl Verify for FftOp {
     }
 }
 
+/// Computes a Cholesky factorization of the trailing square matrix dimensions.
 #[pliron_op(name="stablehlo.cholesky",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_cholesky_lower:BoolAttr))]
 pub struct CholeskyOp;
 impl CholeskyOp {
@@ -1115,6 +1123,7 @@ impl Verify for CholeskyOp {
     }
 }
 
+/// Solves a triangular linear system with configurable side, triangle, and transpose mode.
 #[pliron_op(name="stablehlo.triangular_solve",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_triangular_flags:VecAttr))]
 pub struct TriangularSolveOp;
 
@@ -1233,6 +1242,7 @@ impl Verify for TriangularSolveOp {
     }
 }
 
+/// Normalizes a tensor using supplied per-feature mean and variance statistics.
 #[pliron_op(name="stablehlo.batch_norm_inference",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_bn_options:VecAttr))]
 pub struct BatchNormInferenceOp;
 
@@ -1302,6 +1312,7 @@ impl Verify for BatchNormInferenceOp {
         )
     }
 }
+/// Computes batch normalization outputs and batch statistics from the input batch.
 #[pliron_op(name="stablehlo.batch_norm_training",format,attributes=(stablehlo_compute_bn_training_options:VecAttr))]
 pub struct BatchNormTrainingOp;
 impl BatchNormTrainingOp {
@@ -1343,6 +1354,7 @@ impl Verify for BatchNormTrainingOp {
         )
     }
 }
+/// Computes gradients for batch normalization with respect to its inputs and parameters.
 #[pliron_op(name="stablehlo.batch_norm_grad",format,attributes=(stablehlo_compute_bn_grad_options:VecAttr))]
 pub struct BatchNormGradOp;
 
@@ -1478,6 +1490,7 @@ fn verify_bn(
     Ok(())
 }
 
+/// Generates random values from the selected distribution using bounds and a runtime shape.
 #[pliron_op(name="stablehlo.rng",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_compute_rng_distribution:RngDistributionAttr))]
 pub struct RngOp;
 impl RngOp {
@@ -1550,6 +1563,7 @@ impl Verify for RngOp {
     }
 }
 
+/// Advances RNG state and returns the updated state together with generated bits.
 #[pliron_op(name="stablehlo.rng_bit_generator",format,attributes=(stablehlo_compute_rng_bit_algorithm:RngAlgorithmAttr))]
 pub struct RngBitGeneratorOp;
 impl RngBitGeneratorOp {

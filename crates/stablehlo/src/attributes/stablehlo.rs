@@ -267,7 +267,7 @@ impl Verify for OutputOperandAliasAttr {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(i64)]
 /// Direction of communication for a StableHLO channel.
-pub enum ChannelType {
+pub enum ChannelKind {
     /// Send data between devices.
     DeviceToDevice = 1,
     /// Send data from a device to the host.
@@ -278,15 +278,15 @@ pub enum ChannelType {
 
 #[pliron_attr(
     name = "stablehlo.channel_handle",
-    format = "`<` $handle `,` $channel_type `>`"
+    format = "`<` $handle `,` $channel_kind `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Identifier and category of a communication channel.
 pub struct ChannelHandleAttr {
     /// Identifier of the communication channel.
     pub handle: i64,
-    /// Channel category used by the operation.
-    pub channel_type: ChannelType,
+    /// Communication direction represented by the channel.
+    pub channel_kind: ChannelKind,
 }
 impl Verify for ChannelHandleAttr {
     fn verify(&self, ctx: &Context) -> Result<()> {
@@ -642,7 +642,7 @@ impl Verify for ArrayOfTilingAttr {
 #[pliron_attr(name = "stablehlo.fft_type", format, verifier = "succ")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// Fourier transform kind used by StableHLO FFT operations.
-pub enum FftTypeAttr {
+pub enum FftKind {
     /// Complex-to-complex forward transform.
     Fft,
     /// Complex-to-complex inverse transform.
@@ -730,8 +730,8 @@ pub enum ComparisonDirection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 /// Numeric ordering semantics used for elementwise comparison.
-pub enum ComparisonType {
-    /// No explicitly selected comparison type.
+pub enum ComparisonKind {
+    /// No explicitly selected comparison kind.
     NoType,
     /// Floating-point comparison semantics.
     Float,

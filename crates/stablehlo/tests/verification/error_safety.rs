@@ -11,7 +11,7 @@ use stablehlo::{
         builtin::attributes::StringAttr,
         location::{Located, Location},
     },
-    sparse::{SparseLevelFormat, SparseLevelType, SparseTensorEncoding},
+    sparse::{SparseLevelAttr, SparseLevelFormat, SparseTensorEncoding},
     types::{ElementType, FunctionType, TensorType},
     verification::verify_module_fast,
 };
@@ -106,7 +106,7 @@ fn public_errors_downcast_preserve_context_and_recover_after_repair() {
 
     let sparse = SparseTensorEncoding::new(
         &ctx,
-        vec![SparseLevelType::new(SparseLevelFormat::Dense)],
+        vec![SparseLevelAttr::new(SparseLevelFormat::Dense)],
         AffineMap {
             dimensions: 1,
             symbols: 0,

@@ -1,4 +1,10 @@
 //! StableHLO operation wrappers grouped behind one public operations namespace.
+//!
+//! Constructors that accept an explicit result type use that type as provided and
+//! do not run operation verification. Builders named `new_inferred` document the
+//! inference and input checks they perform; those checks do not replace full
+//! operation verification. Call [`pliron::common_traits::Verify::verify`] before
+//! relying on an operation's invariants.
 
 use crate::Diagnostic;
 use pliron::result::Result;

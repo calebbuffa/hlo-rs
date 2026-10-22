@@ -2,7 +2,7 @@
 use crate::Diagnostic;
 use crate::{
     attributes::{
-        ConvDimensionNumbersAttr, DotDimensionNumbersAttr, FftTypeAttr, RngAlgorithmAttr,
+        ConvDimensionNumbersAttr, DotDimensionNumbersAttr, FftKind, RngAlgorithmAttr,
         RngDistributionAttr,
     },
     types::{ElementType, TensorType},
@@ -298,7 +298,7 @@ pub fn infer_convolution_type(
 pub fn infer_fft_type(
     ctx: &Context,
     input: TypeHandle,
-    fft_type: FftTypeAttr,
+    fft_type: FftKind,
     length: &[i64],
 ) -> Result<TypeHandle> {
     let t = ranked(ctx, input).ok_or_else(|| Diagnostic::UnsupportedType.into_error())?;
@@ -308,21 +308,19 @@ pub fn infer_fft_type(
     }
     let e = primitive(ctx, t.element);
     let element = match (fft_type, e) {
-        (FftTypeAttr::Fft | FftTypeAttr::Ifft, Some(ElementType::C64 | ElementType::C128)) => {
-            t.element
-        }
-        (FftTypeAttr::Rfft, Some(ElementType::F32)) => ElementType::C64.native(ctx),
-        (FftTypeAttr::Rfft, Some(ElementType::F64)) => ElementType::C128.native(ctx),
-        (FftTypeAttr::Irfft, Some(ElementType::C64)) => ElementType::F32.native(ctx),
-        (FftTypeAttr::Irfft, Some(ElementType::C128)) => ElementType::F64.native(ctx),
+        (FftKind::Fft | FftKind::Ifft, Some(ElementType::C64 | ElementType::C128)) => t.element,
+        (FftKind::Rfft, Some(ElementType::F32)) => ElementType::C64.native(ctx),
+        (FftKind::Rfft, Some(ElementType::F64)) => ElementType::C128.native(ctx),
+        (FftKind::Irfft, Some(ElementType::C64)) => ElementType::F32.native(ctx),
+        (FftKind::Irfft, Some(ElementType::C128)) => ElementType::F64.native(ctx),
         _ => return Err(Diagnostic::IncompatibleElement.into()),
     };
     let mut shape = t.dimensions.clone();
-    if matches!(fft_type, FftTypeAttr::Rfft | FftTypeAttr::Irfft) {
+    if matches!(fft_type, FftKind::Rfft | FftKind::Irfft) {
         let start = shape.len() - length.len();
         for (i, &len) in length.iter().enumerate() {
             let axis = start + i;
-            let expected = if fft_type == FftTypeAttr::Irfft && i + 1 == length.len() {
+            let expected = if fft_type == FftKind::Irfft && i + 1 == length.len() {
                 len / 2 + 1
             } else {
                 len
@@ -331,7 +329,7 @@ pub fn infer_fft_type(
                 return Err(Diagnostic::IncompatibleShape.into());
             }
             if i + 1 == length.len() {
-                shape[axis] = if fft_type == FftTypeAttr::Rfft {
+                shape[axis] = if fft_type == FftKind::Rfft {
                     len / 2 + 1
                 } else {
                     len

@@ -46,6 +46,82 @@ fn scalar_integer_widths_signedness_and_complex_components_are_canonical() {
 }
 
 #[test]
+fn element_type_display_uses_canonical_mlir_scalar_spellings() {
+    for (element, spelling) in [
+        (ElementType::Index, "index"),
+        (ElementType::I1, "i1"),
+        (ElementType::I2, "i2"),
+        (ElementType::I4, "i4"),
+        (ElementType::I8, "i8"),
+        (ElementType::I16, "i16"),
+        (ElementType::I32, "i32"),
+        (ElementType::I64, "i64"),
+        (ElementType::Si1, "si1"),
+        (ElementType::Si2, "si2"),
+        (ElementType::Si4, "si4"),
+        (ElementType::Si8, "si8"),
+        (ElementType::Si16, "si16"),
+        (ElementType::Si32, "si32"),
+        (ElementType::Si64, "si64"),
+        (ElementType::Ui1, "ui1"),
+        (ElementType::Ui2, "ui2"),
+        (ElementType::Ui4, "ui4"),
+        (ElementType::Ui8, "ui8"),
+        (ElementType::Ui16, "ui16"),
+        (ElementType::Ui32, "ui32"),
+        (ElementType::Ui64, "ui64"),
+        (ElementType::F4E2M1Fn, "f4E2M1FN"),
+        (ElementType::F6E2M3Fn, "f6E2M3FN"),
+        (ElementType::F6E3M2Fn, "f6E3M2FN"),
+        (ElementType::F16, "f16"),
+        (ElementType::Bf16, "bf16"),
+        (ElementType::F32, "f32"),
+        (ElementType::F64, "f64"),
+        (ElementType::Tf32, "tf32"),
+        (ElementType::F8E3M4, "f8E3M4"),
+        (ElementType::F8E4M3, "f8E4M3"),
+        (ElementType::F8E4M3Fn, "f8E4M3FN"),
+        (ElementType::F8E4M3FnUz, "f8E4M3FNUZ"),
+        (ElementType::F8E4M3B11FnUz, "f8E4M3B11FNUZ"),
+        (ElementType::F8E5M2, "f8E5M2"),
+        (ElementType::F8E5M2FnUz, "f8E5M2FNUZ"),
+        (ElementType::F8E8M0FnUz, "f8E8M0FNU"),
+        (ElementType::C64, "complex<f32>"),
+        (ElementType::C128, "complex<f64>"),
+        (
+            ElementType::integer(129, IntegerSignedness::Signed).unwrap(),
+            "si129",
+        ),
+        (
+            ElementType::integer(65, IntegerSignedness::Unsigned).unwrap(),
+            "ui65",
+        ),
+        (
+            ElementType::complex(ElementType::I32).unwrap(),
+            "complex<i32>",
+        ),
+        (
+            ElementType::complex(ElementType::F16).unwrap(),
+            "complex<f16>",
+        ),
+        (
+            ElementType::complex(ElementType::integer(129, IntegerSignedness::Signed).unwrap())
+                .unwrap(),
+            "complex<si129>",
+        ),
+    ] {
+        assert_eq!(element.to_string(), spelling);
+    }
+    assert_eq!(
+        format!(
+            "{:?}",
+            ElementType::integer(129, IntegerSignedness::Signed).unwrap()
+        ),
+        "Integer(IntegerElement { width: 129, signedness: Signed })"
+    );
+}
+
+#[test]
 fn every_named_scalar_format_round_trips_native_type_identity() {
     let ctx = Context::new();
     use ElementType::*;

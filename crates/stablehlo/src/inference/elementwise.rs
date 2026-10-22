@@ -280,7 +280,7 @@ pub fn infer_compare_type(
     ctx: &Context,
     lhs: TypeHandle,
     rhs: TypeHandle,
-    comparison: Option<crate::attributes::ComparisonType>,
+    comparison: Option<crate::attributes::ComparisonKind>,
 ) -> Result<TypeHandle> {
     let (ls, le, encoding) = parts(ctx, lhs)?;
     let (_rs, re, _) = parts(ctx, rhs)?;
@@ -304,24 +304,24 @@ pub fn infer_compare_type(
         (
             Some(e),
             Some(
-                crate::attributes::ComparisonType::NoType
-                | crate::attributes::ComparisonType::Signed
-                | crate::attributes::ComparisonType::Unsigned,
+                crate::attributes::ComparisonKind::NoType
+                | crate::attributes::ComparisonKind::Signed
+                | crate::attributes::ComparisonKind::Unsigned,
             ),
             false,
         ) => e.is_integer(),
-        (Some(e), Some(crate::attributes::ComparisonType::Float), false) => {
+        (Some(e), Some(crate::attributes::ComparisonKind::Float), false) => {
             e.is_float() || e.complex_component().is_some()
         }
         (
             Some(e),
             Some(
-                crate::attributes::ComparisonType::TotalOrder
-                | crate::attributes::ComparisonType::WeakOrder,
+                crate::attributes::ComparisonKind::TotalOrder
+                | crate::attributes::ComparisonKind::WeakOrder,
             ),
             false,
         ) => e.is_float(),
-        (_, Some(crate::attributes::ComparisonType::WeakOrder), true) => false,
+        (_, Some(crate::attributes::ComparisonKind::WeakOrder), true) => false,
         (_, Some(_), true) => true,
         _ => false,
     };

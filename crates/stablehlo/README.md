@@ -1,6 +1,7 @@
 # stablehlo
 
-`stablehlo` StableHLO dialect for [pliron](https://crates.io/crates/pliron).
+`stablehlo` implements the StableHLO dialect for
+[pliron](https://crates.io/crates/pliron).
 
 Public APIs are grouped under `attributes`, `types`, `integer`, `sparse`,
 `ops`, `inference` and `verification`. Dictionary keys used in explicit
@@ -72,6 +73,50 @@ function
     .insert_at_back(module.body_block(&context).expect("module has a body block"), &context);
 verify_module_fast(&context, module.get_operation()).expect("valid StableHLO module");
 ```
+
+## Construction and verification
+
+Explicit operation constructors preserve the result types and attributes supplied
+by the caller. They create IR; they do not certify that the operation satisfies
+StableHLO's constraints. Inferred constructors return `Result` and check the
+type and shape requirements documented for each operation. Insert the resulting
+operations into a computation and verify the complete module before consuming it.
+
+Fallible IR APIs use `stablehlo::Result<T>` and `stablehlo::Error`, re-exports of
+pliron's shared result and error envelope. Errors propagate with `?` across
+StableHLO, ClientHLO, and XLAHLO without string conversion. Text parsing keeps
+small, specific standard error types; those errors also convert into the shared
+envelope with `?`, preserving their typed payloads and rejected input where
+provided by the parser.
+
+Use `Diagnostic::from_error(&error)` rather than matching error text. It traverses
+both standard source chains and framework payloads; pliron's envelope does not
+itself expose its payload through `std::error::Error::source`. A result of `None`
+means the error has a different payload, not that it can be ignored. Leaf parser
+errors can be inspected through `error.err.downcast_ref`.
+`RecoveryCategory` distinguishes invalid input, unsupported features, and internal
+invariant failures. Correct the reported constraint or select a supported
+representation before retrying; report invariant failures as implementation bugs.
+Recovery is an application decision, not an automatic retry or rollback guarantee.
+
+```rust
+use stablehlo::{attributes::Precision, Error, Result};
+
+fn precision(text: &str) -> Result<Precision> {
+    Ok(text.parse()?)
+}
+
+let error: Error = precision("invalid").unwrap_err();
+let details = error.err
+    .downcast_ref::<stablehlo::attributes::enums::EnumParseError>()
+    .expect("the parser preserves its typed error");
+assert_eq!(details.enum_name(), "precision");
+assert_eq!(details.spelling(), "invalid");
+```
+
+Type handles are interned in a context. Handles and values passed together must
+belong to that context. Public raw attributes and type records permit explicit IR
+construction; verify independently constructed records before using them.
 
 ## License
 

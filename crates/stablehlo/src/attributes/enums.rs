@@ -2,11 +2,23 @@
 
 use std::{error::Error, fmt, str::FromStr};
 
-/// Error returned when a string is not a valid spelling for an enum.
+/// Error returned when a string is not a valid StableHLO spelling for an enum.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumParseError {
     enum_name: &'static str,
     spelling: String,
+}
+
+impl EnumParseError {
+    /// Returns the external enum name whose parser rejected the input.
+    pub const fn enum_name(&self) -> &'static str {
+        self.enum_name
+    }
+
+    /// Borrows the rejected spelling exactly as supplied to the parser.
+    pub fn spelling(&self) -> &str {
+        &self.spelling
+    }
 }
 
 impl fmt::Display for EnumParseError {
@@ -24,10 +36,10 @@ impl Error for EnumParseError {}
 macro_rules! enum_spelling {
     ($type:ty, $name:literal { $($variant:path => $spelling:literal),+ $(,)? }) => {
         impl $type {
-            /// StableHLO attribute name associated with the enum.
+            /// Textual StableHLO attribute name associated with the enum, without a dialect prefix.
             pub const NAME: &'static str = $name;
 
-            /// Returns the canonical spelling used by StableHLO text.
+            /// Returns the canonical spelling used by `Display` and StableHLO text.
             pub const fn as_str(self) -> &'static str {
                 match self {
                     $($variant => $spelling),+
@@ -48,6 +60,12 @@ macro_rules! enum_spelling {
                 }
             }
         }
+
+        impl fmt::Display for $type {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(self.as_str())
+            }
+        }
     };
 }
 
@@ -61,11 +79,11 @@ enum_spelling!(super::ResultAccuracyMode, "result_accuracy_mode" {
     super::ResultAccuracyMode::Highest => "HIGHEST",
     super::ResultAccuracyMode::Tolerance => "TOLERANCE",
 });
-enum_spelling!(super::FftTypeAttr, "fft_type" {
-    super::FftTypeAttr::Fft => "FFT",
-    super::FftTypeAttr::Ifft => "IFFT",
-    super::FftTypeAttr::Rfft => "RFFT",
-    super::FftTypeAttr::Irfft => "IRFFT",
+enum_spelling!(super::FftKind, "fft_type" {
+    super::FftKind::Fft => "FFT",
+    super::FftKind::Ifft => "IFFT",
+    super::FftKind::Rfft => "RFFT",
+    super::FftKind::Irfft => "IRFFT",
 });
 enum_spelling!(super::ComparisonDirection, "comparison_direction" {
     super::ComparisonDirection::Eq => "EQ",
@@ -75,13 +93,13 @@ enum_spelling!(super::ComparisonDirection, "comparison_direction" {
     super::ComparisonDirection::Le => "LE",
     super::ComparisonDirection::Lt => "LT",
 });
-enum_spelling!(super::ComparisonType, "comparison_type" {
-    super::ComparisonType::NoType => "NOTYPE",
-    super::ComparisonType::Float => "FLOAT",
-    super::ComparisonType::TotalOrder => "TOTALORDER",
-    super::ComparisonType::Signed => "SIGNED",
-    super::ComparisonType::Unsigned => "UNSIGNED",
-    super::ComparisonType::WeakOrder => "WEAKORDER",
+enum_spelling!(super::ComparisonKind, "comparison_type" {
+    super::ComparisonKind::NoType => "NOTYPE",
+    super::ComparisonKind::Float => "FLOAT",
+    super::ComparisonKind::TotalOrder => "TOTALORDER",
+    super::ComparisonKind::Signed => "SIGNED",
+    super::ComparisonKind::Unsigned => "UNSIGNED",
+    super::ComparisonKind::WeakOrder => "WEAKORDER",
 });
 enum_spelling!(super::RngAlgorithmAttr, "rng_algorithm" {
     super::RngAlgorithmAttr::Default => "DEFAULT",
@@ -102,9 +120,9 @@ pub(crate) fn is_valid(name: &str, spelling: &str) -> bool {
     match name {
         "precision" => spelling.parse::<super::Precision>().is_ok(),
         "result_accuracy_mode" => spelling.parse::<super::ResultAccuracyMode>().is_ok(),
-        "fft_type" => spelling.parse::<super::FftTypeAttr>().is_ok(),
+        "fft_type" => spelling.parse::<super::FftKind>().is_ok(),
         "comparison_direction" => spelling.parse::<super::ComparisonDirection>().is_ok(),
-        "comparison_type" => spelling.parse::<super::ComparisonType>().is_ok(),
+        "comparison_type" => spelling.parse::<super::ComparisonKind>().is_ok(),
         "rng_algorithm" => spelling.parse::<super::RngAlgorithmAttr>().is_ok(),
         "rng_distribution" => spelling.parse::<super::RngDistributionAttr>().is_ok(),
         "transpose" => {

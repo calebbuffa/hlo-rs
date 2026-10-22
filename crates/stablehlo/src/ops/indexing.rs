@@ -16,6 +16,7 @@ use pliron::{
     value::Value,
 };
 
+/// Gathers windows from a ranked tensor using index vectors and dimension mappings.
 #[pliron_op(name="stablehlo.gather",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_gather_dimension_numbers:GatherDimensionNumbersAttr,stablehlo_gather_slice_sizes:VecAttr))]
 pub struct GatherOp;
 impl GatherOp {
@@ -42,7 +43,11 @@ impl GatherOp {
         op.set_attr_stablehlo_gather_slice_sizes(ctx, vec_i64(ctx, slice_sizes));
         op
     }
-    /// Builds a `stablehlo.gather` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Gathers operand windows selected by integer `indices` and `dimensions`.
+    ///
+    /// The inferred result shape follows the gather dimension-number mapping and `slice_sizes`;
+    /// the result element type is taken from `operand`. Returns an error for unsupported tensor
+    /// types, invalid dimension numbers or slice sizes, or shape overflow.
     pub fn new_inferred(
         ctx: &mut Context,
         operand: Value,
@@ -123,6 +128,7 @@ impl Verify for GatherOp {
     }
 }
 
+/// Gathers windows using runtime slice sizes and integer index vectors.
 #[pliron_op(name="stablehlo.dynamic_gather",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dynamic_gather_dimension_numbers:GatherDimensionNumbersAttr))]
 pub struct DynamicGatherOp;
 impl DynamicGatherOp {
@@ -155,7 +161,11 @@ impl DynamicGatherOp {
     ) -> Option<std::cell::Ref<'a, GatherDimensionNumbersAttr>> {
         self.get_attr_stablehlo_dynamic_gather_dimension_numbers(ctx)
     }
-    /// Builds a `stablehlo.dynamic_gather` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Gathers operand windows selected by integer `indices` and runtime `slice_sizes`.
+    ///
+    /// The inferred result shape uses `dimensions` and the slice-size tensor shape; its element
+    /// type comes from `operand`. Returns an error if operand, index, or size types are unsupported
+    /// or the result shape cannot be inferred.
     pub fn new_inferred(
         ctx: &mut Context,
         operand: Value,
@@ -248,6 +258,7 @@ impl Verify for DynamicGatherOp {
     }
 }
 
+/// Scatters update tensors into input tensors at positions selected by integer indices.
 #[pliron_op(name="stablehlo.scatter",format,attributes=(stablehlo_scatter_dimension_numbers:ScatterDimensionNumbersAttr))]
 pub struct ScatterOp;
 impl ScatterOp {
@@ -279,7 +290,11 @@ impl ScatterOp {
         op.set_attr_stablehlo_scatter_dimension_numbers(ctx, dimensions);
         op
     }
-    /// Builds a `stablehlo.scatter` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Builds a scatter that applies `updates` to `inputs` at positions from integer `indices`.
+    ///
+    /// Result types are the input types; `dimensions` maps index and update axes to input axes.
+    /// Returns an error when input/update groups, ranks, element types, or mapped dimensions are
+    /// incompatible.
     pub fn new_inferred(
         ctx: &mut Context,
         inputs: Vec<Value>,
@@ -387,6 +402,7 @@ impl Verify for ScatterOp {
     }
 }
 
+/// Selects slices along one input axis using an index tensor, with optional batching.
 #[pliron_op(name="stablehlo.torch_index_select",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_torch_index_select_dimension:IntegerAttr,stablehlo_torch_index_select_batch_dims:IntegerAttr))]
 pub struct TorchIndexSelectOp;
 impl TorchIndexSelectOp {
@@ -429,7 +445,10 @@ impl TorchIndexSelectOp {
         );
         op
     }
-    /// Builds a `stablehlo.torch_index_select` operation with its result type inferred from the operand types and supplied shape or configuration. Returns an error when required types are unsupported or inference and builder validation fail.
+    /// Selects slices from `input` along `dimension` using the indices in `indices`.
+    ///
+    /// The selected axis is replaced by the index tensor's trailing dimensions. Returns an error
+    /// for unsupported ranked tensors or an out-of-range axis.
     pub fn new_inferred(
         ctx: &mut Context,
         input: Value,
