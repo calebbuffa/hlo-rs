@@ -21,11 +21,6 @@ fn constant(ctx: &mut Context, ty: TypeHandle, bit: u64) -> Value {
 }
 
 #[test]
-fn context_registers_shared_result_accuracy_key() {
-    let _ctx = Context::new();
-}
-
-#[test]
 fn constants_and_iotas_verify_native_types() {
     let mut ctx = Context::new();
     let scalar = tensor(&ctx, &[2, 3], ElementType::I32);

@@ -260,33 +260,31 @@ mod tests {
         use super::*;
 
         #[test]
-        fn upstream_evaluate_while_induction_var_with_nonunit_step_and_nonzero_init() {
+        fn projected_final_induction_value_obeys_trip_count_and_direction() {
             let mut ctx = context();
-            let f = fixture(&mut ctx, ElementType::S32, 3, 23, 4, Direction::Lt);
-            assert_eq!(
-                read_integer(&ctx, evaluate(&ctx, &f, f.projection, -1, &[]).unwrap()),
-                23
-            );
-        }
-
-        #[test]
-        fn upstream_loop_bound_defined_outside_of_condition_uses_unchanged_tuple_leaf() {
-            let mut ctx = context();
-            let f = fixture(&mut ctx, ElementType::S64, 0, 5, 1, Direction::Lt);
-            assert_eq!(
-                read_integer(&ctx, evaluate(&ctx, &f, f.projection, 0, &[]).unwrap()),
-                5
-            );
-        }
-
-        #[test]
-        fn upstream_step_size_not_one_handles_final_overshoot() {
-            let mut ctx = context();
-            let f = fixture(&mut ctx, ElementType::S64, 0, 10, 4, Direction::Lt);
-            assert_eq!(
-                read_integer(&ctx, evaluate(&ctx, &f, f.projection, 0, &[]).unwrap()),
-                12
-            );
+            for element in [ElementType::S32, ElementType::S64] {
+                for (init, bound, step, direction, expected) in [
+                    (3, 23, 4, Direction::Lt, 23),
+                    (0, 5, 1, Direction::Lt, 5),
+                    (0, 10, 4, Direction::Lt, 12),
+                    (23, 3, -4, Direction::Gt, 3),
+                    (23, 3, -4, Direction::Ge, -1),
+                    (3, 23, 4, Direction::Le, 27),
+                    (3, 0, 4, Direction::Lt, 3),
+                ] {
+                    let f = fixture(&mut ctx, element, init, bound, step, direction);
+                    for limit in [-1, 0] {
+                        assert_eq!(
+                            read_integer(
+                                &ctx,
+                                evaluate(&ctx, &f, f.projection, limit, &[]).unwrap()
+                            ),
+                            expected,
+                            "{element:?}, init={init}, bound={bound}, step={step}, direction={direction:?}, limit={limit}"
+                        );
+                    }
+                }
+            }
         }
 
         #[test]
@@ -439,18 +437,6 @@ mod tests {
         }
 
         #[test]
-        fn descending_loop_and_inclusive_comparison_compute_exact_final_iv() {
-            let mut ctx = context();
-            for (direction, expected) in [(Direction::Gt, 3), (Direction::Ge, -1)] {
-                let f = fixture(&mut ctx, ElementType::S64, 23, 3, -4, direction);
-                assert_eq!(
-                    read_integer(&ctx, evaluate(&ctx, &f, f.projection, 0, &[]).unwrap()),
-                    expected
-                );
-            }
-        }
-
-        #[test]
         fn modified_bound_slot_is_not_mistaken_for_unchanged_invariant() {
             let mut ctx = context();
             let f = fixture_form(
@@ -471,45 +457,33 @@ mod tests {
         use super::*;
 
         #[test]
-        fn authoritative_initial_constant_substitution_changes_proof() {
+        fn authoritative_constant_substitutions_are_applied_per_request() {
             let mut ctx = context();
             let f = fixture(&mut ctx, ElementType::S64, 0, 10, 4, Direction::Lt);
-            let substitutions = [(f.initial, known_integer(&ctx, f.element, 3))];
-            assert_eq!(
-                read_integer(
-                    &ctx,
-                    evaluate(&ctx, &f, f.projection, 0, &substitutions).unwrap()
-                ),
-                11
-            );
-        }
-
-        #[test]
-        fn authoritative_bound_constant_substitution_changes_proof() {
-            let mut ctx = context();
-            let f = fixture(&mut ctx, ElementType::S64, 0, 10, 4, Direction::Lt);
-            let substitutions = [(f.bound, known_integer(&ctx, f.element, 5))];
-            assert_eq!(
-                read_integer(
-                    &ctx,
-                    evaluate(&ctx, &f, f.projection, 0, &substitutions).unwrap()
-                ),
-                8
-            );
-        }
-
-        #[test]
-        fn authoritative_step_constant_substitution_changes_proof() {
-            let mut ctx = context();
-            let f = fixture(&mut ctx, ElementType::S64, 0, 10, 4, Direction::Lt);
-            let substitutions = [(f.step, known_integer(&ctx, f.element, 3))];
-            assert_eq!(
-                read_integer(
-                    &ctx,
-                    evaluate(&ctx, &f, f.projection, 0, &substitutions).unwrap()
-                ),
-                12
-            );
+            for (value, replacement, expected) in [
+                (f.initial, 3, 11),
+                (f.bound, 5, 8),
+                (f.step, 3, 12),
+                (f.bound, 7, 8),
+                (f.bound, 3, 4),
+                (f.bound, 9, 12),
+                (f.bound, 1, 4),
+            ] {
+                let substitutions = [(value, known_integer(&ctx, f.element, replacement))];
+                assert_eq!(
+                    read_integer(
+                        &ctx,
+                        evaluate(&ctx, &f, f.projection, 0, &substitutions).unwrap()
+                    ),
+                    expected,
+                    "replacement={replacement}"
+                );
+                assert_eq!(
+                    read_integer(&ctx, evaluate(&ctx, &f, f.projection, 0, &[]).unwrap()),
+                    12,
+                    "substitution must not leak into later requests"
+                );
+            }
         }
 
         #[test]
@@ -544,22 +518,6 @@ mod tests {
                 ),
                 77
             );
-        }
-
-        #[test]
-        fn repeated_requests_do_not_reuse_proof_after_substitution_changes() {
-            let mut ctx = context();
-            let f = fixture(&mut ctx, ElementType::S64, 0, 5, 1, Direction::Lt);
-            for bound in [7, 3, 9, 1] {
-                let substitutions = [(f.bound, known_integer(&ctx, f.element, bound))];
-                assert_eq!(
-                    read_integer(
-                        &ctx,
-                        evaluate(&ctx, &f, f.projection, 0, &substitutions).unwrap()
-                    ),
-                    bound as i64
-                );
-            }
         }
 
         #[test]
@@ -606,112 +564,36 @@ mod tests {
         use super::*;
 
         #[test]
-        fn upstream_loop_bound_defined_inside_condition_is_parsed_without_caller_guessing() {
+        fn equivalent_condition_forms_preserve_induction_proofs_and_execution() {
             let mut ctx = context();
-            let f = fixture_form(
-                &mut ctx,
-                ElementType::S64,
-                0,
-                5,
-                1,
-                Direction::Lt,
-                Form::Inside,
-            );
-            assert_eq!(
-                read_integer(&ctx, evaluate(&ctx, &f, f.projection, 0, &[]).unwrap()),
-                5
-            );
-        }
-
-        #[test]
-        fn upstream_recursive_condition_call_binds_the_actual_symbolic_tuple() {
-            let mut ctx = context();
-            let f = fixture_form(
-                &mut ctx,
-                ElementType::S64,
-                3,
-                23,
-                4,
-                Direction::Lt,
-                Form::Call,
-            );
-            assert_eq!(
-                read_integer(&ctx, evaluate(&ctx, &f, f.projection, 0, &[]).unwrap()),
-                23
-            );
-        }
-
-        #[test]
-        fn upstream_recursive_condition_get_tuple_element_preserves_path_and_frame_provenance() {
-            let mut ctx = context();
-            let f = fixture_form(
-                &mut ctx,
-                ElementType::S64,
-                3,
-                23,
-                4,
-                Direction::Lt,
-                Form::CallTuple,
-            );
-            assert_eq!(
-                read_integer(&ctx, evaluate(&ctx, &f, f.projection, 0, &[]).unwrap()),
-                23
-            );
-        }
-
-        #[test]
-        fn upstream_copied_loop_condition_keeps_the_comparison_pattern() {
-            let mut ctx = context();
-            let f = fixture_form(
-                &mut ctx,
-                ElementType::S64,
-                0,
-                5,
-                1,
-                Direction::Lt,
-                Form::Copy,
-            );
-            assert_eq!(
-                read_integer(&ctx, evaluate(&ctx, &f, f.projection, 0, &[]).unwrap()),
-                5
-            );
-        }
-
-        #[test]
-        fn inline_fusion_condition_uses_block_arguments_without_crossing_proof_frames() {
-            let mut ctx = context();
-            let f = fixture_form(
-                &mut ctx,
-                ElementType::S64,
-                3,
-                23,
-                4,
-                Direction::Lt,
-                Form::Fusion,
-            );
-            assert_eq!(
-                read_integer(&ctx, evaluate(&ctx, &f, f.projection, 0, &[]).unwrap()),
-                23
-            );
-            assert!(complete(&ctx, &f, -1).unwrap().is_known());
-        }
-
-        #[test]
-        fn swapped_condition_operands_reverse_comparison_direction() {
-            let mut ctx = context();
-            let f = fixture_form(
-                &mut ctx,
-                ElementType::S64,
-                3,
-                23,
-                4,
-                Direction::Gt,
-                Form::Swapped,
-            );
-            assert_eq!(
-                read_integer(&ctx, evaluate(&ctx, &f, f.projection, 0, &[]).unwrap()),
-                23
-            );
+            for (form, init, bound, step, direction, expected) in [
+                (Form::Inside, 0, 5, 1, Direction::Lt, 5),
+                (Form::Call, 3, 23, 4, Direction::Lt, 23),
+                (Form::CallTuple, 3, 23, 4, Direction::Lt, 23),
+                (Form::Copy, 0, 5, 1, Direction::Lt, 5),
+                (Form::Fusion, 3, 23, 4, Direction::Lt, 23),
+                (Form::Swapped, 3, 23, 4, Direction::Gt, 23),
+            ] {
+                let f = fixture_form(
+                    &mut ctx,
+                    ElementType::S64,
+                    init,
+                    bound,
+                    step,
+                    direction,
+                    form,
+                );
+                assert_eq!(
+                    read_integer(&ctx, evaluate(&ctx, &f, f.projection, 0, &[]).unwrap()),
+                    expected
+                );
+                let executed = complete(&ctx, &f, -1).unwrap();
+                assert!(executed.is_known());
+                assert_eq!(
+                    read_integer(&ctx, executed.subvalue(&[0]).unwrap().clone()),
+                    expected
+                );
+            }
         }
 
         #[test]

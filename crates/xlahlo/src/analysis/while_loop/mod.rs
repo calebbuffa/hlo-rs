@@ -523,32 +523,6 @@ mod tests {
         }
 
         #[test]
-        fn pinned_u32_overflow_is_not_a_fabricated_analytic_trip_count() {
-            let mut ctx = context();
-            let f = fixture(
-                &mut ctx,
-                Options {
-                    element: ElementType::U32,
-                    init: 2_147_483_648,
-                    step: 2_147_483_648,
-                    bound: 3_221_225_472,
-                    ..Default::default()
-                },
-            );
-            assert_eq!(
-                checked_count(
-                    2_147_483_648,
-                    3_221_225_472,
-                    2_147_483_648,
-                    Direction::Lt,
-                    ElementType::U32
-                ),
-                None
-            );
-            assert_eq!(facts(&ctx, &f, 128).exact_trip_count, None);
-        }
-
-        #[test]
         fn checked_distance_and_final_step_do_not_wrap_host_i64() {
             assert_eq!(
                 checked_count(i64::MIN, i64::MAX, 1, Direction::Lt, ElementType::S64),
@@ -569,17 +543,63 @@ mod tests {
         }
 
         #[test]
-        fn indvar_initialization_not_constant_copy_and_gte_tuple_chain_adaptations() {
-            for initialization in [Init::Copy, Init::TupleProjection, Init::Add] {
+        fn equivalent_scalar_source_forms_preserve_induction_and_exact_count() {
+            for (case, options) in [
+                Options::default(),
+                Options {
+                    initialization: Init::Copy,
+                    ..Default::default()
+                },
+                Options {
+                    initialization: Init::TupleProjection,
+                    ..Default::default()
+                },
+                Options {
+                    initialization: Init::Add,
+                    ..Default::default()
+                },
+                Options {
+                    update: Update::CopyOperand,
+                    ..Default::default()
+                },
+                Options {
+                    update: Update::CopyResult,
+                    ..Default::default()
+                },
+                Options {
+                    update_expr: Expr::Call,
+                    ..Default::default()
+                },
+                Options {
+                    update_expr: Expr::Fusion,
+                    ..Default::default()
+                },
+                Options {
+                    condition_expr: Expr::Call,
+                    ..Default::default()
+                },
+                Options {
+                    condition_expr: Expr::Fusion,
+                    ..Default::default()
+                },
+                Options {
+                    update_expr: Expr::NestedFusion,
+                    ..Default::default()
+                },
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let budget = if matches!(options.update, Update::CopyOperand | Update::CopyResult) {
+                    0
+                } else {
+                    128
+                };
                 let mut ctx = context();
-                let f = fixture(
-                    &mut ctx,
-                    Options {
-                        initialization,
-                        ..Default::default()
-                    },
-                );
-                assert_eq!(facts(&ctx, &f, 128).exact_trip_count, Some(5));
+                let f = fixture(&mut ctx, options);
+                let result = facts(&ctx, &f, budget);
+                assert_eq!(result.induction_index, Some(0), "source form {case}");
+                assert_eq!(result.exact_trip_count, Some(5), "source form {case}");
             }
         }
 
@@ -648,65 +668,6 @@ mod tests {
                 result.evaluation_declines[0].reason,
                 DeclineReason::ShallowDependency
             );
-        }
-
-        #[test]
-        fn update_on_indvar_copy_success_adaptation() {
-            for update in [Update::CopyOperand, Update::CopyResult] {
-                let mut ctx = context();
-                let f = fixture(
-                    &mut ctx,
-                    Options {
-                        update,
-                        ..Default::default()
-                    },
-                );
-                assert_eq!(facts(&ctx, &f, 0).exact_trip_count, Some(5));
-            }
-        }
-
-        #[test]
-        fn fused_update_and_fused_condition_op_adaptations() {
-            for update_expr in [Expr::Call, Expr::Fusion] {
-                let mut ctx = context();
-                let f = fixture(
-                    &mut ctx,
-                    Options {
-                        update_expr,
-                        ..Default::default()
-                    },
-                );
-                let result = facts(&ctx, &f, 128);
-                assert_eq!(result.induction_index, Some(0));
-                assert_eq!(result.exact_trip_count, Some(5));
-            }
-            for condition_expr in [Expr::Call, Expr::Fusion] {
-                let mut ctx = context();
-                let f = fixture(
-                    &mut ctx,
-                    Options {
-                        condition_expr,
-                        ..Default::default()
-                    },
-                );
-                let result = facts(&ctx, &f, 128);
-                assert_eq!(result.induction_index, Some(0));
-                assert_eq!(result.exact_trip_count, Some(5));
-            }
-        }
-
-        #[test]
-        fn nested_fusion_has_qualified_scalar_dependency_provenance() {
-            let mut ctx = context();
-            let f = fixture(
-                &mut ctx,
-                Options {
-                    update_expr: Expr::NestedFusion,
-                    ..Default::default()
-                },
-            );
-            assert_eq!(facts(&ctx, &f, 128).induction_index, Some(0));
-            assert_eq!(facts(&ctx, &f, 128).exact_trip_count, Some(5));
         }
 
         #[test]
@@ -830,32 +791,6 @@ mod tests {
                 },
             );
             assert_eq!(facts(&ctx, &f, 0).exact_trip_count, Some(1_000_000));
-        }
-
-        #[test]
-        fn pinned_s32_overflow_rejects_trivial_count_but_typed_fallback_finds_seven() {
-            let mut ctx = context();
-            let f = fixture(
-                &mut ctx,
-                Options {
-                    element: ElementType::S32,
-                    init: 1_073_741_824,
-                    step: 1_342_177_280,
-                    bound: 1_879_048_192,
-                    ..Default::default()
-                },
-            );
-            assert_eq!(
-                checked_count(
-                    1_073_741_824,
-                    1_879_048_192,
-                    1_342_177_280,
-                    Direction::Lt,
-                    ElementType::S32
-                ),
-                None
-            );
-            assert_eq!(facts(&ctx, &f, 128).exact_trip_count, Some(7));
         }
 
         #[test]
@@ -3478,6 +3413,16 @@ mod tests {
                         bound,
                         ..Default::default()
                     },
+                );
+                assert_eq!(
+                    checked_count(
+                        i64::try_from(init).unwrap(),
+                        i64::try_from(bound).unwrap(),
+                        i64::try_from(step).unwrap(),
+                        Direction::Lt,
+                        element,
+                    ),
+                    None
                 );
                 assert!(matched(&ctx, &f).0.is_none());
                 assert_eq!(

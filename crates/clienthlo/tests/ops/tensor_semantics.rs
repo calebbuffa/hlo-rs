@@ -36,6 +36,25 @@ fn val(ctx: &mut Context, shape: &[i64], element: ElementType) -> Value {
     let ty = tensor(ctx, shape, element);
     arg(ctx, ty)
 }
+
+#[test]
+fn broadcast_shapes_preserve_axes_and_reject_incompatible_extents() {
+    for (shapes, expected) in [
+        (vec![vec![-1, 1, 4], vec![3, 1]], Some(vec![-1, 3, 4])),
+        (vec![vec![0], vec![1]], Some(vec![0])),
+        (vec![vec![2, 3], vec![4, 3]], None),
+    ] {
+        let shapes = shapes.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        assert_eq!(inference::numpy_broadcast_shape(&shapes), expected);
+    }
+    for (axes, expected) in [(vec![2, 1], Some(vec![2, 3, 4])), (vec![3, 1], None)] {
+        assert_eq!(
+            inference::infer_broadcast_shape(&[2, 3, 4], &[4, 3], Some(&axes)),
+            expected,
+            "axes={axes:?}"
+        );
+    }
+}
 fn unranked_ty(ctx: &Context, element: ElementType) -> TypeHandle {
     inference::unranked(ctx, element.native(ctx))
 }

@@ -3,13 +3,6 @@
 `stablehlo` implements the StableHLO dialect for
 [pliron](https://crates.io/crates/pliron).
 
-Public APIs are grouped under `attributes`, `types`, `integer`, `sparse`,
-`ops`, `inference` and `verification`. Dictionary keys used in explicit
-lookups are centralized in `attributes::keys`; generated operation attributes
-retain their typed accessors, and serialized attribute names are unchanged.
-Domain directories use `mod.rs` roots, and integration tests are grouped under
-matching domain directories.
-
 ## Example: `((x + y) * 2.0).exp()`
 
 This builds a rank-1 `tensor<4xf32>` function, checks each operation, and verifies the complete module:
@@ -83,8 +76,7 @@ type and shape requirements documented for each operation. Insert the resulting
 operations into a computation and verify the complete module before consuming it.
 
 Fallible IR APIs use `stablehlo::Result<T>` and `stablehlo::Error`, re-exports of
-pliron's shared result and error envelope. Errors propagate with `?` across
-StableHLO, ClientHLO, and XLAHLO without string conversion. Text parsing keeps
+pliron's shared result and error envelope. Text parsing keeps
 small, specific standard error types; those errors also convert into the shared
 envelope with `?`, preserving their typed payloads and rejected input where
 provided by the parser.

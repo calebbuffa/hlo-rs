@@ -457,22 +457,26 @@ mod tests {
     }
 
     #[test]
-    fn row_major_geometry_matches_logical_coordinates() {
+    fn physical_offsets_follow_layout_strides_and_element_width() {
         let ctx = context();
-        let literal = matrix(&ctx, ElementType::U8, &[1, 0]);
-        let geometry = geometry(&ctx, &literal).unwrap();
-        assert_eq!(geometry.dimensions(), &[2, 3]);
-        assert_eq!(geometry.strides(), &[3, 1]);
-        assert_eq!(geometry.byte_offset(&[1, 2]).unwrap(), 5);
-    }
-
-    #[test]
-    fn column_major_geometry_matches_logical_coordinates() {
-        let ctx = context();
-        let literal = matrix(&ctx, ElementType::U16, &[0, 1]);
-        let geometry = geometry(&ctx, &literal).unwrap();
-        assert_eq!(geometry.strides(), &[1, 2]);
-        assert_eq!(geometry.byte_offset(&[1, 2]).unwrap(), 10);
+        for &element in ElementType::ALL {
+            for (order, strides) in [([1, 0], [3, 1]), ([0, 1], [1, 2])] {
+                let literal = matrix(&ctx, element, &order);
+                let geometry = geometry(&ctx, &literal).unwrap();
+                assert_eq!(geometry.dimensions(), &[2, 3]);
+                assert_eq!(geometry.strides(), &strides);
+                for i in 0..2 {
+                    for j in 0..3 {
+                        assert_eq!(
+                            geometry.byte_offset(&[i, j]).unwrap(),
+                            (i * strides[0] + j * strides[1])
+                                * element.bit_width().div_ceil(8) as usize,
+                            "{element:?}, order={order:?}, index={i},{j}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -487,20 +491,16 @@ mod tests {
     }
 
     #[test]
-    fn zero_runtime_size_has_no_accessible_elements() {
+    fn empty_static_and_dynamic_domains_have_no_accessible_elements() {
         let ctx = context();
-        let literal = dynamic(&ctx, &[1, 0], &[0, 2], vec![9; 6]);
-        assert!(geometry(&ctx, &literal).is_ok());
-        assert!(read_element(&ctx, &literal, &[0, 0]).is_err());
-    }
-
-    #[test]
-    fn zero_static_dimension_has_no_accessible_elements() {
-        let ctx = context();
-        let ty = shape(&ctx, ElementType::C128, &[0, 3], &[1, 0]);
-        let literal = Literal::from_storage_bytes(&ctx, ty, vec![]).unwrap();
-        assert!(geometry(&ctx, &literal).is_ok());
-        assert!(read_element(&ctx, &literal, &[0, 0]).is_err());
+        let static_type = shape(&ctx, ElementType::C128, &[0, 3], &[1, 0]);
+        for literal in [
+            dynamic(&ctx, &[1, 0], &[0, 2], vec![9; 6]),
+            Literal::from_storage_bytes(&ctx, static_type, vec![]).unwrap(),
+        ] {
+            assert!(geometry(&ctx, &literal).is_ok());
+            assert!(read_element(&ctx, &literal, &[0, 0]).is_err());
+        }
     }
 
     #[test]
@@ -623,27 +623,6 @@ mod tests {
     }
 
     #[test]
-    fn upstream_copy_from_scalars() {
-        let ctx = context();
-        let mut destination = integer_scalar(&ctx, ElementType::U32, 0).unwrap();
-        let source = integer_scalar(&ctx, ElementType::U32, 9).unwrap();
-        copy_sub_literal(&ctx, &mut destination, &[], &source, &[]).unwrap();
-        assert_eq!(destination, source);
-    }
-
-    #[test]
-    fn upstream_relayout_2x2() {
-        let ctx = context();
-        let ty = shape(&ctx, ElementType::U8, &[2, 2], &[1, 0]);
-        let source = Literal::from_bits(&ctx, ty, &[1, 2, 3, 4]).unwrap();
-        let target = shape(&ctx, ElementType::U8, &[2, 2], &[0, 1]);
-        let result = relayout(&ctx, &source, target).unwrap();
-        assert_eq!(result.storage, vec![1, 3, 2, 4]);
-        assert_eq!(result.shape, target);
-        assert!(source.equal_logical_bits(&ctx, &result).unwrap());
-    }
-
-    #[test]
     fn all_32_raw_formats_relayout_round_trip_without_numeric_conversion() {
         let ctx = context();
         for &element in ElementType::ALL {
@@ -675,25 +654,17 @@ mod tests {
     }
 
     #[test]
-    fn copy_between_dynamic_layouts_updates_runtime_sizes() {
+    fn copying_dynamic_layouts_transfers_full_storage_and_runtime_sizes() {
         let ctx = context();
-        let source = dynamic(&ctx, &[1, 0], &[1, 2], vec![1, 2, 3, 4, 5, 6]);
-        let mut destination = dynamic(&ctx, &[0, 1], &[3, 2], vec![0; 6]);
-        let ty = destination.shape;
-        copy_sub_literal(&ctx, &mut destination, &[], &source, &[]).unwrap();
-        assert_eq!(destination.shape, ty);
-        assert_eq!(destination.dynamic_sizes, vec![1, 2]);
-        assert_eq!(destination.storage, vec![1, 3, 5, 2, 4, 6]);
-    }
-
-    #[test]
-    fn empty_dynamic_active_domain_still_copies_bounded_storage() {
-        let ctx = context();
-        let source = dynamic(&ctx, &[1, 0], &[0, 2], vec![1, 2, 3, 4, 5, 6]);
-        let mut destination = dynamic(&ctx, &[0, 1], &[3, 2], vec![0; 6]);
-        copy_sub_literal(&ctx, &mut destination, &[], &source, &[]).unwrap();
-        assert_eq!(destination.storage, vec![1, 3, 5, 2, 4, 6]);
-        assert_eq!(destination.dynamic_sizes, vec![0, 2]);
+        for rows in 0..=3 {
+            let source = dynamic(&ctx, &[1, 0], &[rows, 2], vec![1, 2, 3, 4, 5, 6]);
+            let mut destination = dynamic(&ctx, &[0, 1], &[3, 2], vec![0; 6]);
+            let ty = destination.shape;
+            copy_sub_literal(&ctx, &mut destination, &[], &source, &[]).unwrap();
+            assert_eq!(destination.shape, ty);
+            assert_eq!(destination.dynamic_sizes, vec![rows, 2]);
+            assert_eq!(destination.storage, vec![1, 3, 5, 2, 4, 6]);
+        }
     }
 
     #[test]
@@ -781,63 +752,63 @@ mod tests {
     }
 
     #[test]
-    fn copy_from_source_subtree_to_destination_subtree() {
+    fn copying_scalars_and_subtrees_preserves_value_without_aliasing_storage() {
         let ctx = context();
-        let source = Literal::tuple(
-            &ctx,
-            vec![integer_scalar(&ctx, ElementType::U16, 65_535).unwrap()],
-        )
-        .unwrap();
-        let mut destination = Literal::tuple(
-            &ctx,
-            vec![integer_scalar(&ctx, ElementType::U16, 0).unwrap()],
-        )
-        .unwrap();
-        copy_sub_literal(&ctx, &mut destination, &[0], &source, &[0]).unwrap();
-        assert_eq!(destination, source);
+        for &element in ElementType::ALL {
+            let scalar_type = shape::scalar(&ctx, element).unwrap();
+            let scalar = Literal::from_bits(&ctx, scalar_type, &[1]).unwrap();
+            let zero = Literal::from_bits(&ctx, scalar_type, &[0]).unwrap();
+            for nested in [false, true] {
+                let mut source = if nested {
+                    Literal::tuple(&ctx, vec![scalar.clone()]).unwrap()
+                } else {
+                    scalar.clone()
+                };
+                let mut destination = if nested {
+                    Literal::tuple(&ctx, vec![zero.clone()]).unwrap()
+                } else {
+                    zero.clone()
+                };
+                let path: &[usize] = if nested { &[0] } else { &[] };
+                copy_sub_literal(&ctx, &mut destination, path, &source, path).unwrap();
+                assert_eq!(destination, source);
+                let source_leaf = if nested {
+                    &mut source.tuple_literals[0]
+                } else {
+                    &mut source
+                };
+                source_leaf.storage[0] = 0;
+                assert_ne!(destination, source, "{element:?}, nested={nested}");
+            }
+        }
     }
 
     #[test]
-    fn copy_does_not_alias_source_owned_storage() {
+    fn rejected_subtree_copies_leave_destination_unchanged() {
         let ctx = context();
-        let mut source = matrix(&ctx, ElementType::U8, &[1, 0]);
-        let mut destination = source.clone();
-        copy_sub_literal(&ctx, &mut destination, &[], &source, &[]).unwrap();
-        write_element(&ctx, &mut source, &[0, 0], &[99]).unwrap();
-        assert_ne!(source.storage, destination.storage);
-    }
-
-    #[test]
-    fn upstream_copy_from_different_shapes_is_atomic() {
-        let ctx = context();
-        let source = integer_scalar(&ctx, ElementType::U8, 1).unwrap();
-        let mut destination = matrix(&ctx, ElementType::U8, &[1, 0]);
-        let before = destination.clone();
-        assert!(copy_sub_literal(&ctx, &mut destination, &[], &source, &[]).is_err());
-        assert_eq!(destination, before);
-    }
-
-    #[test]
-    fn invalid_subtree_paths_are_atomic() {
-        let ctx = context();
-        let source = integer_scalar(&ctx, ElementType::S16, 7).unwrap();
-        let mut destination = source.clone();
-        let before = destination.clone();
-        assert!(copy_sub_literal(&ctx, &mut destination, &[0], &source, &[]).is_err());
-        assert_eq!(destination, before);
-        assert!(copy_sub_literal(&ctx, &mut destination, &[], &source, &[0]).is_err());
-        assert_eq!(destination, before);
-    }
-
-    #[test]
-    fn malformed_source_copy_is_atomic() {
-        let ctx = context();
-        let mut source = integer_scalar(&ctx, ElementType::U8, 7).unwrap();
-        let mut destination = source.clone();
-        source.storage.clear();
-        let before = destination.clone();
-        assert!(copy_sub_literal(&ctx, &mut destination, &[], &source, &[]).is_err());
-        assert_eq!(destination, before);
+        let scalar = integer_scalar(&ctx, ElementType::U8, 7).unwrap();
+        let mut malformed = scalar.clone();
+        malformed.storage.clear();
+        let matrix = matrix(&ctx, ElementType::U8, &[1, 0]);
+        for (source, target, source_path, destination_path) in [
+            (&scalar, &matrix, &[][..], &[][..]),
+            (&scalar, &scalar, &[][..], &[0][..]),
+            (&scalar, &scalar, &[0][..], &[][..]),
+            (&malformed, &scalar, &[][..], &[][..]),
+        ] {
+            let mut destination = target.clone();
+            assert!(
+                copy_sub_literal(
+                    &ctx,
+                    &mut destination,
+                    destination_path,
+                    source,
+                    source_path
+                )
+                .is_err()
+            );
+            assert_eq!(&destination, target);
+        }
     }
 
     #[test]
@@ -881,62 +852,33 @@ mod tests {
     }
 
     #[test]
-    fn all_integer_formats_construct_and_extract_extremes() {
+    fn integer_scalar_admission_and_extraction_follow_format_ranges() {
         let ctx = context();
-        for &element in ElementType::ALL
-            .iter()
-            .filter(|element| element.is_integer())
-        {
-            let (minimum, maximum) = ranges(element);
-            for value in [minimum, 0, maximum] {
-                let literal = integer_scalar(&ctx, element, value).unwrap();
-                assert_eq!(shape::rank(&ctx, literal.shape).unwrap(), 0);
-                assert_eq!(shape::element_type(&ctx, literal.shape).unwrap(), element);
-                if let Ok(expected) = i64::try_from(value) {
-                    assert_eq!(scalar_integer(&ctx, &literal).unwrap(), expected);
-                } else {
-                    assert!(scalar_integer(&ctx, &literal).is_err());
-                }
+        for &element in ElementType::ALL {
+            if !element.is_integer() {
+                assert!(integer_scalar(&ctx, element, 0).is_err());
+                let ty = shape::scalar(&ctx, element).unwrap();
+                let literal = Literal::from_bits(&ctx, ty, &[0]).unwrap();
+                assert!(scalar_integer(&ctx, &literal).is_err());
+                continue;
             }
-        }
-    }
-
-    #[test]
-    fn integer_construction_rejects_out_of_range_for_every_width() {
-        let ctx = context();
-        for &element in ElementType::ALL
-            .iter()
-            .filter(|element| element.is_integer())
-        {
             let (minimum, maximum) = ranges(element);
             assert!(integer_scalar(&ctx, element, minimum - 1).is_err());
             assert!(integer_scalar(&ctx, element, maximum + 1).is_err());
-        }
-    }
-
-    #[test]
-    fn integer_construction_and_extraction_reject_noninteger_formats() {
-        let ctx = context();
-        for &element in ElementType::ALL
-            .iter()
-            .filter(|element| !element.is_integer())
-        {
-            assert!(integer_scalar(&ctx, element, 0).is_err());
-            let ty = shape::scalar(&ctx, element).unwrap();
-            let literal = Literal::from_bits(&ctx, ty, &[0]).unwrap();
-            assert!(scalar_integer(&ctx, &literal).is_err());
-        }
-    }
-
-    #[test]
-    fn unsigned64_extraction_rejects_only_unrepresentable_values() {
-        let ctx = context();
-        for value in [0, i64::MAX as i128, i64::MAX as i128 + 1, u64::MAX as i128] {
-            let literal = integer_scalar(&ctx, ElementType::U64, value).unwrap();
-            assert_eq!(
-                scalar_integer(&ctx, &literal).ok(),
-                i64::try_from(value).ok()
-            );
+            let mut samples = vec![minimum, 0, maximum];
+            if element == ElementType::U64 {
+                samples.extend([i64::MAX as i128, i64::MAX as i128 + 1]);
+            }
+            for value in samples {
+                let literal = integer_scalar(&ctx, element, value).unwrap();
+                assert_eq!(shape::rank(&ctx, literal.shape).unwrap(), 0);
+                assert_eq!(shape::element_type(&ctx, literal.shape).unwrap(), element);
+                assert_eq!(
+                    scalar_integer(&ctx, &literal).ok(),
+                    i64::try_from(value).ok(),
+                    "{element:?}, value={value}"
+                );
+            }
         }
     }
 
@@ -951,32 +893,31 @@ mod tests {
     }
 
     #[test]
-    fn effective_scalar_integer_accepts_only_unit_bound_dimensions() {
+    fn scalar_extraction_requires_unit_bounds_and_an_active_element() {
         let ctx = context();
         let ty = shape(&ctx, ElementType::S32, &[1, 1, 1], &[0, 2, 1]);
         let literal = Literal::from_bits(&ctx, ty, &[17]).unwrap();
         assert_eq!(scalar_integer(&ctx, &literal).unwrap(), 17);
         let non_scalar = matrix(&ctx, ElementType::S32, &[1, 0]);
         assert!(scalar_integer(&ctx, &non_scalar).is_err());
-    }
-
-    #[test]
-    fn dynamic_single_active_element_is_not_effective_scalar_if_bound_is_larger() {
-        let ctx = context();
-        let ty = shape::dynamic_array(&ctx, ElementType::U8, vec![Dimension::Bounded(3)]).unwrap();
-        let literal =
-            Literal::from_dynamic_storage_bytes(&ctx, ty, vec![7, 8, 9], vec![1]).unwrap();
-        assert!(scalar_integer(&ctx, &literal).is_err());
-    }
-
-    #[test]
-    fn dynamic_unit_bound_requires_an_active_scalar() {
-        let ctx = context();
-        let ty = shape::dynamic_array(&ctx, ElementType::S8, vec![Dimension::Bounded(1)]).unwrap();
-        let literal = Literal::from_dynamic_storage_bytes(&ctx, ty, vec![0xfe], vec![1]).unwrap();
-        assert_eq!(scalar_integer(&ctx, &literal).unwrap(), -2);
-        let empty = Literal::from_dynamic_storage_bytes(&ctx, ty, vec![0xfe], vec![0]).unwrap();
-        assert!(scalar_integer(&ctx, &empty).is_err());
+        for bound in [1, 3] {
+            let ty = shape::dynamic_array(&ctx, ElementType::S8, vec![Dimension::Bounded(bound)])
+                .unwrap();
+            for active in 0..=bound {
+                let literal = Literal::from_dynamic_storage_bytes(
+                    &ctx,
+                    ty,
+                    vec![0xfe; bound as usize],
+                    vec![active],
+                )
+                .unwrap();
+                assert_eq!(
+                    scalar_integer(&ctx, &literal).ok(),
+                    (bound == 1 && active == 1).then_some(-2),
+                    "bound={bound}, active={active}"
+                );
+            }
+        }
     }
 
     #[test]

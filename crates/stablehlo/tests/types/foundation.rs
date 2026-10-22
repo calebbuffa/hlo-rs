@@ -46,7 +46,8 @@ fn scalar_integer_widths_signedness_and_complex_components_are_canonical() {
 }
 
 #[test]
-fn element_type_display_uses_canonical_mlir_scalar_spellings() {
+fn scalar_formats_have_canonical_spellings_and_native_identity() {
+    let ctx = Context::new();
     for (element, spelling) in [
         (ElementType::Index, "index"),
         (ElementType::I1, "i1"),
@@ -111,62 +112,6 @@ fn element_type_display_uses_canonical_mlir_scalar_spellings() {
         ),
     ] {
         assert_eq!(element.to_string(), spelling);
-    }
-    assert_eq!(
-        format!(
-            "{:?}",
-            ElementType::integer(129, IntegerSignedness::Signed).unwrap()
-        ),
-        "Integer(IntegerElement { width: 129, signedness: Signed })"
-    );
-}
-
-#[test]
-fn every_named_scalar_format_round_trips_native_type_identity() {
-    let ctx = Context::new();
-    use ElementType::*;
-    for element in [
-        Index,
-        I1,
-        I2,
-        I4,
-        I8,
-        I16,
-        I32,
-        I64,
-        Si1,
-        Si2,
-        Si4,
-        Si8,
-        Si16,
-        Si32,
-        Si64,
-        Ui1,
-        Ui2,
-        Ui4,
-        Ui8,
-        Ui16,
-        Ui32,
-        Ui64,
-        F4E2M1Fn,
-        F6E2M3Fn,
-        F6E3M2Fn,
-        F16,
-        Bf16,
-        F32,
-        F64,
-        Tf32,
-        F8E3M4,
-        F8E4M3,
-        F8E4M3Fn,
-        F8E4M3FnUz,
-        F8E4M3B11FnUz,
-        F8E5M2,
-        F8E5M2FnUz,
-        F8E8M0FnUz,
-        C64,
-        C128,
-    ] {
         let ty = element.native(&ctx);
         assert_eq!(primitive_element(&ctx, ty), Some(element));
         assert!(verifies(&ctx, ty));
@@ -175,6 +120,13 @@ fn every_named_scalar_format_round_trips_native_type_identity() {
             TensorType::static_shape(&ctx, element, [0, 2, 3])
         ));
     }
+    assert_eq!(
+        format!(
+            "{:?}",
+            ElementType::integer(129, IntegerSignedness::Signed).unwrap()
+        ),
+        "Integer(IntegerElement { width: 129, signedness: Signed })"
+    );
 }
 
 #[test]

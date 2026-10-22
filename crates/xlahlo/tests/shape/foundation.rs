@@ -83,27 +83,6 @@ fn shape_queries_borrow_the_single_interned_representation() {
 }
 
 #[test]
-fn every_primitive_has_the_correct_category() {
-    let ctx = Context::new();
-    for &ty in P::ALL {
-        assert_eq!(ty.as_str().parse::<P>().unwrap(), ty);
-        assert_eq!(ty.to_string(), ty.as_str());
-        let shape = shape::array(&ctx, ty, vec![2, 0, 3]).unwrap();
-        assert_eq!(shape::element_count(&ctx, shape).unwrap(), 0);
-        assert_eq!(ty.is_integer(), PrimitiveType::from(ty).is_integral());
-        assert_eq!(ty.is_float(), PrimitiveType::from(ty).is_floating());
-    }
-
-    assert_eq!(P::C128.bit_width(), 128);
-    assert_eq!(P::Pred.storage_bit_width(), 8);
-    assert_eq!(P::F6E2M3FN.storage_bit_width(), 8);
-    assert_eq!(P::U4.storage_bit_width(), 4);
-    assert_eq!("F32".parse::<P>().unwrap_err().spelling(), "F32");
-    assert!("tuple".parse::<P>().is_err());
-    assert!(" f32".parse::<P>().is_err());
-}
-
-#[test]
 fn every_primitive_has_the_correct_category_and_wire_number() {
     let ctx = Context::new();
     for &ty in PrimitiveType::VALUES {
@@ -113,12 +92,33 @@ fn every_primitive_has_the_correct_category_and_wire_number() {
         assert_eq!(P::try_from(ty).is_ok(), ty.is_array_element());
         assert_eq!(ty.is_array_element(), ty.bit_width().is_some());
         if ty.is_array_element() {
+            let element = P::try_from(ty).unwrap();
+            assert_eq!(PrimitiveType::from(element), ty);
+            assert!(P::ALL.contains(&element));
+            assert_eq!(element.as_str().parse::<P>().unwrap(), element);
+            assert_eq!(element.to_string(), element.as_str());
+            assert_eq!(element.is_integer(), ty.is_integral());
+            assert_eq!(element.is_float(), ty.is_floating());
             let shape = shape::array(&ctx, ty, vec![2, 0, 3]).unwrap();
             assert_eq!(shape::element_count(&ctx, shape).unwrap(), 0);
         } else {
             assert!(shape::scalar(&ctx, ty).is_err());
         }
     }
+    assert_eq!(
+        P::ALL.len(),
+        PrimitiveType::VALUES
+            .iter()
+            .filter(|ty| ty.is_array_element())
+            .count()
+    );
+    assert_eq!(P::C128.bit_width(), 128);
+    assert_eq!(P::Pred.storage_bit_width(), 8);
+    assert_eq!(P::F6E2M3FN.storage_bit_width(), 8);
+    assert_eq!(P::U4.storage_bit_width(), 4);
+    assert_eq!("F32".parse::<P>().unwrap_err().spelling(), "F32");
+    assert!("tuple".parse::<P>().is_err());
+    assert!(" f32".parse::<P>().is_err());
     assert_eq!(i32::from(PrimitiveType::Buffer), 34);
     assert_eq!(i32::from(PrimitiveType::F6E2M3FN), 36);
     assert_eq!(PrimitiveType::C128.bit_width(), Some(128));

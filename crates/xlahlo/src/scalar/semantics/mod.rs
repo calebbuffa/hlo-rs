@@ -1276,116 +1276,36 @@ mod tests {
     }
 
     #[test]
-    fn divide_by_zero_is_all_ones_in_every_integer_format() {
+    fn division_and_remainder_match_integer_arithmetic_at_every_width() {
         for element in INTEGERS {
-            for lhs in samples(element) {
-                assert_eq!(
-                    binary(Opcode::Divide, raw(element, lhs), raw(element, 0))
-                        .unwrap()
-                        .integer_bits(),
-                    significant_mask(element)
-                );
+            let mut values = if element.bit_width() <= 8 {
+                (0..=significant_mask(element)).collect::<Vec<_>>()
+            } else {
+                samples(element)
+            };
+            for value in [-7, -3, 3, 7, 9_007_199_254_740_993] {
+                let (minimum, maximum) = limits(element);
+                if (minimum..=maximum).contains(&value) {
+                    values.push(scalar(element, value).integer_bits());
+                }
             }
-        }
-    }
-
-    #[test]
-    fn signed_minimum_divided_by_negative_one_wraps_in_all_seven_formats() {
-        for element in INTEGERS.into_iter().filter(|element| element.is_signed()) {
-            let (min, _) = limits(element);
-            assert_binary(Opcode::Divide, element, min, -1, min);
-        }
-    }
-
-    #[test]
-    fn signed_division_truncates_toward_zero_not_floor() {
-        for element in [
-            ElementType::S4,
-            ElementType::S8,
-            ElementType::S16,
-            ElementType::S32,
-            ElementType::S64,
-        ] {
-            for (lhs, rhs, expected) in [(-7, 3, -2), (7, -3, -2), (-7, -3, 2), (7, 3, 2)] {
-                assert_binary(Opcode::Divide, element, lhs, rhs, expected);
-            }
-        }
-    }
-
-    #[test]
-    fn u64_division_is_exact_above_floating_precision_and_i64_range() {
-        assert_binary(
-            Opcode::Divide,
-            ElementType::U64,
-            i128::from(u64::MAX),
-            3,
-            6_148_914_691_236_517_205,
-        );
-        assert_binary(
-            Opcode::Divide,
-            ElementType::U64,
-            9_007_199_254_740_993,
-            1,
-            9_007_199_254_740_993,
-        );
-    }
-
-    #[test]
-    fn remainder_by_zero_returns_dividend_for_all_integer_formats() {
-        for element in INTEGERS {
-            for bits in samples(element) {
-                let value = raw(element, bits);
-                assert_eq!(
-                    binary(Opcode::Remainder, value, raw(element, 0)).unwrap(),
-                    value
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn remainder_sign_follows_dividend() {
-        for element in [
-            ElementType::S4,
-            ElementType::S8,
-            ElementType::S16,
-            ElementType::S32,
-            ElementType::S64,
-        ] {
-            for (lhs, rhs, expected) in [(-7, 3, -1), (7, -3, 1), (-7, -3, -1)] {
-                assert_binary(Opcode::Remainder, element, lhs, rhs, expected);
-            }
-        }
-    }
-
-    #[test]
-    fn signed_minimum_remainder_negative_one_is_zero_in_all_seven_formats() {
-        for element in INTEGERS.into_iter().filter(|element| element.is_signed()) {
-            let (min, _) = limits(element);
-            assert_binary(Opcode::Remainder, element, min, -1, 0);
-        }
-    }
-
-    #[test]
-    fn small_division_and_remainder_satisfy_integer_quotient_invariants() {
-        for element in INTEGERS
-            .into_iter()
-            .filter(|element| element.bit_width() <= 8)
-        {
-            let maximum = significant_mask(element);
-            for lhs in 0..=maximum {
-                for rhs in 0..=maximum {
+            values.sort_unstable();
+            values.dedup();
+            for &lhs in &values {
+                for &rhs in &values {
                     let a = mathematical(element, lhs);
                     let b = mathematical(element, rhs);
                     let quotient = if b == 0 { -1 } else { a / b };
                     let remainder = if b == 0 { a } else { a % b };
                     assert_eq!(
                         binary(Opcode::Divide, raw(element, lhs), raw(element, rhs)).unwrap(),
-                        scalar(element, quotient)
+                        scalar(element, quotient),
+                        "divide {element:?}, {a} / {b}"
                     );
                     assert_eq!(
                         binary(Opcode::Remainder, raw(element, lhs), raw(element, rhs)).unwrap(),
-                        scalar(element, remainder)
+                        scalar(element, remainder),
+                        "remainder {element:?}, {a} % {b}"
                     );
                 }
             }
@@ -1393,93 +1313,27 @@ mod tests {
     }
 
     #[test]
-    fn oversized_and_negative_shifts_never_use_host_modulo_shift_count() {
+    fn shifts_obey_width_limited_bits_and_saturate_out_of_range_counts() {
         for element in INTEGERS {
             let width = element.bit_width();
             let maximum = significant_mask(element);
-            for count in [u64::from(width), u64::from(width) + 1, maximum] {
-                if count > maximum {
-                    continue;
-                }
-                for bits in samples(element) {
-                    let value = raw(element, bits);
-                    assert_eq!(
-                        binary(Opcode::ShiftLeft, value, raw(element, count))
-                            .unwrap()
-                            .integer_bits(),
-                        0
-                    );
-                    assert_eq!(
-                        binary(Opcode::ShiftRightLogical, value, raw(element, count))
-                            .unwrap()
-                            .integer_bits(),
-                        0
-                    );
-                    let expected = if bits & (1u64 << (width - 1)) != 0 {
-                        maximum
-                    } else {
-                        0
-                    };
-                    assert_eq!(
-                        binary(Opcode::ShiftRightArithmetic, value, raw(element, count))
-                            .unwrap()
-                            .integer_bits(),
-                        expected
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn arithmetic_right_shift_treats_unsigned_lhs_as_signed_bits() {
-        for element in INTEGERS.into_iter().filter(|element| !element.is_signed()) {
-            let width = element.bit_width();
-            let maximum = significant_mask(element);
-            let count = 1;
-            let result = binary(
-                Opcode::ShiftRightArithmetic,
-                raw(element, 1u64 << (width - 1)),
-                raw(element, count),
-            )
-            .unwrap();
-            let expected = if width == 1 {
-                maximum
+            let mut values = if width <= 4 {
+                (0..=maximum).collect::<Vec<_>>()
             } else {
-                (maximum << (width - 2)) & maximum
+                samples(element)
             };
-            assert_eq!(result.integer_bits(), expected);
-        }
-
-        for (lhs, count, expected) in [
-            (0x9234_5678, 4, 0xf923_4567),
-            (0x1000_1000, 8, 0x0010_0010),
-            (u64::from(u32::MAX - 3), 100, u64::from(u32::MAX)),
-            (77, u64::from(u32::MAX), 0),
-        ] {
-            assert_eq!(
-                binary(
-                    Opcode::ShiftRightArithmetic,
-                    raw(ElementType::U32, lhs),
-                    raw(ElementType::U32, count)
-                )
-                .unwrap()
-                .integer_bits(),
-                expected
-            );
-        }
-    }
-
-    #[test]
-    fn small_shifts_match_masked_bit_operations_exhaustively() {
-        for element in INTEGERS
-            .into_iter()
-            .filter(|element| element.bit_width() <= 4)
-        {
-            let width = element.bit_width();
-            let maximum = significant_mask(element);
-            for lhs in 0..=maximum {
-                for count in 0..=maximum {
+            values.extend([0x9234_5678 & maximum, 0x1000_1000 & maximum, 77 & maximum]);
+            values.push(maximum.saturating_sub(3));
+            values.extend((0..width).map(|bit| 1u64 << bit));
+            values.sort_unstable();
+            values.dedup();
+            let mut counts = (0..=u64::from(width) + 1).collect::<Vec<_>>();
+            counts.extend([100, maximum]);
+            counts.retain(|&count| count <= maximum);
+            counts.sort_unstable();
+            counts.dedup();
+            for lhs in values {
+                for &count in &counts {
                     let sign = lhs & (1u64 << (width - 1)) != 0;
                     let signed = if sign {
                         i128::from(lhs) - (1i128 << width)
@@ -1506,77 +1360,6 @@ mod tests {
                     }
                 }
             }
-        }
-    }
-
-    #[test]
-    fn clz_counts_significant_width_and_wraps_count_to_result_width() {
-        for element in INTEGERS {
-            let width = element.bit_width();
-            assert_eq!(
-                unary(Opcode::Clz, raw(element, 0)).unwrap(),
-                scalar(element, i128::from(width))
-            );
-            for bit in 0..width {
-                assert_eq!(
-                    unary(Opcode::Clz, raw(element, 1u64 << bit)).unwrap(),
-                    scalar(element, i128::from(width - bit - 1))
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn population_count_zero_and_single_bits_cover_all_integer_formats() {
-        for element in INTEGERS {
-            assert_eq!(
-                unary(Opcode::PopulationCount, raw(element, 0))
-                    .unwrap()
-                    .integer_bits(),
-                0
-            );
-            for bit in 0..element.bit_width() {
-                let expected = if element.is_signed()
-                    && element.bit_width() < 8
-                    && bit == element.bit_width() - 1
-                {
-                    9 - element.bit_width()
-                } else {
-                    1
-                };
-                assert_eq!(
-                    unary(Opcode::PopulationCount, raw(element, 1u64 << bit)).unwrap(),
-                    scalar(element, i128::from(expected))
-                );
-            }
-        }
-
-        for (bits, expected) in [
-            (u64::MAX, 64),
-            (i64::MAX as u64, 63),
-            (i64::MAX as u64 - 1, 62),
-        ] {
-            assert_eq!(
-                unary(Opcode::PopulationCount, raw(ElementType::S64, bits)).unwrap(),
-                scalar(ElementType::S64, expected)
-            );
-        }
-    }
-
-    #[test]
-    fn full_width_population_count_does_not_count_i64_promotion_padding() {
-        for element in INTEGERS
-            .into_iter()
-            .filter(|element| element.bit_width() >= 8)
-        {
-            assert_eq!(
-                unary(
-                    Opcode::PopulationCount,
-                    raw(element, significant_mask(element))
-                )
-                .unwrap(),
-                scalar(element, i128::from(element.bit_width()))
-            );
         }
     }
 
@@ -1705,62 +1488,19 @@ mod tests {
     }
 
     #[test]
-    fn valid_shifts_all_14_formats_retain_correct_low_bits() {
+    fn bit_counts_match_explicit_iteration_and_subbyte_signed_promotion() {
         for element in INTEGERS {
             let width = element.bit_width();
-            let maximum = significant_mask(element);
-            for count in [0, width / 2, width - 1] {
-                if u64::from(count) > maximum {
-                    continue;
-                }
-                let top = 1u64 << (width - 1);
-                assert_eq!(
-                    binary(
-                        Opcode::ShiftRightLogical,
-                        raw(element, top),
-                        raw(element, u64::from(count))
-                    )
-                    .unwrap()
-                    .integer_bits(),
-                    top >> count
-                );
-                assert_eq!(
-                    binary(
-                        Opcode::ShiftLeft,
-                        raw(element, 1),
-                        raw(element, u64::from(count))
-                    )
-                    .unwrap()
-                    .integer_bits(),
-                    1u64 << count
-                );
-                let expected = if count == 0 {
-                    top
-                } else {
-                    (maximum << (width - 1 - count)) & maximum
-                };
-                assert_eq!(
-                    binary(
-                        Opcode::ShiftRightArithmetic,
-                        raw(element, top),
-                        raw(element, u64::from(count))
-                    )
-                    .unwrap()
-                    .integer_bits(),
-                    expected
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn small_bit_counts_match_explicit_bit_iteration_exhaustively() {
-        for element in INTEGERS
-            .into_iter()
-            .filter(|element| element.bit_width() <= 4)
-        {
-            let width = element.bit_width();
-            for bits in 0..=significant_mask(element) {
+            let mut values = if width <= 4 {
+                (0..=significant_mask(element)).collect::<Vec<_>>()
+            } else {
+                samples(element)
+            };
+            values.extend((0..width).map(|bit| 1u64 << bit));
+            values.push((significant_mask(element) / 2).saturating_sub(1));
+            values.sort_unstable();
+            values.dedup();
+            for bits in values {
                 let mut leading = 0;
                 for bit in (0..width).rev() {
                     if bits & (1u64 << bit) != 0 {
@@ -1768,15 +1508,23 @@ mod tests {
                     }
                     leading += 1;
                 }
-                let byte = mathematical(element, bits) as u8;
-                let population = (0..8).filter(|bit| byte & (1u8 << bit) != 0).count();
+                let promoted = if width < 8 {
+                    u64::from(mathematical(element, bits) as u8)
+                } else {
+                    bits
+                };
+                let population = (0..width.max(8))
+                    .filter(|bit| promoted & (1u64 << bit) != 0)
+                    .count();
                 assert_eq!(
                     unary(Opcode::Clz, raw(element, bits)).unwrap(),
-                    scalar(element, leading)
+                    scalar(element, leading),
+                    "clz {element:?}, bits={bits:#x}"
                 );
                 assert_eq!(
                     unary(Opcode::PopulationCount, raw(element, bits)).unwrap(),
-                    scalar(element, population as i128)
+                    scalar(element, population as i128),
+                    "population count {element:?}, bits={bits:#x}"
                 );
             }
         }

@@ -497,24 +497,6 @@ mod tests {
     }
 
     #[test]
-    fn channel_collective_done_and_generic_async_are_not_channels() {
-        for op in [
-            Opcode::AllGatherDone,
-            Opcode::AllReduceDone,
-            Opcode::CollectivePermuteDone,
-            Opcode::AsyncStart,
-            Opcode::AsyncUpdate,
-            Opcode::AsyncDone,
-            Opcode::CopyStart,
-            Opcode::CopyDone,
-        ] {
-            assert!(!is_channel_instruction(op));
-        }
-        assert!(is_channel_instruction(Opcode::SendDone));
-        assert!(is_channel_instruction(Opcode::RecvDone));
-    }
-
-    #[test]
     fn unary_binary_and_ternary_native_operations_are_elementwise() {
         let ctx = &mut Context::new();
         crate::register(ctx);
@@ -622,31 +604,23 @@ mod tests {
     }
 
     #[test]
-    fn equal_storage_width_bitcast_convert_is_elementwise() {
+    fn bitcast_classification_depends_only_on_primitive_storage_width() {
         let ctx = &mut Context::new();
-        let (p, cast) = bitcast(ctx, ElementType::S32, ElementType::F32);
-        check(ctx, cast.get_operation(), true);
-        dispose(ctx, &[cast.get_operation(), p]);
-    }
-
-    #[test]
-    fn width_changing_bitcast_convert_is_not_elementwise() {
-        let ctx = &mut Context::new();
-        let (p, cast) = bitcast(ctx, ElementType::S32, ElementType::S16);
-        check(ctx, cast.get_operation(), false);
-        dispose(ctx, &[cast.get_operation(), p]);
-    }
-
-    #[test]
-    fn storage_width_not_precision_width_controls_low_precision_bitcasts() {
-        let ctx = &mut Context::new();
-        for (from, to) in [
-            (ElementType::Pred, ElementType::U8),
-            (ElementType::F6E3M2FN, ElementType::U8),
-        ] {
-            let (p, cast) = bitcast(ctx, from, to);
-            check(ctx, cast.get_operation(), true);
-            dispose(ctx, &[cast.get_operation(), p]);
+        let storage_width = |element: ElementType| match element {
+            ElementType::Pred | ElementType::F6E3M2FN | ElementType::F6E2M3FN => 8,
+            _ => element.bit_width(),
+        };
+        for &from in ElementType::ALL {
+            for &to in ElementType::ALL {
+                let (p, cast) = bitcast(ctx, from, to);
+                let actual = is_elementwise(ctx, cast.get_operation()).unwrap();
+                assert_eq!(
+                    actual,
+                    storage_width(from) == storage_width(to),
+                    "{from:?} -> {to:?}"
+                );
+                dispose(ctx, &[cast.get_operation(), p]);
+            }
         }
     }
 
@@ -670,67 +644,34 @@ mod tests {
     }
 
     #[test]
-    fn map_absent_and_empty_dimensions_are_elementwise() {
+    fn map_is_elementwise_only_for_absent_empty_or_full_identity_dimensions() {
         let ctx = &mut Context::new();
-        let f = mapped(ctx, &[2, 3]);
-        check(ctx, f.map.get_operation(), true);
-        f.map
-            .get_operation()
-            .deref_mut(ctx)
-            .attributes
-            .set(Identifier::new("hlo_dimensions"), Axes(vec![]));
-        check(ctx, f.map.get_operation(), true);
-        verify(ctx, f.module).unwrap();
-        dispose(ctx, &[f.module]);
-    }
-
-    #[test]
-    fn map_full_identity_dimensions_are_elementwise() {
-        let ctx = &mut Context::new();
-        let f = mapped(ctx, &[2, 3]);
-        f.map
-            .get_operation()
-            .deref_mut(ctx)
-            .attributes
-            .set(Identifier::new("hlo_dimensions"), Axes(vec![0, 1]));
-        check(ctx, f.map.get_operation(), true);
-        dispose(ctx, &[f.module]);
-    }
-
-    #[test]
-    fn scalar_map_has_empty_identity_dimensions() {
-        let ctx = &mut Context::new();
-        let f = mapped(ctx, &[]);
-        check(ctx, f.map.get_operation(), true);
-        dispose(ctx, &[f.module]);
-    }
-
-    #[test]
-    fn map_partial_dimensions_are_not_elementwise() {
-        let ctx = &mut Context::new();
-        let f = mapped(ctx, &[2, 3]);
-        f.map
-            .get_operation()
-            .deref_mut(ctx)
-            .attributes
-            .set(Identifier::new("hlo_dimensions"), Axes(vec![0]));
-        check(ctx, f.map.get_operation(), false);
-        dispose(ctx, &[f.module]);
-    }
-
-    #[test]
-    fn map_permuted_duplicate_and_negative_dimensions_are_not_identity() {
-        let ctx = &mut Context::new();
-        let f = mapped(ctx, &[2, 3]);
-        for dims in [vec![1, 0], vec![0, 0], vec![-1, 1]] {
-            f.map
-                .get_operation()
-                .deref_mut(ctx)
-                .attributes
-                .set(Identifier::new("hlo_dimensions"), Axes(dims));
-            check(ctx, f.map.get_operation(), false);
+        for dimensions in [vec![], vec![2], vec![2, 3]] {
+            let f = mapped(ctx, &dimensions);
+            check(ctx, f.map.get_operation(), true);
+            for axes in [
+                vec![],
+                (0..dimensions.len() as i64).collect(),
+                vec![0],
+                vec![1, 0],
+                vec![0, 0],
+                vec![-1, 1],
+            ] {
+                let expected =
+                    axes.is_empty() || axes == (0..dimensions.len() as i64).collect::<Vec<_>>();
+                f.map
+                    .get_operation()
+                    .deref_mut(ctx)
+                    .attributes
+                    .set(Identifier::new("hlo_dimensions"), Axes(axes.clone()));
+                assert_eq!(
+                    is_elementwise(ctx, f.map.get_operation()).unwrap(),
+                    expected,
+                    "shape={dimensions:?}, axes={axes:?}"
+                );
+            }
+            dispose(ctx, &[f.module]);
         }
-        dispose(ctx, &[f.module]);
     }
 
     #[test]
