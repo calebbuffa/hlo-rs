@@ -8,8 +8,28 @@ All operations use the `chlo.` dialect namespace.
 
 ## API modules
 
-The public API is organized into `attributes`, `inference`, and `ops`.
+The public API is organized into `attributes`, `inference`, `ops`, and `passes`.
+`clienthlo::stablehlo` and `clienthlo::pliron` re-export the underlying dialect
+and IR framework. Applications can depend on `clienthlo` alone; StableHLO
+operations are not flattened into the CHLO namespace.
 Integration tests are grouped by API domain under `tests/`.
+
+The public modules expose authoring records, standalone inference rules, and the
+legalization pass, not their implementations. Tensor snapshots, element-domain
+checks, broadcast storage keys, and lowering builders are private. Inspect tensor
+metadata through `stablehlo::types::{TensorType, UnrankedTensorType}` and use typed
+operation accessors to change attributes. Enum conversion errors are available as
+`attributes::{EnumParseError, EnumValueError}`; the implementation module is private.
+Public attribute fields are value records for explicit construction, not a
+substitute for verification. Both crates enforce documentation and visibility
+boundaries with compiler lints.
+
+The checked-in upstream CHLO catalog has 51 operations, 32 operation properties,
+four dialect attribute kinds, and 15 enum cases. All have Rust representations.
+Tests compare compiled operation identifiers, native property storage keys,
+attribute parameters, and enum spellings/encodings against resolved upstream
+TableGen definitions. These are representation guards, not exhaustive proofs of
+verifier or inference equivalence.
 
 ## Building and verifying operations
 
@@ -32,7 +52,7 @@ for missing or incorrectly typed attributes. Some accessors apply documented
 dialect defaults. Raw attribute setters do not revalidate the operation.
 
 ```rust
-use clienthlo::ops::{BroadcastAddOp, ErfOp};
+use clienthlo::{ops::{BroadcastAddOp, ErfOp}, pliron, stablehlo};
 use pliron::{common_traits::Verify, context::Context, op::Op, r#type::Typed};
 use stablehlo::{ops::ConstantOp, types::{ElementType, tensor}};
 
@@ -47,6 +67,56 @@ sum.verify(&ctx)?;
 assert_eq!(erf.result(&ctx).get_type(&ctx), sum.get_operation().deref(&ctx).get_result(0).get_type(&ctx));
 # Ok::<(), pliron::result::Error>(())
 ```
+
+## Legalizing CHLO to StableHLO
+
+`passes::ChloToStablehloPass` is a standard pliron pass, implemented with its
+dialect-conversion driver and rewriter. It recursively rewrites CHLO operations,
+leaves existing non-CHLO operations in place, and verifies the whole result.
+Success guarantees **no CHLO remains**. Replacements use only StableHLO, with no
+new `arith`, `tensor`, or `shape` operations or backend custom calls. Existing
+foreign operations are not legalized by this pass.
+
+```rust
+use clienthlo::{
+    ops::BroadcastAddOp,
+    passes::ChloToStablehloPass,
+    pliron::{
+        context::Context, op::Op,
+        pass::{AnalysisManager, Pass, Passes},
+    },
+    stablehlo::{
+        ops::{FuncOp, ModuleOp, ReturnOp},
+        types::{ElementType, function_type, tensor},
+    },
+};
+
+let mut ctx = Context::new();
+let module = ModuleOp::new(&mut ctx);
+let ty = tensor(&ctx, &[4], ElementType::F32);
+let scalar = tensor(&ctx, &[], ElementType::F32);
+let signature = function_type(&ctx, vec![ty, scalar], vec![ty]);
+let function = FuncOp::new(&mut ctx, "main".into(), signature)?;
+function.get_operation().insert_at_back(module.body_block(&ctx).unwrap(), &ctx);
+let block = function.entry_block(&ctx).unwrap();
+let args = function.arguments(&ctx);
+let sum = BroadcastAddOp::new_inferred(&mut ctx, args[0], args[1], None)?;
+let result = sum.get_operation().deref(&ctx).get_result(0);
+sum.get_operation().insert_at_back(block, &ctx);
+ReturnOp::new(&mut ctx, result).get_operation().insert_at_back(block, &ctx);
+
+let mut pipeline = Passes::default();
+pipeline.add_pass(ChloToStablehloPass);
+pipeline.run(module.get_operation(), &mut ctx, &mut AnalysisManager::default())?;
+# #[cfg(feature = "mlir-interop")]
+let text = clienthlo::stablehlo::mlir::export(&ctx, &module)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Enable `clienthlo`'s optional `mlir-interop` feature to enable
+`clienthlo::stablehlo::mlir`. It forwards to StableHLO's feature without adding a
+second interoperability implementation. Mixed CHLO/StableHLO modules must be
+legalized successfully before StableHLO MLIR export.
 
 ## Attributes and enum encodings
 
@@ -93,9 +163,10 @@ Default binary broadcasting aligns trailing axes using NumPy rules. Explicit
 broadcast dimensions map the lower-rank operand's axes into the higher-rank
 operand; on equal ranks, the left operand is mapped into the right. Shape-only
 helpers do not check element domains, and explicit-mapping helpers do not check
-axis uniqueness or ordering. Type-returning broadcast helpers fall back to an
-unranked type for an indeterminate or incompatible broadcast; shape-returning
-helpers return `None` for incompatible dimensions.
+axis uniqueness or ordering. Shape-returning helpers return `None` for
+incompatible dimensions. Operation builders can infer an unranked type for an
+indeterminate or incompatible broadcast; their inference success does not
+replace operation verification.
 
 ## Diagnosing invalid IR
 
@@ -109,11 +180,12 @@ not mean success. Operation diagnostics
 include a rendered location when available; inference may use a placeholder
 because no source operation exists yet.
 
-`Diagnostic::recovery_category()` currently returns `RecoveryCategory::InvalidInput`
-for every emitted variant. Correct the types, attributes, or structure described
-by the error before retrying. The other recovery categories reserve classifications
-for unsupported functionality and internal invariant failures; neither is emitted
-by the current diagnostic variants.
+`Diagnostic::recovery_category()` returns `RecoveryCategory::InvalidInput`
+for inference and verification violations and `RecoveryCategory::Unsupported`
+for missing legalization support. Correct invalid types, attributes, or structure;
+unsupported lowering requires an implemented decomposition or a supported
+representation, not an unchanged retry. `InternalInvariant` is reserved for
+implementation failures and is not emitted by current diagnostic variants.
 
 Enum parsing and numeric conversion retain their small standard error types.
 Both convert into the shared envelope with `?` without losing their typed

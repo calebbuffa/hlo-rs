@@ -1,10 +1,10 @@
 [package]
 name = "clienthlo"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.95"
 license.workspace = true
-description = "Client HLO (CHLO) dialect for pliron: ergonomic client ops that augment StableHLO"
+description = "Client HLO (CHLO) dialect for pliron"
 repository = "https://github.com/calebbuffa/hlo-rs"
 documentation = "https://docs.rs/clienthlo"
 readme = "README.md"
@@ -13,9 +13,18 @@ keywords = ["chlo", "stablehlo", "tensor", "compiler", "pliron"]
 categories = ["compilers", "data-structures"]
 
 [dependencies]
-pliron = { version = "0.19", default-features = false }
-stablehlo = { version = "0.2.0" }
+pliron = { version = "0.20", default-features = false }
+stablehlo = { version = "0.3.0" }
 thiserror = "2"
+
+[features]
+default = []
+mlir-interop = ["stablehlo/mlir-interop"]
+
+[dev-dependencies]
+serde_json = "1"
+libm = "0.2"
+num-complex = "0.4"
 
 [lints.rust]
 unsafe_code = "forbid"

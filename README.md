@@ -1,22 +1,13 @@
 # hlo-rs
 
 Rust dialects and compiler tools for [pliron](https://crates.io/crates/pliron),
-covering StableHLO and OpenXLA HLO. Choose the crate that matches the IR or
-compiler stage you need:
+covering StableHLO, ClientHLO, and OpenXLA HLO.
 
-| Crate                                                     | Use it for                                                      | Guide                                     |
-| --------------------------------------------------------- | --------------------------------------------------------------- | ----------------------------------------- |
-| [`stablehlo`](https://crates.io/crates/stablehlo)         | Constructing and verifying StableHLO IR                         | [Guide](crates/stablehlo/README.md)       |
-| `stablehlo-codec`                                         | StableHLO MLIR types, attributes, and supported module assembly | [Guide](crates/stablehlo-codec/README.md) |
-| [`clienthlo`](https://crates.io/crates/clienthlo)         | Client HLO operations that complement StableHLO                 | [Guide](crates/clienthlo/README.md)       |
-| [`xlahlo`](https://crates.io/crates/xlahlo)               | OpenXLA HLO IR, metadata, inference, and verification           | [Guide](crates/xlahlo/README.md)          |
-| `xlahlo-codec`                                            | HLO shape/layout assembly and While backend-config JSON         | [Guide](crates/xlahlo-codec/README.md)    |
-| [`xlahlo-cubecl`](https://crates.io/crates/xlahlo-cubecl) | Lowering supported xlahlo modules into CubeCL execution plans   | [Guide](crates/xlahlo-cubecl/README.md)   |
-
-The dialect crates provide typed IR construction, inference, and verification;
-they do not provide a general MLIR text parser or guarantee that every
-operation can be executed by a backend. Backend support and limitations are
-documented by the relevant crate.
+| Crate                                             | Use it for                                                   | Guide                               |
+| ------------------------------------------------- | ------------------------------------------------------------ | ----------------------------------- |
+| [`stablehlo`](https://crates.io/crates/stablehlo) | Constructing and verifying StableHLO IR; opt-in MLIR interop | [Guide](crates/stablehlo/README.md) |
+| [`clienthlo`](https://crates.io/crates/clienthlo) | Client HLO operations that complement StableHLO              | [Guide](crates/clienthlo/README.md) |
+| [`xlahlo`](https://crates.io/crates/xlahlo)       | OpenXLA HLO IR, metadata, inference, and verification        | [Guide](crates/xlahlo/README.md)    |
 
 ## Getting started
 
@@ -25,17 +16,16 @@ guide for a complete example. For example:
 
 ```toml
 [dependencies]
-stablehlo = "0.1"
-pliron = "0.19"
+stablehlo = "0.2"
 ```
 
-The `clienthlo` crate depends on `stablehlo`. The `xlahlo-cubecl` crate depends
-on `xlahlo` and returns an execution plan; the caller provides device memory,
-launches kernels, and synchronizes execution.
+The `clienthlo` crate depends on `stablehlo`.
 
-Each codec depends on its corresponding IR crate. External format adapters
-are separate from the dialects' pliron parser/printer registrations; no IR
-crate depends on a codec. See the codec guides for their current coverage.
+StableHLO MLIR assembly is available as `stablehlo::mlir` with the
+`mlir-interop` feature. Use `mlir::import` and `mlir::export` for modules;
+advanced helpers live in `mlir::assembly`. Export uses `pliron-mlir-interop`; the
+feature is disabled by default. MLIR assembly is distinct from pliron's
+internal parser/printer format.
 
 ## Requirements
 

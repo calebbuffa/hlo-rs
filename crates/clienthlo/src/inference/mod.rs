@@ -1,9 +1,23 @@
 //! Shape and element-type inference for CHLO operations.
 //!
-//! Dimensions are zero-based axis sizes; a negative size denotes a dynamic
-//! dimension. An unranked tensor is distinct from a rank-zero tensor (a scalar).
+//! Shape entries are dimension extents; a negative size denotes a dynamic
+//! dimension, and axis indices are zero-based. An unranked tensor is distinct
+//! from a rank-zero tensor (a scalar).
 //! These helpers implement individual inference rules, not complete operation
 //! verification. In particular, shape-only helpers do not check element domains.
+//!
+//! Public helpers accept shapes or native type handles. Tensor snapshots,
+//! element-domain constraints, and encoding builders are crate implementation
+//! details. Inspect concrete types through [`stablehlo::types::TensorType`] or
+//! [`stablehlo::types::UnrankedTensorType`] instead.
+//!
+//! ```compile_fail,E0603
+//! use clienthlo::inference::Shaped;
+//! ```
+//!
+//! ```compile_fail,E0603
+//! use clienthlo::inference::Domain;
+//! ```
 
 use crate::Diagnostic;
 use pliron::{
@@ -18,7 +32,7 @@ use stablehlo::{
 
 #[derive(Clone)]
 pub(crate) struct TensorInfo {
-    pub dimensions: Vec<i64>,
+    pub(crate) dimensions: Vec<i64>,
 }
 
 pub(crate) fn tensor_info(ctx: &Context, ty: TypeHandle) -> Option<TensorInfo> {
@@ -173,26 +187,19 @@ pub(crate) fn invalid_at(
 
 /// Shape, element and encoding of a ranked or unranked tensor type.
 #[derive(Clone)]
-pub struct Shaped {
+pub(crate) struct Shaped {
     /// Axis sizes, or `None` for unranked tensors; `Some(vec![])` denotes a scalar.
-    pub dimensions: Option<Vec<i64>>,
+    pub(crate) dimensions: Option<Vec<i64>>,
     /// Native IR element type, including quantized element types.
-    pub element: TypeHandle,
+    pub(crate) element: TypeHandle,
     /// Ranked tensor encoding attributes; empty for unranked tensors.
-    pub encoding: VecAttr,
+    pub(crate) encoding: VecAttr,
     /// Bounds from a `stablehlo.type_extensions` encoding.
-    pub bounds: Option<Vec<i64>>,
+    pub(crate) bounds: Option<Vec<i64>>,
 }
 
 impl Shaped {
-    /// Returns the number of axes, or `None` for an unranked tensor.
-    pub fn rank(&self) -> Option<usize> {
-        self.dimensions.as_ref().map(Vec::len)
-    }
-    /// Tests whether a type-extensions bounds encoding is present.
-    ///
-    /// Presence does not imply that every axis has a finite bound.
-    pub fn is_bounded(&self) -> bool {
+    fn is_bounded(&self) -> bool {
         self.bounds.is_some()
     }
     fn bound(&self, dim: usize) -> i64 {
@@ -207,7 +214,7 @@ impl Shaped {
 ///
 /// Returns `None` for a nontensor type. The returned metadata is an owned snapshot,
 /// not a live view into the context, and extracting it does not verify the type.
-pub fn shaped(ctx: &Context, ty: TypeHandle) -> Option<Shaped> {
+pub(crate) fn shaped(ctx: &Context, ty: TypeHandle) -> Option<Shaped> {
     let value = ty.deref(ctx);
     if let Some(tensor) = value.downcast_ref::<TensorType>() {
         return Some(Shaped {
@@ -228,7 +235,7 @@ pub fn shaped(ctx: &Context, ty: TypeHandle) -> Option<Shaped> {
 
 /// Element-type families of the upstream HLO tensor constraints.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Domain {
+pub(crate) enum Domain {
     /// `HLO_Float` (no `tf32`).
     Float,
     /// `HLO_Complex` (`complex<f32>`, `complex<f64>`).
@@ -248,13 +255,13 @@ pub enum Domain {
 }
 
 /// Tests membership in the HLO floating-point family, excluding `tf32`.
-pub fn hlo_float(element: ElementType) -> bool {
+fn hlo_float(element: ElementType) -> bool {
     element != ElementType::Tf32 && element.is_float()
 }
 /// Tests for a signless or unsigned integer of width 2, 4, 8, 16, 32, or 64.
 ///
 /// Predicates (`i1`) and explicitly signed integer types are excluded.
-pub fn hlo_int(element: ElementType) -> bool {
+fn hlo_int(element: ElementType) -> bool {
     matches!(
         element.integer_parts(),
         Some((
@@ -264,7 +271,7 @@ pub fn hlo_int(element: ElementType) -> bool {
     )
 }
 /// Tests for `complex<f32>` or `complex<f64>`.
-pub fn hlo_complex(element: ElementType) -> bool {
+pub(crate) fn hlo_complex(element: ElementType) -> bool {
     matches!(element, ElementType::C64 | ElementType::C128)
 }
 
@@ -320,7 +327,7 @@ fn valid_quantized(ctx: &Context, q: &QuantizedElementType) -> bool {
 /// Quantized types are accepted only by [`Domain::Tensor`] (per-tensor) or
 /// [`Domain::Any`] (per-tensor or per-axis), and their storage range, scales, and
 /// zero points must be valid. Tensor shape and quantized-axis size are not checked.
-pub fn element_in(ctx: &Context, element: TypeHandle, domain: Domain) -> bool {
+pub(crate) fn element_in(ctx: &Context, element: TypeHandle, domain: Domain) -> bool {
     if let Some(q) = quantized(ctx, element) {
         return match domain {
             Domain::Tensor => q.axis == -1 && valid_quantized(ctx, &q),
@@ -350,7 +357,7 @@ pub fn element_in(ctx: &Context, element: TypeHandle, domain: Domain) -> bool {
 /// Dynamic sizes defer the size check. Returns `true` for nontensors, unranked
 /// tensors, and types without a per-axis quantized element. This is not a general
 /// tensor or quantization validity check.
-pub fn valid_quantized_dimension(ctx: &Context, ty: TypeHandle) -> bool {
+fn valid_quantized_dimension(ctx: &Context, ty: TypeHandle) -> bool {
     let Some(s) = shaped(ctx, ty) else {
         return true;
     };
@@ -371,7 +378,12 @@ pub fn valid_quantized_dimension(ctx: &Context, ty: TypeHandle) -> bool {
 ///
 /// `ranked_only` requires a known rank, not a fully static shape. When `false`,
 /// both ranked and unranked HLO tensors are accepted.
-pub fn hlo_tensor_type(ctx: &Context, ty: TypeHandle, domain: Domain, ranked_only: bool) -> bool {
+pub(crate) fn hlo_tensor_type(
+    ctx: &Context,
+    ty: TypeHandle,
+    domain: Domain,
+    ranked_only: bool,
+) -> bool {
     let Some(s) = shaped(ctx, ty) else {
         return false;
     };
@@ -404,7 +416,7 @@ pub fn compatible_elements(ctx: &Context, lhs: TypeHandle, rhs: TypeHandle) -> b
 ///
 /// Ranked tensors must have equal ranks and matching static sizes. Bounds,
 /// encodings, and element types are ignored.
-pub fn compatible_shape(lhs: &Shaped, rhs: &Shaped) -> bool {
+pub(crate) fn compatible_shape(lhs: &Shaped, rhs: &Shaped) -> bool {
     match (&lhs.dimensions, &rhs.dimensions) {
         (Some(a), Some(b)) => compatible_shapes(a, b),
         _ => true,
@@ -415,7 +427,7 @@ pub fn compatible_shape(lhs: &Shaped, rhs: &Shaped) -> bool {
 ///
 /// A known size must not exceed the corresponding bound on the other tensor.
 /// Unranked tensors remain compatible with every shape.
-pub fn compatible_shapes_with_bounds(lhs: &Shaped, rhs: &Shaped) -> bool {
+fn compatible_shapes_with_bounds(lhs: &Shaped, rhs: &Shaped) -> bool {
     if !compatible_shape(lhs, rhs) {
         return false;
     }
@@ -449,7 +461,7 @@ pub fn compatible_types(ctx: &Context, lhs: TypeHandle, rhs: TypeHandle) -> bool
 /// A bound of `-1` denotes no known bound. If every entry is `-1` (including an
 /// empty list), returns an empty encoding instead. The caller must ensure the
 /// bound count matches the ranked tensor and that bound values are valid.
-pub fn bounds_encoding(bounds: Vec<i64>) -> VecAttr {
+pub(crate) fn bounds_encoding(bounds: Vec<i64>) -> VecAttr {
     if bounds.iter().all(|&b| b == -1) {
         VecAttr::new(vec![])
     } else {
@@ -460,7 +472,7 @@ pub fn bounds_encoding(bounds: Vec<i64>) -> VecAttr {
 /// Interns an unranked HLO tensor with the given native element type.
 ///
 /// Does not validate the element type or attach a ranked tensor encoding.
-pub fn unranked(ctx: &Context, element: TypeHandle) -> TypeHandle {
+pub(crate) fn unranked(ctx: &Context, element: TypeHandle) -> TypeHandle {
     UnrankedTensorType::instantiate(UnrankedTensorType { element }, ctx).into()
 }
 
@@ -468,7 +480,7 @@ pub fn unranked(ctx: &Context, element: TypeHandle) -> TypeHandle {
 ///
 /// Interns the type without verifying dimensions, bounds, or element validity.
 /// Unranked types do not retain `encoding`.
-pub fn shaped_type(
+pub(crate) fn shaped_type(
     ctx: &Context,
     dimensions: Option<Vec<i64>>,
     element: TypeHandle,
@@ -492,7 +504,7 @@ pub fn shaped_type(
 ///
 /// Preserves ranked/unranked status. Returns `None` if `ty` is not an HLO tensor;
 /// does not verify the replacement element type.
-pub fn same_shape(ctx: &Context, ty: TypeHandle, element: TypeHandle) -> Option<TypeHandle> {
+pub(crate) fn same_shape(ctx: &Context, ty: TypeHandle, element: TypeHandle) -> Option<TypeHandle> {
     let s = shaped(ctx, ty)?;
     Some(shaped_type(ctx, s.dimensions, element, s.encoding))
 }
@@ -616,7 +628,7 @@ fn bounded_broadcast(a: &[Dim], b: &[Dim]) -> Option<Vec<Dim>> {
 /// bounded. Returns an unranked type for empty input, any unranked operand, or
 /// incompatible shapes; an illegal broadcast is not an error from this helper.
 /// Does not check operand element types against the requested output element.
-pub fn numpy_broadcast_type(
+pub(crate) fn numpy_broadcast_type(
     ctx: &Context,
     operands: &[&Shaped],
     element: TypeHandle,
@@ -668,7 +680,7 @@ pub fn numpy_broadcast_type(
 /// Returns an unranked type when either operand is unranked, the mapping has
 /// invalid length or indices, or mapped sizes conflict. Mapping uniqueness and
 /// ordering and operand element-type compatibility are not checked.
-pub fn broadcast_type(
+pub(crate) fn broadcast_type(
     ctx: &Context,
     lhs: &Shaped,
     rhs: &Shaped,

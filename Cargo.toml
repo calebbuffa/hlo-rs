@@ -3,9 +3,7 @@ resolver = "3"
 members = [
     "crates/clienthlo",
     "crates/stablehlo",
-    # "crates/stablehlo-codec",
     "crates/xlahlo",
-    "crates/xlahlo-cubecl",
     # "crates/xlahlo-codec",
 ]
 

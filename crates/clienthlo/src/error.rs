@@ -19,11 +19,21 @@ pub enum RecoveryCategory {
 ///
 /// These errors are wrapped in [`pliron::result::Error`]. Inspect its underlying
 /// error with `downcast_ref::<Diagnostic>()` to recover the structured details.
-/// Current variants report invalid input, retaining inference sources when
-/// verification adds operation context.
+/// Inference and verification retain sources when adding operation context.
+/// Legalization also distinguishes valid but unsupported representations.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum Diagnostic {
+    /// Valid CHLO for which the selected legalization is not implemented.
+    #[error("cannot legalize {operation} at {location}: {reason}")]
+    UnsupportedLowering {
+        /// Operation that could not be lowered.
+        operation: String,
+        /// Rendered source location.
+        location: String,
+        /// Required representation or missing decomposition.
+        reason: &'static str,
+    },
     /// An operand does not belong to the element-type family accepted by an operation.
     #[error("{operation} operand element type is outside its domain")]
     InvalidDomain {
@@ -73,12 +83,16 @@ impl Diagnostic {
         }
     }
 
-    /// Returns how a caller can recover from this diagnostic.
+    /// Classifies the action a caller should take before retrying.
     ///
-    /// All currently emitted diagnostics classify invalid input. Fix the reported
-    /// constraint and repeat inference or verification; do not retry unchanged IR.
+    /// Unsupported lowering requires a supported representation or legalization
+    /// path. Other current variants identify invalid input. This classification
+    /// does not imply that earlier IR changes have been rolled back.
     pub fn recovery_category(&self) -> RecoveryCategory {
-        RecoveryCategory::InvalidInput
+        match self {
+            Self::UnsupportedLowering { .. } => RecoveryCategory::Unsupported,
+            _ => RecoveryCategory::InvalidInput,
+        }
     }
 }
 

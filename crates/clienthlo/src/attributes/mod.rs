@@ -18,16 +18,16 @@ use pliron::{
     context::Context,
     derive::{def_attribute, pliron_attr},
     irfmt::parsers::{delimited_list_parser, number_as_string_parser},
-    location::{Located, Location},
-    parsable::{IntoParseResult, Parsable, ParseResult, StateStream},
+    location::Location,
+    parsable::{IntoParseResult, Parsable, ParseResult, StateStream, StreamLocation},
     printable::{self, Printable},
     result::Result,
     utils::apint::{APInt, bw},
     verify_err,
 };
 
-pub mod enums;
-pub use enums::*;
+mod enums;
+pub use enums::{EnumParseError, EnumValueError};
 
 /// Elementwise comparison relation, with CHLO's stable numeric encoding.
 ///

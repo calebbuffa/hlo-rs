@@ -1,10 +1,11 @@
 //! Tensor/broadcast semantics of the CHLO dialect against upstream ChloOps.td / ChloOps.cpp.
+use super::{TensorMetadata as Shaped, tensor_metadata};
 use clienthlo::{
     attributes::{
         ComparisonDirection, Precision, RaggedDotDimensionNumbersAttr, RaggedDotDimensions,
         read_precision_config,
     },
-    inference::{self, Shaped},
+    inference,
     ops::*,
     pliron::{
         basic_block::BasicBlock,
@@ -56,7 +57,7 @@ fn broadcast_shapes_preserve_axes_and_reject_incompatible_extents() {
     }
 }
 fn unranked_ty(ctx: &Context, element: ElementType) -> TypeHandle {
-    inference::unranked(ctx, element.native(ctx))
+    stablehlo::types::UnrankedTensorType::get(ctx, element.native(ctx)).into()
 }
 fn unranked(ctx: &mut Context, element: ElementType) -> Value {
     let ty = unranked_ty(ctx, element);
@@ -105,7 +106,7 @@ fn result(ctx: &Context, op: &impl Op) -> TypeHandle {
     op.get_operation().deref(ctx).get_result(0).get_type(ctx)
 }
 fn shaped(ctx: &Context, ty: TypeHandle) -> Shaped {
-    inference::shaped(ctx, ty).unwrap()
+    tensor_metadata(ctx, ty)
 }
 fn dims(ctx: &Context, ty: TypeHandle) -> Option<Vec<i64>> {
     shaped(ctx, ty).dimensions

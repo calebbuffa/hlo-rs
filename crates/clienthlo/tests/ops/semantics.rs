@@ -1130,8 +1130,8 @@ fn scan_drops_vacuous_bounds_and_static_dimensions_do_not_get_bounds() {
     assert!(result.encoding.0.is_empty());
 }
 
-fn inference_shape(ctx: &Context, ty: TypeHandle) -> clienthlo::inference::Shaped {
-    clienthlo::inference::shaped(ctx, ty).unwrap()
+fn inference_shape(ctx: &Context, ty: TypeHandle) -> super::TensorMetadata {
+    super::tensor_metadata(ctx, ty)
 }
 
 #[test]
@@ -1243,7 +1243,8 @@ fn scan_allows_compatible_unranked_body_arguments_but_requires_ranked_operands_a
     let mut ctx = Context::new();
     let input = value(&mut ctx, &[3, 2], ElementType::F32);
     let init = value(&mut ctx, &[2], ElementType::F32);
-    let unranked = clienthlo::inference::unranked(&ctx, ElementType::F32.native(&ctx));
+    let unranked =
+        stablehlo::types::UnrankedTensorType::get(&ctx, ElementType::F32.native(&ctx)).into();
     let scan = ScanOp::new_inferred(
         &mut ctx,
         vec![input],
@@ -1280,7 +1281,8 @@ fn scan_allows_compatible_unranked_body_arguments_but_requires_ranked_operands_a
         .arguments()
         .next()
         .unwrap();
-    let wrong_element = clienthlo::inference::unranked(&ctx, ElementType::I32.native(&ctx));
+    let wrong_element =
+        stablehlo::types::UnrankedTensorType::get(&ctx, ElementType::I32.native(&ctx)).into();
     arg.set_type(&ctx, wrong_element);
     assert!(scan.verify(&ctx).is_err());
     arg.set_type(&ctx, unranked);
