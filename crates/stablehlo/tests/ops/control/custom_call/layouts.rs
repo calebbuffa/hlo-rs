@@ -120,8 +120,8 @@ fn malformed_layouts_fail_without_mutation_and_can_be_repaired() {
         }
     }
     for key in [
-        stablehlo::attributes::keys::CUSTOM_CALL_OPERAND_LAYOUTS,
-        stablehlo::attributes::keys::CUSTOM_CALL_RESULT_LAYOUTS,
+        "stablehlo_custom_call_operand_layouts",
+        "stablehlo_custom_call_result_layouts",
     ] {
         call.set_attr_stablehlo_custom_call_operand_layouts(&ctx, layouts(&[]));
         call.set_attr_stablehlo_custom_call_result_layouts(&ctx, layouts(&[&[1, 0]]));
@@ -173,8 +173,8 @@ fn malformed_effect_and_alias_metadata_never_disappears_or_indexes_out_of_bounds
     }
     call.set_attr_stablehlo_custom_call_output_operand_aliases(&ctx, VecAttr::new(vec![]));
     for key in [
-        stablehlo::attributes::keys::CUSTOM_CALL_HAS_SIDE_EFFECT,
-        stablehlo::attributes::keys::CUSTOM_CALL_OUTPUT_OPERAND_ALIASES,
+        "stablehlo_custom_call_has_side_effect",
+        "stablehlo_custom_call_output_operand_aliases",
     ] {
         call.get_operation()
             .deref_mut(&ctx)
@@ -193,15 +193,13 @@ fn malformed_effect_and_alias_metadata_never_disappears_or_indexes_out_of_bounds
         .deref_mut(&ctx)
         .attributes
         .0
-        .remove(&Identifier::new(
-            stablehlo::attributes::keys::CUSTOM_CALL_HAS_SIDE_EFFECT,
-        ));
+        .remove(&Identifier::new("stablehlo_custom_call_has_side_effect"));
     call.get_operation()
         .deref_mut(&ctx)
         .attributes
         .0
         .remove(&Identifier::new(
-            stablehlo::attributes::keys::CUSTOM_CALL_OUTPUT_OPERAND_ALIASES,
+            "stablehlo_custom_call_output_operand_aliases",
         ));
     call.verify(&ctx).unwrap();
 }
@@ -211,7 +209,7 @@ fn omitted_api_version_defaults_to_original_without_hiding_malformed_metadata() 
     use pliron::{attribute::AttrObj, builtin::attributes::DictAttr};
     let mut ctx = Context::new();
     let call = CustomCallOp::new(&mut ctx, "external".into(), vec![], vec![], 1);
-    let key = Identifier::new(stablehlo::attributes::keys::CUSTOM_CALL_API_VERSION);
+    let key = Identifier::new("stablehlo_custom_call_api_version");
     call.get_operation()
         .deref_mut(&ctx)
         .attributes
@@ -314,12 +312,10 @@ fn target_names_are_opaque_strings_not_backend_validity_filters() {
             .deref_mut(&ctx)
             .attributes
             .0
-            .remove(&Identifier::new(
-                stablehlo::attributes::keys::CUSTOM_CALL_TARGET,
-            ));
+            .remove(&Identifier::new("stablehlo_custom_call_target"));
         assert!(call.verify(&ctx).is_err());
         call.get_operation().deref_mut(&ctx).attributes.set(
-            Identifier::new(stablehlo::attributes::keys::CUSTOM_CALL_TARGET),
+            Identifier::new("stablehlo_custom_call_target"),
             BoolAttr::new(false),
         );
         assert!(call.verify(&ctx).is_err());

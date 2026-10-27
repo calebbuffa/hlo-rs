@@ -136,7 +136,7 @@ fn non_tensor_calls_keep_signature_symbol_and_recursion_diagnostics_with_recover
         .deref_mut(&ctx)
         .attributes
         .0
-        .remove(&Identifier::new(stablehlo::attributes::keys::CALL_CALLEE));
+        .remove(&Identifier::new("stablehlo_call_callee"));
     assert!(verify_module_fast(&ctx, module.get_operation()).is_err());
 }
 

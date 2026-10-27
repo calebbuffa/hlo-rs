@@ -404,7 +404,7 @@ pub fn infer_clamp_type(
 /// Infers a conversion result with the requested primitive `element` type.
 ///
 /// The input must have a supported primitive element type. Index, `tf32`, and
-/// signless integer element types are not accepted as either source or target.
+/// explicitly signed integer element types are not accepted as either source or target.
 /// The result preserves shape and tensor encoding.
 pub fn infer_convert_type(
     ctx: &Context,

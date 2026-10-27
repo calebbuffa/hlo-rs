@@ -532,23 +532,13 @@ impl Verify for ReplicaGroupMeshAxesAttr {
     format = "`<` `[` vec($values, CharSpace(`,`)) `]` `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// Flattened nonnegative device or coordinate indices.
+/// Flattened signed index values; consumers impose coordinate or device constraints.
 pub struct IndexTensorAttr {
-    /// Nonnegative flattened coordinate values.
+    /// Flattened index values, including backend-defined tiling sentinels.
     pub values: Vec<i64>,
 }
 impl Verify for IndexTensorAttr {
-    fn verify(&self, ctx: &Context) -> Result<()> {
-        if self.values.iter().any(|&v| v < 0) {
-            return verify_err!(
-                Location::Unknown,
-                crate::Diagnostic::InvalidAttribute {
-                    attribute: "StableHLO attribute",
-                    reason: "invalid index_tensor fields"
-                }
-            );
-        }
-        let _ = ctx;
+    fn verify(&self, _ctx: &Context) -> Result<()> {
         Ok(())
     }
 }

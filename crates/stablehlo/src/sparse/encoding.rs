@@ -397,7 +397,7 @@ fn numeric_type(ctx: &Context, value: &AttrObj) -> Option<ElementType> {
 ///
 /// Returns `None` when the map uses symbols or has a form that is not invertible
 /// by these supported patterns; malformed affine expressions return an error.
-pub fn infer_sparse_level_to_dimension(map: &AffineMap) -> Result<Option<AffineMap>> {
+fn infer_sparse_level_to_dimension(map: &AffineMap) -> Result<Option<AffineMap>> {
     map.validate()?;
     if map.symbols != 0 || map.dimensions > map.results.len() {
         return Ok(None);

@@ -13,17 +13,17 @@ use pliron::{
     value::Value,
 };
 
-pliron::dict_key!(
-    /// Dictionary key used to store the optional StableHLO result-accuracy attribute.
-    ATTR_KEY_STABLEHLO_RESULT_ACCURACY,
-    "stablehlo_result_accuracy"
-);
+const ATTR_KEY_STABLEHLO_RESULT_ACCURACY: pliron::identifier::Identifier =
+    pliron::identifier::Identifier::new(crate::attributes::keys::RESULT_ACCURACY);
 
 macro_rules! impl_result_accuracy_accessors {
     ($($op:ty),+ $(,)?) => {
         $(
             impl $op {
-                /// Returns the optional result-accuracy attribute when present.
+                /// Borrows the optional, correctly typed result-accuracy attribute.
+                ///
+                /// Returns `None` when the attribute is absent or has a different
+                /// native type. Drop the returned guard before mutating the operation.
                 pub fn result_accuracy<'a>(
                     &self,
                     ctx: &'a Context,
@@ -35,7 +35,10 @@ macro_rules! impl_result_accuracy_accessors {
                     .ok()
                 }
 
-                /// Sets the result-accuracy attribute on this operation.
+                /// Replaces the result-accuracy attribute without verifying the operation.
+                ///
+                /// Run [`Verify::verify`] after changing accuracy metadata to check
+                /// its tolerances, mode, and compatibility with the operation.
                 pub fn set_result_accuracy(
                     &self,
                     ctx: &Context,
@@ -76,7 +79,8 @@ impl ConvertOp {
     /// Converts `input` to `to`, preserving its shape and tensor encoding.
     ///
     /// The source and target must be supported primitive element types; index, `tf32`, and
-    /// signless integer element types are not supported. Returns an error if type inference fails.
+    /// explicitly signed integer element types are not supported. Signless and unsigned
+    /// integers are accepted. Returns an error if type inference fails.
     #[inline]
     pub fn new_inferred(ctx: &mut Context, input: Value, to: ElementType) -> Result<Self> {
         let result = crate::ops::builder_result(

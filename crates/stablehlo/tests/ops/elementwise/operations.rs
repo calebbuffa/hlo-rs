@@ -94,7 +94,7 @@ fn exp2_and_log2_preserve_and_verify_result_accuracy() {
     assert!(exp2.verify(&ctx).is_ok());
 
     exp2.get_operation().deref_mut(&ctx).attributes.set(
-        Identifier::new(stablehlo::attributes::keys::RESULT_ACCURACY),
+        Identifier::new("stablehlo_result_accuracy"),
         StringAttr::new("malformed".into()),
     );
     assert!(exp2.verify(&ctx).is_err());
@@ -111,7 +111,7 @@ fn exp2_and_log2_preserve_and_verify_result_accuracy() {
 fn unowned_elementwise_ops_ignore_result_accuracy_attributes() {
     let mut ctx = Context::new();
     let input = value(&mut ctx, &[2], ElementType::F32, 0);
-    let key = Identifier::new(stablehlo::attributes::keys::RESULT_ACCURACY);
+    let key = Identifier::new("stablehlo_result_accuracy");
 
     let unary = AbsOp::new_inferred(&mut ctx, input).unwrap();
     unary

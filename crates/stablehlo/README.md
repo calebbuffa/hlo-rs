@@ -3,6 +3,24 @@
 `stablehlo` implements the StableHLO dialect for
 [pliron](https://crates.io/crates/pliron).
 
+## Public API
+
+The public surface is organized by purpose: `ops` for operation authoring,
+`types` and `attributes` for native IR records, `inference` for standalone
+shape/type rules, `verification` for complete-IR checks, and `integer` and
+`sparse` for their corresponding value representations. The optional `mlir`
+module provides interoperability. `pliron`, `Error`, and `Result` are re-exported
+so callers use the same framework types as the dialect.
+
+Use typed operation accessors instead of internal dictionary storage names.
+Parser state, verifier implementation modules, enum-spelling machinery, and
+constructor adapters are private. Enum parsing errors are exposed as
+`attributes::EnumParseError`. Public attribute/type fields remain available
+for explicit IR construction; their invariants must still be verified.
+
+Both dialect crates reject undocumented public items, unreachable public
+declarations, and public signatures containing private types at compile time.
+
 ## Example: `((x + y) * 2.0).exp()`
 
 This builds a rank-1 `tensor<4xf32>` function, checks each operation, and verifies the complete module:
@@ -100,7 +118,7 @@ fn precision(text: &str) -> Result<Precision> {
 
 let error: Error = precision("invalid").unwrap_err();
 let details = error.err
-    .downcast_ref::<stablehlo::attributes::enums::EnumParseError>()
+    .downcast_ref::<stablehlo::attributes::EnumParseError>()
     .expect("the parser preserves its typed error");
 assert_eq!(details.enum_name(), "precision");
 assert_eq!(details.spelling(), "invalid");
@@ -109,6 +127,27 @@ assert_eq!(details.spelling(), "invalid");
 Type handles are interned in a context. Handles and values passed together must
 belong to that context. Public raw attributes and type records permit explicit IR
 construction; verify independently constructed records before using them.
+
+## MLIR interoperability
+
+Enable the optional feature to export authored pliron IR as StableHLO MLIR:
+
+```toml
+[dependencies]
+stablehlo = { version = "0.3", features = ["mlir-interop"] }
+```
+
+```rust
+# #[cfg(feature = "mlir-interop")]
+# fn example() -> Result<(), stablehlo::mlir::TextError> {
+use stablehlo::{mlir, pliron::context::Context};
+
+let mut context = Context::new();
+let module = mlir::import(&mut context, "module {}")?;
+let text: String = mlir::export(&context, &module)?;
+# Ok(())
+# }
+```
 
 ## License
 

@@ -3,7 +3,7 @@ use crate::{attributes::*, types::*};
 use pliron::region::Region;
 use pliron::{
     attribute::AttrObj,
-    builtin::attributes::{IntegerAttr, VecAttr},
+    builtin::attributes::{BoolAttr, IntegerAttr, VecAttr},
     builtin::types::{IntegerType, Signedness},
     common_traits::Verify,
     context::{Context, Ptr},
@@ -17,7 +17,7 @@ use pliron::{
 };
 
 /// Gathers windows from a ranked tensor using index vectors and dimension mappings.
-#[pliron_op(name="stablehlo.gather",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_gather_dimension_numbers:GatherDimensionNumbersAttr,stablehlo_gather_slice_sizes:VecAttr))]
+#[pliron_op(name="stablehlo.gather",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_gather_dimension_numbers:GatherDimensionNumbersAttr,stablehlo_gather_slice_sizes:VecAttr,stablehlo_gather_indices_are_sorted:BoolAttr))]
 pub struct GatherOp;
 impl GatherOp {
     /// Creates a `stablehlo.gather` operation with the supplied result type. Uses `operand`, `indices` as operands. Configures the operation with `dimensions`, `slice_sizes`.
@@ -129,7 +129,7 @@ impl Verify for GatherOp {
 }
 
 /// Gathers windows using runtime slice sizes and integer index vectors.
-#[pliron_op(name="stablehlo.dynamic_gather",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dynamic_gather_dimension_numbers:GatherDimensionNumbersAttr))]
+#[pliron_op(name="stablehlo.dynamic_gather",format,interfaces=[pliron::builtin::op_interfaces::OneResultInterface],attributes=(stablehlo_dynamic_gather_dimension_numbers:GatherDimensionNumbersAttr,stablehlo_dynamic_gather_indices_are_sorted:BoolAttr))]
 pub struct DynamicGatherOp;
 impl DynamicGatherOp {
     /// Creates a `stablehlo.dynamic_gather` operation with the supplied result type. Uses `operand`, `indices`, `slice_sizes` as operands. Configures the operation with `dimensions`.
@@ -259,7 +259,7 @@ impl Verify for DynamicGatherOp {
 }
 
 /// Scatters update tensors into input tensors at positions selected by integer indices.
-#[pliron_op(name="stablehlo.scatter",format,attributes=(stablehlo_scatter_dimension_numbers:ScatterDimensionNumbersAttr))]
+#[pliron_op(name="stablehlo.scatter",format,attributes=(stablehlo_scatter_dimension_numbers:ScatterDimensionNumbersAttr,stablehlo_scatter_indices_are_sorted:BoolAttr,stablehlo_scatter_unique_indices:BoolAttr))]
 pub struct ScatterOp;
 impl ScatterOp {
     /// Creates a `stablehlo.scatter` operation. Uses `inputs`, `indices`, `updates` as operands. Configures the operation with `dimensions`.

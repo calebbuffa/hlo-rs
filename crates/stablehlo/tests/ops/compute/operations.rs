@@ -164,7 +164,7 @@ fn dot_general_optional_algorithm_validates_defaults_and_roundtrips() {
         .deref_mut(&ctx)
         .attributes
         .0
-        .remove(&Identifier::new(stablehlo::attributes::keys::DOT_PRECISION));
+        .remove(&Identifier::new("stablehlo_dot_precision"));
     assert!(omitted_default_precision.verify(&ctx).is_ok());
 
     let malformed_precision = DotGeneralOp::new(
@@ -181,7 +181,7 @@ fn dot_general_optional_algorithm_validates_defaults_and_roundtrips() {
         .deref_mut(&ctx)
         .attributes
         .set(
-            Identifier::new(stablehlo::attributes::keys::DOT_PRECISION),
+            Identifier::new("stablehlo_dot_precision"),
             pliron::builtin::attributes::StringAttr::new("DEFAULT".into()),
         );
     assert!(malformed_precision.verify(&ctx).is_err());
@@ -209,7 +209,7 @@ fn dot_general_optional_algorithm_validates_defaults_and_roundtrips() {
         dot_dimensions(&[1], &[0], &[], &[]),
     );
     malformed.get_operation().deref_mut(&ctx).attributes.set(
-        Identifier::new(stablehlo::attributes::keys::DOT_ALGORITHM),
+        Identifier::new("stablehlo_dot_algorithm"),
         pliron::builtin::attributes::StringAttr::new("not an algorithm".into()),
     );
     assert!(malformed.verify(&ctx).is_err());
@@ -238,10 +238,7 @@ fn dot_general_optional_algorithm_validates_defaults_and_roundtrips() {
     function.get_operation().insert_at_back(module_body, &ctx);
 
     let assembly = module.get_operation().disp(&ctx).to_string();
-    assert!(
-        assembly.contains(stablehlo::attributes::keys::DOT_ALGORITHM),
-        "{assembly}"
-    );
+    assert!(assembly.contains("stablehlo_dot_algorithm"), "{assembly}");
     let mut parsed_ctx = Context::new();
     ModuleOp::register(&mut parsed_ctx);
     FuncOp::register(&mut parsed_ctx);

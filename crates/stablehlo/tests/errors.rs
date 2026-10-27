@@ -1,6 +1,6 @@
 use stablehlo::{
     Diagnostic, Error, RecoveryCategory, Result,
-    attributes::{Precision, enums::EnumParseError},
+    attributes::{EnumParseError, Precision},
     integer::{IntegerParseError, IntegerValue},
 };
 

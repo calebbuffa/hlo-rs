@@ -61,11 +61,11 @@ fn optional_hints_use_operand_axes_and_need_not_be_sorted() {
         );
         for (name, absent) in [
             (
-                stablehlo::attributes::keys::DYNAMIC_BROADCAST_KNOWN_EXPANDING,
+                "stablehlo_dynamic_broadcast_known_expanding",
                 expanding.is_none(),
             ),
             (
-                stablehlo::attributes::keys::DYNAMIC_BROADCAST_KNOWN_NONEXPANDING,
+                "stablehlo_dynamic_broadcast_known_nonexpanding",
                 nonexpanding.is_none(),
             ),
         ] {
@@ -126,7 +126,7 @@ fn malformed_optional_attribute_is_not_treated_as_absent() {
         vec![],
     );
     op.get_operation().deref_mut(&ctx).attributes.0.insert(
-        Identifier::new(stablehlo::attributes::keys::DYNAMIC_BROADCAST_KNOWN_EXPANDING),
+        Identifier::new("stablehlo_dynamic_broadcast_known_expanding"),
         Box::new(StringAttr::from("not an integer list")),
     );
     assert!(op.verify(&ctx).is_err());

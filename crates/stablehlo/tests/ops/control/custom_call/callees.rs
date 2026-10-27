@@ -96,7 +96,7 @@ fn malformed_called_computations_are_diagnosed_without_mutation_and_can_be_repai
     ];
     for attribute in malformed {
         call.get_operation().deref_mut(&ctx).attributes.0.insert(
-            Identifier::new(stablehlo::attributes::keys::CUSTOM_CALL_CALLED_COMPUTATIONS),
+            Identifier::new("stablehlo_custom_call_called_computations"),
             attribute,
         );
         let before = call.get_operation().disp(&ctx).to_string();

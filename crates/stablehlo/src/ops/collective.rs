@@ -1,10 +1,12 @@
 use crate::verification::invalid;
 use crate::{attributes::*, types::*};
 use pliron::{
+    attribute::AttrObj,
     builtin::attributes::{BoolAttr, IntegerAttr, VecAttr},
     common_traits::Verify,
     context::{Context, Ptr},
     derive::pliron_op,
+    identifier::Identifier,
     op::Op,
     operation::Operation,
     result::Result,
@@ -18,6 +20,61 @@ use pliron::{
     utils::apint::{APInt, bw},
 };
 
+#[derive(Clone, Copy)]
+enum ReplicaGroups<'a> {
+    Explicit(&'a VecAttr),
+    Mesh(&'a ReplicaGroupMeshAxesAttr),
+}
+
+fn replica_groups<'a>(ir: &'a Operation, key: &'static str) -> Option<ReplicaGroups<'a>> {
+    let value = ir.attributes.0.get(&Identifier::new(key))?;
+    if let Some(groups) = value.downcast_ref::<VecAttr>() {
+        Some(ReplicaGroups::Explicit(groups))
+    } else {
+        value
+            .downcast_ref::<ReplicaGroupMeshAxesAttr>()
+            .map(ReplicaGroups::Mesh)
+    }
+}
+
+macro_rules! mesh_replica_groups {
+    ($($op:ty => $key:literal),* $(,)?) => {$(
+        impl $op {
+            /// Selects mesh-based replica groups in place of explicit device groups.
+            pub fn set_replica_group_mesh_axes(
+                &self,
+                ctx: &mut Context,
+                groups: ReplicaGroupMeshAxesAttr,
+            ) {
+                self.get_operation().deref_mut(ctx).attributes.0.insert(
+                    Identifier::new($key),
+                    Box::new(groups) as AttrObj,
+                );
+            }
+
+            /// Borrows mesh-based groups, if this operation uses that representation.
+            pub fn replica_group_mesh_axes<'a>(
+                &self,
+                ctx: &'a Context,
+            ) -> Option<std::cell::Ref<'a, ReplicaGroupMeshAxesAttr>> {
+                std::cell::Ref::filter_map(self.get_operation().deref(ctx), |op| {
+                    op.attributes.0.get(&Identifier::new($key))?
+                        .downcast_ref::<ReplicaGroupMeshAxesAttr>()
+                }).ok()
+            }
+        }
+    )*};
+}
+
+mesh_replica_groups!(
+    AllGatherOp => "stablehlo_all_gather_replica_groups",
+    AllReduceOp => "stablehlo_all_reduce_replica_groups",
+    ReduceScatterOp => "stablehlo_reduce_scatter_replica_groups",
+    AllToAllOp => "stablehlo_all_to_all_replica_groups",
+    CollectiveBroadcastOp => "stablehlo_collective_broadcast_replica_groups",
+    CollectiveReduceOp => "stablehlo_collective_reduce_replica_groups",
+);
+
 fn replica_ids(group: &VecAttr) -> Option<Vec<i64>> {
     group
         .0
@@ -29,9 +86,25 @@ fn replica_ids(group: &VecAttr) -> Option<Vec<i64>> {
         .collect()
 }
 
-fn valid_replica_groups(groups: Option<&VecAttr>, allow_padding: bool, complete: bool) -> bool {
+fn valid_replica_groups(
+    ctx: &Context,
+    groups: Option<ReplicaGroups<'_>>,
+    allow_padding: bool,
+    complete: bool,
+) -> bool {
     use std::collections::HashSet;
     let Some(groups) = groups else { return false };
+    let groups = match groups {
+        ReplicaGroups::Explicit(groups) => groups,
+        ReplicaGroups::Mesh(groups) => {
+            return groups.verify(ctx).is_ok()
+                && groups
+                    .mesh
+                    .inline
+                    .first()
+                    .is_none_or(|mesh| mesh.replica_group_size(ctx, &groups.axes).is_ok());
+        }
+    };
     let mut all = HashSet::new();
     let mut equal_size = None;
     for item in &groups.0 {
@@ -65,19 +138,33 @@ fn valid_replica_groups(groups: Option<&VecAttr>, allow_padding: bool, complete:
     !complete || (0..all.len()).all(|id| all.contains(&(id as i64)))
 }
 fn global_group_attributes_valid(
-    groups: Option<&VecAttr>,
+    ctx: &Context,
+    groups: Option<ReplicaGroups<'_>>,
     channel: Option<&ChannelHandleAttr>,
     global: Option<&BoolAttr>,
     allow_padding: bool,
     complete: bool,
 ) -> bool {
     let enabled = global.is_some_and(|v| bool::from(v.clone()));
-    valid_replica_groups(groups, allow_padding, complete)
+    valid_replica_groups(ctx, groups, allow_padding, complete)
         && (!enabled
-            || (groups.is_some_and(|g| !g.0.is_empty()) && channel.is_some_and(|c| c.handle > 0)))
+            || (groups.is_some_and(|g| match g {
+                ReplicaGroups::Explicit(g) => !g.0.is_empty(),
+                ReplicaGroups::Mesh(_) => true,
+            }) && channel.is_some_and(|c| c.handle > 0)))
 }
-fn replica_group_size(groups: Option<&VecAttr>) -> Option<i64> {
-    let groups = groups?;
+fn replica_group_size(ctx: &Context, groups: Option<ReplicaGroups<'_>>) -> Option<i64> {
+    let groups = match groups? {
+        ReplicaGroups::Explicit(groups) => groups,
+        ReplicaGroups::Mesh(groups) => {
+            return groups
+                .mesh
+                .inline
+                .first()
+                .and_then(|mesh| mesh.replica_group_size(ctx, &groups.axes).ok())
+                .and_then(|size| i64::try_from(size).ok());
+        }
+    };
     let first = groups.0.first()?.downcast_ref::<VecAttr>()?;
     let replicas = replica_ids(first)?;
     i64::try_from(replicas.iter().filter(|&&id| id >= 0).count()).ok()
@@ -255,8 +342,8 @@ impl Verify for AllGatherOp {
             || !all_ranked(ctx, &ir)
             || self.get_attr_stablehlo_all_gather_dimension(ctx).is_none()
             || !global_group_attributes_valid(
-                self.get_attr_stablehlo_all_gather_replica_groups(ctx)
-                    .as_deref(),
+                ctx,
+                replica_groups(&ir, "stablehlo_all_gather_replica_groups"),
                 self.get_attr_stablehlo_all_gather_channel_handle(ctx)
                     .as_deref(),
                 self.get_attr_stablehlo_all_gather_use_global_device_ids(ctx)
@@ -297,8 +384,8 @@ impl Verify for AllGatherOp {
             }
         }
         if let Some(size) = replica_group_size(
-            self.get_attr_stablehlo_all_gather_replica_groups(ctx)
-                .as_deref(),
+            ctx,
+            replica_groups(&ir, "stablehlo_all_gather_replica_groups"),
         ) {
             let inputs: Vec<_> = ir.operands().map(|v| v.get_type(ctx)).collect();
             let Ok(expected) =
@@ -361,8 +448,8 @@ impl Verify for AllReduceOp {
             || !reducer_contract(ctx, &ir, true, ir.get_num_operands())
             || !same_tensor_shapes(ctx, &ir)
             || !global_group_attributes_valid(
-                self.get_attr_stablehlo_all_reduce_replica_groups(ctx)
-                    .as_deref(),
+                ctx,
+                replica_groups(&ir, "stablehlo_all_reduce_replica_groups"),
                 self.get_attr_stablehlo_all_reduce_channel_handle(ctx)
                     .as_deref(),
                 self.get_attr_stablehlo_all_reduce_use_global_device_ids(ctx)
@@ -421,8 +508,8 @@ impl Verify for ReduceScatterOp {
             || ir.regions().count() != 1
             || !reducer_contract(ctx, &ir, false, ir.get_num_operands())
             || !global_group_attributes_valid(
-                self.get_attr_stablehlo_reduce_scatter_replica_groups(ctx)
-                    .as_deref(),
+                ctx,
+                replica_groups(&ir, "stablehlo_reduce_scatter_replica_groups"),
                 self.get_attr_stablehlo_reduce_scatter_channel_handle(ctx)
                     .as_deref(),
                 self.get_attr_stablehlo_reduce_scatter_use_global_device_ids(ctx)
@@ -450,8 +537,8 @@ impl Verify for ReduceScatterOp {
             return invalid(self, ctx, "reduce_scatter dimension is outside tensor rank");
         }
         if let Some(size) = replica_group_size(
-            self.get_attr_stablehlo_reduce_scatter_replica_groups(ctx)
-                .as_deref(),
+            ctx,
+            replica_groups(&ir, "stablehlo_reduce_scatter_replica_groups"),
         ) {
             let inputs: Vec<_> = ir.operands().map(|v| v.get_type(ctx)).collect();
             let Ok(expected) =
@@ -514,8 +601,8 @@ impl Verify for AllToAllOp {
             || ir.get_num_operands() != ir.get_num_results()
             || !all_ranked(ctx, &ir)
             || !global_group_attributes_valid(
-                self.get_attr_stablehlo_all_to_all_replica_groups(ctx)
-                    .as_deref(),
+                ctx,
+                replica_groups(&ir, "stablehlo_all_to_all_replica_groups"),
                 self.get_attr_stablehlo_all_to_all_channel_handle(ctx)
                     .as_deref(),
                 self.get_attr_stablehlo_all_to_all_use_global_device_ids(ctx)
@@ -561,8 +648,8 @@ impl Verify for AllToAllOp {
             .and_then(|v| v.value().to_string_decimal(true).parse::<i64>().ok())
             .unwrap_or(0);
         if replica_group_size(
-            self.get_attr_stablehlo_all_to_all_replica_groups(ctx)
-                .as_deref(),
+            ctx,
+            replica_groups(&ir, "stablehlo_all_to_all_replica_groups"),
         )
         .is_some_and(|size| size != count)
         {
@@ -639,8 +726,8 @@ impl Verify for CollectiveBroadcastOp {
             || ir.get_num_results() != count
             || !all_ranked(ctx, &ir)
             || !valid_replica_groups(
-                self.get_attr_stablehlo_collective_broadcast_replica_groups(ctx)
-                    .as_deref(),
+                ctx,
+                replica_groups(&ir, "stablehlo_collective_broadcast_replica_groups"),
                 false,
                 false,
             )
@@ -727,8 +814,8 @@ impl Verify for CollectiveReduceOp {
             || !reducer_contract(ctx, &ir, true, count)
             || !same_tensor_shapes(ctx, &ir)
             || !global_group_attributes_valid(
-                self.get_attr_stablehlo_collective_reduce_replica_groups(ctx)
-                    .as_deref(),
+                ctx,
+                replica_groups(&ir, "stablehlo_collective_reduce_replica_groups"),
                 self.get_attr_stablehlo_collective_reduce_channel_handle(ctx)
                     .as_deref(),
                 self.get_attr_stablehlo_collective_reduce_use_global_device_ids(ctx)
@@ -831,8 +918,10 @@ impl Verify for CrossReplicaSumOp {
             || !all_ranked(ctx, &ir)
             || !same_tensor_types(ctx, &ir)
             || !valid_replica_groups(
+                ctx,
                 self.get_attr_stablehlo_cross_replica_sum_replica_groups(ctx)
-                    .as_deref(),
+                    .as_deref()
+                    .map(ReplicaGroups::Explicit),
                 true,
                 true,
             )

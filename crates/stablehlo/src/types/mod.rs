@@ -6,6 +6,12 @@
 //! `TypeHandle::deref` and downcast to their concrete type to read borrowed
 //! dimensions, elements, encodings, and bounds. Integer payload helpers are in
 //! [`crate::integer`]; typed metadata is in [`crate::attributes`].
+//!
+//! Type handles and nested attributes must belong to the supplied context.
+//! Raw records and infallible constructors, including macro-generated `get`
+//! methods, intern the requested representation without verifying it. Run
+//! [`Verify::verify`] before relying on its invariants. A type's representability
+//! here does not imply that every StableHLO operation admits it as an operand.
 use pliron::builtin::types::{IntegerType, Signedness as IntegerSignedness};
 use pliron::r#type::{Type as PlironType, TypedHandle};
 use pliron::{
@@ -584,6 +590,9 @@ impl TensorType {
         Self::get(ctx, dimensions, element).into()
     }
     /// Constructs a ranked tensor from a primitive element type and dimensions.
+    ///
+    /// Despite the method name, `-1` dimensions are preserved as dynamic extents.
+    /// Construction does not verify the shape or element type.
     pub fn static_shape(
         ctx: &Context,
         element: ElementType,

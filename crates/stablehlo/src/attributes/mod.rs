@@ -1,4 +1,14 @@
 //! Native attributes, metadata encodings, and verification helpers for StableHLO.
+//!
+//! Attribute records are public value objects for explicit IR construction.
+//! Their constructors do not imply validity; use [`crate::attributes::verify_attribute`] or
+//! operation verification before consuming externally supplied metadata.
+//! Internal dictionary keys are not part of the public API; prefer the typed
+//! accessors on [`crate::ops`] wrappers.
+//!
+//! ```compile_fail,E0603
+//! use stablehlo::attributes::keys::DOT_ALGORITHM;
+//! ```
 
 use crate::Diagnostic;
 use pliron::{
@@ -41,11 +51,12 @@ pub(crate) fn read_integer_list(attr: &VecAttr) -> Option<Vec<u64>> {
         .collect()
 }
 
-pub mod keys;
+pub(crate) mod keys;
 
 mod affine;
 mod builtin;
-pub mod enums;
+mod enums;
+pub use enums::EnumParseError;
 mod named;
 mod stablehlo;
 pub use affine::*;
@@ -54,7 +65,17 @@ pub use named::*;
 pub use stablehlo::*;
 mod mesh;
 
-/// Checks native attribute containers and builtin type attributes recursively.
+/// Verifies an attribute and recursively checks supported attribute containers.
+///
+/// Traverses arrays, dictionaries, and named-attribute containers, including
+/// nested type attributes. This checks standalone representations, not an
+/// enclosing operation's contextual constraints such as dimension ranks or
+/// precision-list length.
+///
+/// # Errors
+///
+/// Returns the first invalid name, nested type, or attribute diagnostic through
+/// the shared error envelope. The input is not modified.
 pub fn verify_attribute(ctx: &Context, attribute: &AttrObj) -> Result<()> {
     let mut pending = vec![attribute];
     while let Some(attribute) = pending.pop() {
@@ -85,7 +106,15 @@ pub fn verify_attribute(ctx: &Context, attribute: &AttrObj) -> Result<()> {
     Ok(())
 }
 
-/// Checks every attribute in a heterogeneous attribute dictionary.
+/// Verifies every entry in a heterogeneous, identifier-keyed attribute dictionary.
+///
+/// Recursively applies [`verify_attribute`] and checks that entry names are
+/// nonempty. The dictionary is borrowed without modification; validity does
+/// not establish an enclosing operation's attribute constraints.
+///
+/// # Errors
+///
+/// Returns the first invalid entry name or nested attribute diagnostic.
 pub fn verify_attributes(ctx: &Context, attributes: &AttributeDict) -> Result<()> {
     for (name, value) in &attributes.0 {
         if name.to_string().is_empty() {

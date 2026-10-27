@@ -187,7 +187,7 @@ impl Verify for DenseArrayAttr {
     }
 }
 /// Returns whether an element type is supported by dense-array attributes.
-pub fn dense_array_element_type(e: ElementType) -> bool {
+fn dense_array_element_type(e: ElementType) -> bool {
     e == ElementType::I1
         || (e.is_integer() || e.is_float()) && e.bit_width().is_some_and(|w| w % 8 == 0)
 }
@@ -534,15 +534,6 @@ pub fn precision_config(values: Vec<Precision>) -> VecAttr {
             .collect(),
     )
 }
-/// Returns whether an attribute is an index-coordinate tensor.
-pub fn is_index_tensor(attr: &AttrObj) -> bool {
-    attr.downcast_ref::<IndexTensorAttr>().is_some()
-}
-/// Copies the coordinate values when the attribute is an index tensor.
-pub fn index_tensor_values(attr: &AttrObj) -> Option<Vec<i64>> {
-    Some(attr.downcast_ref::<IndexTensorAttr>()?.values.clone())
-}
-
 #[pliron_attr(name = "stablehlo.type_value", format = "`<` $ty `>`")]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Attribute whose value is a native type handle.

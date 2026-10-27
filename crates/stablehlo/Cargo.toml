@@ -1,6 +1,6 @@
 [package]
 name = "stablehlo"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.95"
 license.workspace = true
@@ -12,12 +12,24 @@ include = ["src/**", "README.md", "LICENSE"]
 keywords = ["stablehlo", "mlir", "tensor", "compiler", "pliron"]
 categories = ["compilers", "data-structures"]
 
+[package.metadata.docs.rs]
+features = ["mlir-interop"]
+
 [lib]
 path = "src/lib.rs"
 
 [dependencies]
-pliron = { version = "0.19", default-features = false }
+pliron = { version = "0.20", default-features = false }
+pliron-mlir-interop = { version = "0.1.0", optional = true }
+rustc_apfloat = { version = "0.2.3", optional = true }
 thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
+
+[features]
+default = []
+mlir-interop = ["dep:pliron-mlir-interop", "dep:rustc_apfloat"]
 
 [lints.rust]
 unsafe_code = "forbid"

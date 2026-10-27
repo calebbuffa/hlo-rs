@@ -579,7 +579,7 @@ impl Verify for CompositeOp {
 }
 
 /// Invokes an implementation-specific target with explicit layouts and call metadata.
-#[pliron_op(name="stablehlo.custom_call",format,attributes=(stablehlo_custom_call_target:StringAttr,stablehlo_custom_call_has_side_effect:BoolAttr,stablehlo_custom_call_api_version:IntegerAttr,stablehlo_custom_call_called_computations:VecAttr,stablehlo_custom_call_output_operand_aliases:VecAttr,stablehlo_custom_call_operand_layouts:ArrayOfLayoutAttr,stablehlo_custom_call_result_layouts:ArrayOfLayoutAttr))]
+#[pliron_op(name="stablehlo.custom_call",format,attributes=(stablehlo_custom_call_target:StringAttr,stablehlo_custom_call_has_side_effect:BoolAttr,stablehlo_custom_call_api_version:IntegerAttr,stablehlo_custom_call_called_computations:VecAttr,stablehlo_custom_call_output_operand_aliases:VecAttr,stablehlo_custom_call_operand_layouts:ArrayOfLayoutAttr,stablehlo_custom_call_result_layouts:ArrayOfLayoutAttr,stablehlo_custom_call_result_tilings:ArrayOfTilingAttr))]
 pub struct CustomCallOp;
 static CUSTOM_CALL_BACKEND_CONFIG: std::sync::LazyLock<Identifier> =
     std::sync::LazyLock::new(|| {
@@ -1234,11 +1234,23 @@ impl InfeedOp {
         config: String,
         layout: ArrayOfLayoutAttr,
     ) -> Self {
+        Self::new_variadic(ctx, token, vec![data], config, layout)
+    }
+
+    /// Receives flat tensor results followed by a token, matching upstream MLIR.
+    pub fn new_variadic(
+        ctx: &mut Context,
+        token: Value,
+        mut data: Vec<TypeHandle>,
+        config: String,
+        layout: ArrayOfLayoutAttr,
+    ) -> Self {
+        data.push(TokenType::get(ctx).into());
         let op = Self {
             op: Operation::new(
                 ctx,
                 Self::get_concrete_op_info(),
-                vec![data, TokenType::get(ctx).into()],
+                data,
                 vec![token],
                 vec![],
                 0,
@@ -1253,22 +1265,29 @@ impl Verify for InfeedOp {
     fn verify(&self, ctx: &Context) -> Result<()> {
         let ir = self.get_operation().deref(ctx);
         if ir.get_num_operands() != 1
-            || ir.get_num_results() != 2
+            || ir.get_num_results() == 0
             || !is_token(ctx, ir.get_operand(0).get_type(ctx))
-            || !is_token(ctx, ir.get_result(1).get_type(ctx))
-            || !is_value_type(ctx, ir.get_result(0).get_type(ctx))
+            || !is_token(ctx, ir.get_result(ir.get_num_results() - 1).get_type(ctx))
+            || !ir
+                .results()
+                .take(ir.get_num_results() - 1)
+                .all(|value| is_value_type(ctx, value.get_type(ctx)))
         {
             return invalid(self, ctx, "infeed consumes and returns token with value");
         }
         if let Some(layout) = self.get_attr_stablehlo_infeed_layout(ctx)
             && !layout.layouts.is_empty()
         {
-            let ty = ir.get_result(0).get_type(ctx);
-            let object = ty.deref(ctx);
-            let types = object
-                .downcast_ref::<TupleType>()
-                .map(|tuple| tuple.elements.clone())
-                .unwrap_or_else(|| vec![ty]);
+            let mut types = Vec::new();
+            for value in ir.results().take(ir.get_num_results() - 1) {
+                let ty = value.get_type(ctx);
+                let object = ty.deref(ctx);
+                if let Some(tuple) = object.downcast_ref::<TupleType>() {
+                    types.extend_from_slice(&tuple.elements);
+                } else {
+                    types.push(ty);
+                }
+            }
             if types.len() != layout.layouts.len() {
                 return invalid(self, ctx, "infeed layout count must match data results");
             }
@@ -1298,13 +1317,24 @@ pub struct OutfeedOp;
 impl OutfeedOp {
     /// Creates a `stablehlo.outfeed` operation. Uses `value`, `token` as operands. Configures the operation with `config`.
     pub fn new(ctx: &mut Context, value: Value, token: Value, config: String) -> Self {
+        Self::new_variadic(ctx, vec![value], token, config)
+    }
+
+    /// Sends any number of flat tensor values followed by a token.
+    pub fn new_variadic(
+        ctx: &mut Context,
+        mut values: Vec<Value>,
+        token: Value,
+        config: String,
+    ) -> Self {
         let ty = token.get_type(ctx);
+        values.push(token);
         let op = Self {
             op: Operation::new(
                 ctx,
                 Self::get_concrete_op_info(),
                 vec![ty],
-                vec![value, token],
+                values,
                 vec![],
                 0,
             ),
@@ -1316,10 +1346,13 @@ impl OutfeedOp {
 impl Verify for OutfeedOp {
     fn verify(&self, ctx: &Context) -> Result<()> {
         let ir = self.get_operation().deref(ctx);
-        if ir.get_num_operands() != 2
+        if ir.get_num_operands() == 0
             || ir.get_num_results() != 1
-            || !is_value_type(ctx, ir.get_operand(0).get_type(ctx))
-            || !is_token(ctx, ir.get_operand(1).get_type(ctx))
+            || !ir
+                .operands()
+                .take(ir.get_num_operands() - 1)
+                .all(|value| is_value_type(ctx, value.get_type(ctx)))
+            || !is_token(ctx, ir.get_operand(ir.get_num_operands() - 1).get_type(ctx))
             || !is_token(ctx, ir.get_result(0).get_type(ctx))
         {
             return invalid(
@@ -1333,7 +1366,7 @@ impl Verify for OutfeedOp {
 }
 
 /// Sends a value to another device or the host over a communication channel.
-#[pliron_op(name="stablehlo.send",format,attributes=(stablehlo_send_channel_handle:ChannelHandleAttr,stablehlo_send_is_host_transfer:BoolAttr))]
+#[pliron_op(name="stablehlo.send",format,attributes=(stablehlo_send_channel_handle:ChannelHandleAttr,stablehlo_send_is_host_transfer:BoolAttr,stablehlo_send_source_target_pairs:VecAttr))]
 pub struct SendOp;
 impl SendOp {
     /// Creates a `stablehlo.send` operation. Uses `value`, `token` as operands. Configures the operation with `channel`, `host`.
@@ -1344,13 +1377,25 @@ impl SendOp {
         channel: ChannelHandleAttr,
         host: bool,
     ) -> Self {
+        Self::new_variadic(ctx, vec![value], token, channel, host)
+    }
+
+    /// Sends flat tensor operands and a token over a communication channel.
+    pub fn new_variadic(
+        ctx: &mut Context,
+        mut values: Vec<Value>,
+        token: Value,
+        channel: ChannelHandleAttr,
+        host: bool,
+    ) -> Self {
         let ty = token.get_type(ctx);
+        values.push(token);
         let op = Self {
             op: Operation::new(
                 ctx,
                 Self::get_concrete_op_info(),
                 vec![ty],
-                vec![value, token],
+                values,
                 vec![],
                 0,
             ),
@@ -1363,10 +1408,13 @@ impl SendOp {
 impl Verify for SendOp {
     fn verify(&self, ctx: &Context) -> Result<()> {
         let ir = self.get_operation().deref(ctx);
-        if ir.get_num_operands() != 2
+        if ir.get_num_operands() == 0
             || ir.get_num_results() != 1
-            || !is_value_type(ctx, ir.get_operand(0).get_type(ctx))
-            || !is_token(ctx, ir.get_operand(1).get_type(ctx))
+            || !ir
+                .operands()
+                .take(ir.get_num_operands() - 1)
+                .all(|value| is_value_type(ctx, value.get_type(ctx)))
+            || !is_token(ctx, ir.get_operand(ir.get_num_operands() - 1).get_type(ctx))
             || !is_token(ctx, ir.get_result(0).get_type(ctx))
         {
             return invalid(self, ctx, "send requires data and token and returns token");
@@ -1393,7 +1441,7 @@ impl Verify for SendOp {
 }
 
 /// Receives a value from another device or the host over a communication channel.
-#[pliron_op(name="stablehlo.recv",format,attributes=(stablehlo_recv_channel_handle:ChannelHandleAttr,stablehlo_recv_is_host_transfer:BoolAttr))]
+#[pliron_op(name="stablehlo.recv",format,attributes=(stablehlo_recv_channel_handle:ChannelHandleAttr,stablehlo_recv_is_host_transfer:BoolAttr,stablehlo_recv_source_target_pairs:VecAttr))]
 pub struct RecvOp;
 impl RecvOp {
     /// Creates a `stablehlo.recv` operation. Uses `token` as its operand. Configures the operation with `data`, `channel`, `host`.
@@ -1404,12 +1452,24 @@ impl RecvOp {
         channel: ChannelHandleAttr,
         host: bool,
     ) -> Self {
+        Self::new_variadic(ctx, token, vec![data], channel, host)
+    }
+
+    /// Receives flat tensor results followed by a token.
+    pub fn new_variadic(
+        ctx: &mut Context,
+        token: Value,
+        mut data: Vec<TypeHandle>,
+        channel: ChannelHandleAttr,
+        host: bool,
+    ) -> Self {
         let tok = token.get_type(ctx);
+        data.push(tok);
         let op = Self {
             op: Operation::new(
                 ctx,
                 Self::get_concrete_op_info(),
-                vec![data, tok],
+                data,
                 vec![token],
                 vec![],
                 0,
@@ -1424,10 +1484,13 @@ impl Verify for RecvOp {
     fn verify(&self, ctx: &Context) -> Result<()> {
         let ir = self.get_operation().deref(ctx);
         if ir.get_num_operands() != 1
-            || ir.get_num_results() != 2
+            || ir.get_num_results() == 0
             || !is_token(ctx, ir.get_operand(0).get_type(ctx))
-            || !is_value_type(ctx, ir.get_result(0).get_type(ctx))
-            || !is_token(ctx, ir.get_result(1).get_type(ctx))
+            || !ir
+                .results()
+                .take(ir.get_num_results() - 1)
+                .all(|value| is_value_type(ctx, value.get_type(ctx)))
+            || !is_token(ctx, ir.get_result(ir.get_num_results() - 1).get_type(ctx))
         {
             return invalid(self, ctx, "recv consumes token and returns data and token");
         }

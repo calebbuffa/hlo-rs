@@ -17,7 +17,7 @@ fn axes(rank: usize, batch: &[i64], contract: &[i64]) -> Option<Vec<bool>> {
 }
 
 /// Checks dot-general axis uniqueness, paired extent equality and result rank.
-pub fn validate_dot_general(
+pub(crate) fn validate_dot_general(
     lhs: &[i64],
     rhs: &[i64],
     result: &[i64],
@@ -83,7 +83,7 @@ pub fn validate_dot_general(
 }
 
 /// Verifies that convolution dimension records are complete permutations.
-pub fn valid_convolution_dimensions(rank: usize, dims: &ConvDimensionNumbersAttr) -> bool {
+pub(crate) fn valid_convolution_dimensions(rank: usize, dims: &ConvDimensionNumbersAttr) -> bool {
     fn permutation(rank: usize, first: i64, second: i64, spatial: &[i64]) -> bool {
         if spatial.len() + 2 != rank {
             return false;
@@ -119,7 +119,7 @@ pub fn valid_convolution_dimensions(rank: usize, dims: &ConvDimensionNumbersAttr
 }
 
 /// Verifies a declared reduce dimension list against the operand rank.
-pub fn valid_reduction_dimensions(rank: usize, dimensions: &[u64]) -> bool {
+pub(crate) fn valid_reduction_dimensions(rank: usize, dimensions: &[u64]) -> bool {
     let mut used = vec![false; rank];
     dimensions.iter().all(|&d| {
         let i = d as usize;

@@ -380,8 +380,8 @@ impl Diagnostic {
     }
 }
 
-impl From<crate::attributes::enums::EnumParseError> for pliron::result::Error {
-    fn from(error: crate::attributes::enums::EnumParseError) -> Self {
+impl From<crate::attributes::EnumParseError> for pliron::result::Error {
+    fn from(error: crate::attributes::EnumParseError) -> Self {
         pliron::arg_error_noloc!(error)
     }
 }

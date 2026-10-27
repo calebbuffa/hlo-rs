@@ -46,8 +46,23 @@ pub(crate) fn one_tensor(op: &dyn Op, ctx: &Context, n: usize, same: bool) -> Re
     Ok(())
 }
 
-/// Fast verification entry point. It checks every operation locally and the SSA
-/// use-before-def rule in one linear walk rather than invoking pliron's quadratic verifier.
+/// Verifies a module, function, or region-containing operation and its nested IR.
+///
+/// Checks local operation contracts, referenced types and attributes, region
+/// structure, and SSA scope and dominance using shared indexes and cached type
+/// checks. For a StableHLO module, also resolves function symbols, checks call
+/// signatures, and rejects recursive call graphs. This does not execute the IR
+/// or establish constraints that depend on runtime tensor values.
+///
+/// `root` and all referenced handles must belong to `ctx`. Verification borrows
+/// the IR without modifying it.
+///
+/// # Errors
+///
+/// Returns the first failed structural, type, attribute, symbol, or operation
+/// check through the shared error envelope. Use [`crate::Diagnostic::from_error`]
+/// to inspect a StableHLO diagnostic; another dialect or the framework may
+/// supply a different payload.
 pub fn verify_module_fast(ctx: &Context, root: Ptr<Operation>) -> Result<()> {
     use pliron::linked_list::ContainsLinkedList;
     use std::collections::{HashMap, HashSet};
@@ -328,6 +343,21 @@ pub fn verify_module_fast(ctx: &Context, root: Ptr<Operation>) -> Result<()> {
                                     &*dynop,
                                     ctx,
                                     "custom_call references an unresolved function symbol",
+                                );
+                            }
+                        }
+                    }
+                    if let Some(symbols) = symbols {
+                        for attribute in op.attributes.0.values() {
+                            if let Some(groups) = attribute
+                                .downcast_ref::<crate::attributes::ReplicaGroupMeshAxesAttr>(
+                            ) && let Some(symbol) = groups.mesh.symbol.first()
+                                && !symbols.contains_key(symbol.as_str())
+                            {
+                                return invalid(
+                                    &*dynop,
+                                    ctx,
+                                    "replica groups reference an unresolved mesh symbol",
                                 );
                             }
                         }

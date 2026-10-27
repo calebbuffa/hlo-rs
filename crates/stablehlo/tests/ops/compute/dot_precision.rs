@@ -51,12 +51,12 @@ fn omitted_dot_precision_is_default_but_malformed_present_values_are_not() {
     for (operation, key, verifier) in [
         (
             dot.get_operation(),
-            stablehlo::attributes::keys::COMPUTE_DOT_PRECISION,
+            "stablehlo_compute_dot_precision",
             &dot as &dyn Verify,
         ),
         (
             general.get_operation(),
-            stablehlo::attributes::keys::DOT_PRECISION,
+            "stablehlo_dot_precision",
             &general as &dyn Verify,
         ),
     ] {

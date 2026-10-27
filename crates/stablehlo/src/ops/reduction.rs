@@ -10,6 +10,7 @@ use pliron::{
     common_traits::Verify,
     context::{Context, Ptr},
     derive::pliron_op,
+    identifier::Identifier,
     op::Op,
     operation::Operation,
     result::Result,
@@ -517,7 +518,7 @@ impl Verify for SelectAndScatterOp {
             || ir.operands().any(|v| parts(ctx, v).is_none())
             || parts(ctx, ir.get_result(0)).is_none()
             || read_ints(self.get_attr_stablehlo_reduction_select_window(ctx))
-                .is_none_or(|w| w.is_empty() || w.contains(&0))
+                .is_some_and(|w| w.contains(&0))
         {
             return invalid(
                 self,
@@ -559,19 +560,38 @@ impl Verify for SelectAndScatterOp {
             );
         };
         let (Some(windows), Some(strides), Some(padding_flat)) = (
-            read_ints(self.get_attr_stablehlo_reduction_select_window(ctx)).and_then(|values| {
-                values
-                    .into_iter()
-                    .map(|d| i64::try_from(d).ok())
-                    .collect::<Option<Vec<_>>>()
+            read_ints(self.get_attr_stablehlo_reduction_select_window(ctx))
+                .or_else(|| {
+                    (!ir.attributes
+                        .0
+                        .contains_key(&Identifier::new("stablehlo_reduction_select_window")))
+                    .then(Vec::new)
+                })
+                .and_then(|values| {
+                    values
+                        .into_iter()
+                        .map(|d| i64::try_from(d).ok())
+                        .collect::<Option<Vec<_>>>()
+                }),
+            read_ints(self.get_attr_stablehlo_reduction_select_strides(ctx))
+                .or_else(|| {
+                    (!ir.attributes
+                        .0
+                        .contains_key(&Identifier::new("stablehlo_reduction_select_strides")))
+                    .then(Vec::new)
+                })
+                .and_then(|values| {
+                    values
+                        .into_iter()
+                        .map(|d| i64::try_from(d).ok())
+                        .collect::<Option<Vec<_>>>()
+                }),
+            read_signed_ints(self.get_attr_stablehlo_reduction_select_padding(ctx)).or_else(|| {
+                (!ir.attributes
+                    .0
+                    .contains_key(&Identifier::new("stablehlo_reduction_select_padding")))
+                .then(Vec::new)
             }),
-            read_ints(self.get_attr_stablehlo_reduction_select_strides(ctx)).and_then(|values| {
-                values
-                    .into_iter()
-                    .map(|d| i64::try_from(d).ok())
-                    .collect::<Option<Vec<_>>>()
-            }),
-            read_signed_ints(self.get_attr_stablehlo_reduction_select_padding(ctx)),
         ) else {
             return invalid(self, ctx, "select_and_scatter window attributes invalid");
         };
@@ -623,6 +643,16 @@ impl Verify for SelectAndScatterOp {
 #[pliron_op(name="stablehlo.sort",format,attributes=(stablehlo_reduction_sort_dimension:IntegerAttr,stablehlo_reduction_sort_stable:BoolAttr))]
 pub struct SortOp;
 impl SortOp {
+    /// Sets a signed sorting axis; negative axes count from the last dimension.
+    pub fn with_dimension(self, ctx: &Context, dimension: i64) -> Self {
+        let ty = IntegerType::get(ctx, 64, Signedness::Signless);
+        self.set_attr_stablehlo_reduction_sort_dimension(
+            ctx,
+            IntegerAttr::new(ty, APInt::from_i64(dimension, bw(64))),
+        );
+        self
+    }
+
     /// Creates a `stablehlo.sort` operation with the supplied result types. Uses `inputs` as operands. Configures the operation with `dimension`, `stable`.
     pub fn new(
         ctx: &mut Context,
@@ -671,13 +701,23 @@ impl Verify for SortOp {
         };
         let dim = self
             .get_attr_stablehlo_reduction_sort_dimension(ctx)
-            .and_then(|a| a.value().to_string_decimal(false).parse::<usize>().ok());
+            .and_then(|a| a.value().to_string_decimal(true).parse::<i64>().ok())
+            .or_else(|| {
+                (!ir.attributes
+                    .0
+                    .contains_key(&Identifier::new("stablehlo_reduction_sort_dimension")))
+                .then_some(-1)
+            });
         if dim.is_none_or(|d| {
             ir.get_operand(0)
                 .get_type(ctx)
                 .deref(ctx)
                 .downcast_ref::<crate::types::TensorType>()
-                .is_none_or(|t| d >= t.dimensions.len())
+                .is_none_or(|t| {
+                    i64::try_from(t.dimensions.len())
+                        .ok()
+                        .is_none_or(|rank| d < -rank || d >= rank)
+                })
         }) {
             return invalid(self, ctx, "sort dimension out of range");
         };
