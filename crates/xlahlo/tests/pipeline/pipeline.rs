@@ -22,7 +22,7 @@ use xlahlo::{
         context::{Context, Ptr},
         irfmt::parsers::spaced,
         linked_list::ContainsLinkedList,
-        location::{Located, Location},
+        location::Location,
         op::Op,
         operation::Operation,
         parsable::parse_from_str,

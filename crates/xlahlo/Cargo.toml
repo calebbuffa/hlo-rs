@@ -13,7 +13,7 @@ readme = "README.md"
 include = ["src/**", "README.md", "LICENSE"]
 
 [dependencies]
-pliron = { version = "0.19", default-features = false }
+pliron = { version = "0.20", default-features = false }
 thiserror = "2"
 
 [lints.rust]

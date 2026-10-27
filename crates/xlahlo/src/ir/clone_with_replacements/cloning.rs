@@ -113,7 +113,7 @@ pub(super) fn clone_impl(
         FunctionType::get(ctx, plan.parameters.clone(), vec![plan.result]).into();
     let computation = ComputationOp::new(ctx, name.clone(), signature);
     let attributes = source.get_operation().deref(ctx).attributes.clone();
-    let location = source.get_operation().deref(ctx).loc();
+    let location = source.get_operation().deref(ctx).loc().clone();
     {
         let mut data = computation.get_operation().deref_mut(ctx);
         data.attributes = attributes;

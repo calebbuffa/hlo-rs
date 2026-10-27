@@ -8,7 +8,6 @@ use crate::{
 use pliron::{
     attribute::Attribute,
     context::{Context, Ptr},
-    location::Located,
     operation::Operation,
     result::Result,
     r#type::TypeHandle,
@@ -36,7 +35,7 @@ pub(crate) fn instruction_error(
     mut error: pliron::result::Error,
 ) -> pliron::result::Error {
     if error.loc.is_unknown() {
-        error.loc = op.deref(ctx).loc();
+        error.loc = op.deref(ctx).loc().clone();
     }
     let operation = Operation::get_op_dyn(op, ctx).get_opid().to_string();
     error.err = Box::new(Diagnostic::Operation {

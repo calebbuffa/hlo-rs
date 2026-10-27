@@ -82,25 +82,6 @@ Evaluation exposes explicit known, unknown, and unvisited value states.
 Unsupported operations return errors; the evaluator is not a complete OpenXLA
 execution backend.
 
-## API migration
-
-The Rust API intentionally uses semantic names rather than mirroring C++
-utility classes. Shape operations are available directly under `shape`:
-`Shape::array(...)` becomes `shape::array(...)`. Nonmutating dimension
-transformations use `shape::with_dimension_bound` and
-`shape::with_dynamic_dimension`, not setter names.
-
-Category enums use `ComparisonKind`, `ChannelKind`, `FftKind`, `PaddingKind`,
-`ShardingKind`, and `DimLevelKind`. Genuine type descriptors retain names such
-as `ElementType`, `PrimitiveType`, and `TensorType`. These Rust names do not
-change external dialect attribute identifiers.
-
-For numeric element formats, replace `ElementType::from_hlo_name(text)` with
-`text.parse::<ElementType>()`, and use `as_str()` or `to_string()` instead of
-`hlo_name()`. Parsing is case-sensitive. `PrimitiveType` includes the `Invalid`
-sentinel for representing primitive identifiers, but array construction rejects
-it and every structural primitive.
-
 ## Example
 
 Construct a computation that adds a vector parameter to itself:

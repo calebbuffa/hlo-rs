@@ -5,7 +5,7 @@ use pliron::{
     common_traits::Verify,
     context::Context,
     identifier::Identifier,
-    location::Located,
+    parsable::StreamLocation,
     parsable::{IntoParseResult, Parsable, ParseResult, StateStream},
     printable::{self, Printable},
 };
