@@ -13,7 +13,7 @@ use pliron::{
     value::Value,
 };
 use pliron_arith::shaped;
-use stablehlo::attributes::IndexAttr;
+use pliron_mlir_builtin::attributes::IndexAttr;
 
 /// Terminator of an `iree_linalg_ext` region.
 ///

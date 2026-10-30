@@ -27,8 +27,8 @@ use pliron_iree_linalg_ext::{
     },
 };
 use pliron_linalg::attributes::{I64ArrayAttr, projection_map};
+use pliron_mlir_builtin::{attributes::OpaqueAttr, types::TensorType};
 use pliron_mlir_interop::MlirPrinter;
-use stablehlo::{attributes::OpaqueAttr, types::TensorType};
 
 fn f32(ctx: &Context) -> TypeHandle {
     FP32Type::get(ctx).into()

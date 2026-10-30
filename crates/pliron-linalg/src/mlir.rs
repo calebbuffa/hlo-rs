@@ -46,13 +46,13 @@ use pliron::{
     value::Value,
 };
 use pliron_arith::mlir::print_generic;
+use pliron_mlir_builtin::attributes::{AffineMap, IndexAttr};
 use pliron_mlir_interop::{
     ToMlirOp,
     printers::{
         mlir_dense_array, mlir_string_literal, print_op_location, print_type, print_type_list,
     },
 };
-use stablehlo::attributes::{AffineMap, IndexAttr};
 use std::fmt;
 
 fn untranslatable(message: String) -> pliron::result::Error {
@@ -67,7 +67,7 @@ fn untranslatable(message: String) -> pliron::result::Error {
 pub fn affine_maps_text(ctx: &Context, maps: &[AffineMap]) -> Result<String> {
     let maps = maps
         .iter()
-        .map(|m| stablehlo::mlir::assembly::print_attribute(ctx, m))
+        .map(|m| pliron_mlir_builtin::mlir::print_attribute(ctx, m))
         .collect::<Result<Vec<_>>>()?;
     Ok(format!("[{}]", maps.join(", ")))
 }

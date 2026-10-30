@@ -13,7 +13,7 @@ use pliron::{
     value::Value,
 };
 use pliron_arith::{ops::ConstantOp, shaped};
-use stablehlo::attributes::IndexAttr;
+use pliron_mlir_builtin::attributes::IndexAttr;
 
 /// Checks a ranked float tensor operand of exactly `rank` dimensions.
 fn float_tensor(

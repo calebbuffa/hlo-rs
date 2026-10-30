@@ -13,7 +13,7 @@ use pliron::{
     context::Context,
     r#type::{Type, TypeHandle},
 };
-use stablehlo::types::{
+use pliron_mlir_builtin::types::{
     ElementType, IndexType, TensorType, UnrankedTensorType, VectorType, primitive_element,
 };
 

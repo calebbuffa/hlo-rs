@@ -2,7 +2,10 @@ use super::*;
 use crate::{RecoveryCategory, integer::IntegerValue};
 use pliron::{
     attribute::AttrObj,
-    builtin::attributes::{FPDoubleAttr, FPHalfAttr, FPSingleAttr},
+    builtin::attributes::{
+        DictAttr, FPDoubleAttr, FPHalfAttr, FPSingleAttr, IntegerAttr, StringAttr,
+        TypeAttr as PlironTypeAttr, UnitAttr, VecAttr,
+    },
     builtin::types::IntegerType,
     combine::{Parser, eof},
     identifier::Identifier,
@@ -308,23 +311,13 @@ fn complex_scalar_bit_containers_split_components_without_losing_high_limbs() {
         ty: element.native(&ctx),
         words: vec![0, 3, 2],
     };
-    let (real, imaginary) = complex_bits(&ctx, &bits).unwrap().unwrap();
-    assert_eq!(real.words, vec![0, 1]);
-    assert_eq!(imaginary.words, vec![1, 1]);
     let dense = DenseElementsAttr::splat(tensor(&ctx, &[1], element), Box::new(bits.clone()));
     assert_eq!(
         mlir_dictionary(&ctx, &one(dense)).unwrap(),
         "{value = dense<(18446744073709551616,18446744073709551617)> : tensor<1xcomplex<ui65>>}"
     );
     let error = mlir_dictionary(&ctx, &one(bits)).unwrap_err();
-    assert_eq!(
-        error
-            .err
-            .downcast_ref::<Diagnostic>()
-            .unwrap()
-            .recovery_category(),
-        RecoveryCategory::Unsupported
-    );
+    assert_eq!(recovery(&error), RecoveryCategory::Unsupported);
 }
 
 #[test]
@@ -354,14 +347,7 @@ fn quantized_type_attributes_preserve_parameter_bits_and_storage_syntax() {
         }),
     );
     let error = mlir_dictionary(&ctx, &one(quantized_dense)).unwrap_err();
-    assert_eq!(
-        error
-            .err
-            .downcast_ref::<Diagnostic>()
-            .unwrap()
-            .recovery_category(),
-        RecoveryCategory::Unsupported
-    );
+    assert_eq!(recovery(&error), RecoveryCategory::Unsupported);
     let quantized_ty = TensorType::get(&ctx, vec![2], uniform).into();
     let sparse = SparseElementsAttr {
         ty: quantized_ty,
@@ -386,13 +372,13 @@ fn quantized_type_attributes_preserve_parameter_bits_and_storage_syntax() {
         ]);
         let before = source.clone();
         let error = mlir_dictionary(&ctx, &source).unwrap_err();
-        let diagnostic = error.err.downcast_ref::<Diagnostic>().unwrap();
+        let diagnostic = pliron_mlir_builtin::Diagnostic::from_error(&error).unwrap();
         assert_eq!(
             diagnostic.recovery_category(),
-            RecoveryCategory::Unsupported
+            pliron_mlir_builtin::RecoveryCategory::Unsupported
         );
         assert!(
-            matches!(diagnostic, Diagnostic::UnsupportedSerialization { reason, .. }
+            matches!(diagnostic, pliron_mlir_builtin::Diagnostic::UnsupportedSerialization { reason, .. }
             if reason.contains("numeric elements grammar"))
         );
         assert_eq!(source, before);
@@ -535,14 +521,7 @@ fn dense_complex_pairs_are_not_coerced_to_other_attribute_types() {
         imaginary: ScalarBitsAttr::f32_bits(&ctx, 0),
     };
     let error = mlir_dictionary(&ctx, &one(signaling)).unwrap_err();
-    assert_eq!(
-        error
-            .err
-            .downcast_ref::<Diagnostic>()
-            .unwrap()
-            .recovery_category(),
-        RecoveryCategory::Unsupported
-    );
+    assert_eq!(recovery(&error), RecoveryCategory::Unsupported);
 }
 
 #[test]
@@ -697,14 +676,7 @@ fn malformed_values_fail_with_typed_recovery_and_do_not_mutate_source() {
     });
     let before = source.clone();
     let error = mlir_dictionary(&ctx, &source).unwrap_err();
-    assert_eq!(
-        error
-            .err
-            .downcast_ref::<Diagnostic>()
-            .unwrap()
-            .recovery_category(),
-        RecoveryCategory::InvalidInput
-    );
+    assert_eq!(recovery(&error), RecoveryCategory::InvalidInput);
     assert_eq!(source, before);
     source.insert(
         &Identifier::new("value"),
@@ -746,4 +718,18 @@ fn source_native_assembly_roundtrip_in_fresh_context_keeps_serialization() {
     let parsed = DictAttr::parser(()).skip(eof()).parse(stream).unwrap().0;
     assert_eq!(mlir_dictionary(&fresh, &parsed).unwrap(), expected);
     assert_eq!(mlir_dictionary(&ctx, &source).unwrap(), expected);
+}
+
+fn recovery(error: &pliron::result::Error) -> RecoveryCategory {
+    if let Some(diagnostic) = Diagnostic::from_error(error) {
+        return diagnostic.recovery_category();
+    }
+    match pliron_mlir_builtin::Diagnostic::from_error(error)
+        .expect("serialization failures must carry a structured diagnostic")
+        .recovery_category()
+    {
+        pliron_mlir_builtin::RecoveryCategory::InvalidInput => RecoveryCategory::InvalidInput,
+        pliron_mlir_builtin::RecoveryCategory::Unsupported => RecoveryCategory::Unsupported,
+        category => panic!("unexpected builtin recovery category: {category:?}"),
+    }
 }

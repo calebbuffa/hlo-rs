@@ -1,8 +1,8 @@
 use super::*;
-use crate::types::{ElementType, QuantizedElementType, TensorType, VectorType, primitive_element};
+use crate::types::{ElementType, TensorType, VectorType, primitive_element};
 use pliron::builtin::types::Signedness as IntegerSignedness;
 use pliron::{
-    builtin::attributes::{BoolAttr, StringAttr},
+    builtin::attributes::{BoolAttr, IntegerAttr, StringAttr},
     derive::pliron_attr,
     r#type::Typed,
 };
@@ -208,10 +208,11 @@ fn value_matches(ctx: &Context, ty: TypeHandle, value: &AttrObj) -> bool {
         return TypeHandle::from(v.get_type()) == ty;
     }
     if value.downcast_ref::<StringAttr>().is_some() {
-        return ty
-            .deref(ctx)
-            .downcast_ref::<crate::types::StringType>()
-            .is_some();
+        let element = ty.deref(ctx);
+        return pliron::r#type::type_cast::<dyn crate::interfaces::StringElementInterface>(
+            &*element,
+        )
+        .is_some();
     }
     false
 }
@@ -236,9 +237,9 @@ fn shaped(ctx: &Context, ty: TypeHandle) -> Option<(Vec<i64>, TypeHandle)> {
         let element = t.element.deref(ctx);
         return Some((
             t.dimensions.clone(),
-            element
-                .downcast_ref::<QuantizedElementType>()
-                .map_or(t.element, |q| q.storage),
+            pliron::r#type::type_cast::<dyn crate::interfaces::TensorElementInterface>(&*element)
+                .and_then(|interface| interface.storage_type())
+                .unwrap_or(t.element),
         ));
     }
     ty.downcast_ref::<VectorType>()
@@ -379,40 +380,11 @@ fn verify_shaped_values(
     verify_values(ctx, element, values)?;
     let ty = ty.deref(ctx);
     if let Some(tensor) = ty.downcast_ref::<TensorType>() {
-        let quantized = tensor.element.deref(ctx);
-        if let Some(q) = quantized.downcast_ref::<QuantizedElementType>() {
-            let Some((minimum, maximum)) =
-                q.storage_type(ctx).and_then(ElementType::integer_bounds)
-            else {
-                return verify_err!(
-                    Location::Unknown,
-                    crate::Diagnostic::InvalidAttribute {
-                        attribute: "builtin attribute",
-                        reason: "dense quantized storage must be integer"
-                    }
-                );
-            };
-            let (lower, upper) = q.storage_range();
-            let bounds = lower.unwrap_or(minimum)..=upper.unwrap_or(maximum);
-            for value in &values.0 {
-                let integer = if let Some(bits) = value.downcast_ref::<ScalarBitsAttr>() {
-                    bits.integer_value(ctx).and_then(|value| value.to_i128())
-                } else if let Some(value) = value.downcast_ref::<IntegerAttr>() {
-                    let signed = !value.get_type().deref(ctx).is_unsigned();
-                    value.value().to_string_decimal(signed).parse::<i128>().ok()
-                } else {
-                    None
-                };
-                if integer.is_none_or(|value| !bounds.contains(&value)) {
-                    return verify_err!(
-                        Location::Unknown,
-                        crate::Diagnostic::InvalidAttribute {
-                            attribute: "builtin attribute",
-                            reason: "quantized element is outside its declared storage range"
-                        }
-                    );
-                }
-            }
+        let element = tensor.element.deref(ctx);
+        if let Some(interface) =
+            pliron::r#type::type_cast::<dyn crate::interfaces::TensorElementInterface>(&*element)
+        {
+            interface.verify_elements(ctx, values)?;
         }
     }
     Ok(())
@@ -470,36 +442,6 @@ pub struct OpaqueAttr {
     pub syntax: StringAttr,
 }
 #[pliron_attr(
-    name = "stablehlo.enum",
-    format = "`<` $dialect `,` $name `,` $value `>`"
-)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// Named dialect enum value stored as text.
-pub struct EnumAttr {
-    /// Dialect that defines the enumeration.
-    pub dialect: StringAttr,
-    /// Enumeration name.
-    pub name: StringAttr,
-    /// Selected enumeration spelling.
-    pub value: StringAttr,
-}
-impl Verify for EnumAttr {
-    fn verify(&self, _: &Context) -> Result<()> {
-        if self.dialect.as_str() == "stablehlo"
-            && !enums::is_valid(self.name.as_str(), self.value.as_str())
-        {
-            return verify_err!(
-                Location::Unknown,
-                crate::Diagnostic::InvalidAttribute {
-                    attribute: "builtin attribute",
-                    reason: "unknown StableHLO enum spelling"
-                }
-            );
-        }
-        Ok(())
-    }
-}
-#[pliron_attr(
     name = "stablehlo.strided_layout",
     format = "`<` `[` vec($offset, CharSpace(`,`)) `]` `,` `[` vec($strides, CharSpace(`,`)) `]` `>`"
 )]
@@ -524,15 +466,6 @@ impl Verify for StridedLayoutAttr {
         }
         Ok(())
     }
-}
-/// Packages precision values in the vector representation used by operation attributes.
-pub fn precision_config(values: Vec<Precision>) -> VecAttr {
-    VecAttr::new(
-        values
-            .into_iter()
-            .map(|precision| Box::new(precision) as AttrObj)
-            .collect(),
-    )
 }
 #[pliron_attr(name = "stablehlo.type_value", format = "`<` $ty `>`")]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -627,5 +560,43 @@ impl Verify for ComplexAttr {
         }
         self.real.verify(ctx)?;
         self.imaginary.verify(ctx)
+    }
+}
+
+#[pliron_attr(
+    name = "stablehlo.index_tensor",
+    format = "`<` `[` vec($values, CharSpace(`,`)) `]` `>`"
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Flattened signed index values; consumers impose coordinate or device constraints.
+pub struct IndexTensorAttr {
+    /// Flattened index values, including backend-defined tiling sentinels.
+    pub values: Vec<i64>,
+}
+impl Verify for IndexTensorAttr {
+    fn verify(&self, _ctx: &Context) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Ordered list of 64-bit integers: strides, dilations, permutations,
+/// dimension lists, and tile sizes.
+///
+/// Dynamic entries of `linalg.pack` static tile sizes are [`i64::MIN`], as in MLIR.
+#[pliron_attr(
+    name = "linalg.i64_array",
+    format = "`[` vec($values, CharSpace(`,`)) `]`",
+    verifier = "succ"
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct I64ArrayAttr {
+    /// Values in order.
+    pub values: Vec<i64>,
+}
+
+impl I64ArrayAttr {
+    /// Creates the attribute.
+    pub fn new(values: Vec<i64>) -> Self {
+        Self { values }
     }
 }

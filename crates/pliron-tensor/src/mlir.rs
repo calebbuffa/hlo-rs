@@ -11,9 +11,9 @@ use pliron::{
     result::Result,
 };
 use pliron_arith::mlir::print_generic;
-use pliron_linalg::attributes::I64ArrayAttr;
+use pliron_mlir_builtin::attributes::I64ArrayAttr;
+use pliron_mlir_builtin::attributes::IndexAttr;
 use pliron_mlir_interop::{ToMlirOp, printers::mlir_dense_array};
-use stablehlo::attributes::IndexAttr;
 use std::fmt;
 
 fn untranslatable(message: &str) -> pliron::result::Error {

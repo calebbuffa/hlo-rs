@@ -13,7 +13,7 @@ use pliron::{
     r#type::{TypeHandle, Typed},
     value::Value,
 };
-use stablehlo::attributes::IndexAttr;
+use pliron_mlir_builtin::attributes::IndexAttr;
 
 /// Fails unless the region yields exactly one `i1` (any signedness, as MLIR's `isInteger(1)`).
 fn yields_i1(ctx: &Context, op: Ptr<Operation>, types: &[TypeHandle]) -> Result<()> {

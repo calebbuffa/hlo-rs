@@ -20,7 +20,7 @@ Native [pliron](https://crates.io/crates/pliron) operations for the MLIR
 Operands may be scalars, ranked or unranked tensors, or vectors. Elementwise
 operations require matching container shapes, as upstream MLIR does. Scalar,
 tensor, and vector types are shared with the
-[`stablehlo`](https://crates.io/crates/stablehlo) crate so that values flow
+[`pliron-mlir-builtin`](https://crates.io/crates/pliron-mlir-builtin) crate so that values flow
 between dialects without conversion.
 
 Fast-math flags (`#arith.fastmath`), integer overflow flags
@@ -61,6 +61,8 @@ assert_eq!(add.lhs(ctx), args[0]);
 This is a low-level block example. For compiler input, place the block's
 operations in a function inside a `stablehlo::ops::ModuleOp`, then export the
 complete module with `stablehlo::mlir::export(ctx, &module)`.
+For that composition, add `stablehlo` 0.4 with `mlir-interop` explicitly;
+arith itself does not depend on StableHLO.
 
 ## MLIR interoperability
 

@@ -23,7 +23,7 @@ use pliron::{
     value::Value,
 };
 use pliron_arith::shaped;
-use stablehlo::attributes::{AffineExpr, AffineMap};
+use pliron_mlir_builtin::attributes::{AffineExpr, AffineMap};
 
 fn allocate<T: Op>(ctx: &mut Context, make: fn(Ptr<Operation>) -> T, operands: Vec<Value>) -> T {
     let result = operands.last().map(|v| v.get_type(ctx));

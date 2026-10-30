@@ -8,8 +8,8 @@
 pub use pliron;
 /// Shared error envelope and result type used by fallible IR APIs.
 pub use pliron::result::{Error, Result};
-/// The StableHLO crate that supplies the shared scalar, tensor, and vector types.
-pub use stablehlo;
+/// Shared MLIR builtin scalar, tensor, and vector representations.
+pub use pliron_mlir_builtin;
 pub mod attributes;
 mod error;
 /// Structured diagnostics and recovery categories for failed dialect operations.

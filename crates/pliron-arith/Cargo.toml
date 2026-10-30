@@ -14,13 +14,13 @@ categories = ["compilers", "data-structures"]
 
 [dependencies]
 pliron = { version = "0.20", default-features = false }
-stablehlo = { version = "0.3.0" }
+pliron-mlir-builtin = { version = "0.1.0", path = "../pliron-mlir-builtin" }
 thiserror = "2"
 pliron-mlir-interop = { version = "0.1.0", optional = true }
 
 [features]
 default = []
-mlir-interop = ["dep:pliron-mlir-interop", "stablehlo/mlir-interop"]
+mlir-interop = ["dep:pliron-mlir-interop", "pliron-mlir-builtin/mlir-interop"]
 
 [package.metadata.docs.rs]
 features = ["mlir-interop"]

@@ -1,7 +1,7 @@
 # pliron-tensor
 
 Native [pliron](https://crates.io/crates/pliron) operations for MLIR's `tensor`
-dialect. Tensor types and encodings reuse `stablehlo`, rather than introducing
+dialect. Tensor types reuse `pliron-mlir-builtin`, rather than introducing
 another tensor representation.
 
 The crate represents all 21 operations in the pinned `TensorOps.td`:
@@ -44,7 +44,7 @@ Construct a statically shaped, uninitialized tensor:
 use pliron_tensor::{
     ops::EmptyOp,
     pliron::{builtin::types::FP32Type, common_traits::Verify, context::Context},
-    stablehlo::types::TensorType,
+    pliron_mlir_builtin::types::TensorType,
 };
 
 let ctx = &mut Context::new();
@@ -69,7 +69,9 @@ pliron-tensor = { version = "0.1", features = ["mlir-interop"] }
 ```
 
 Compose these operations in a `stablehlo::ops::ModuleOp` and export the complete
-module with `stablehlo::mlir::export(ctx, &module)`. Export rejects unknown,
+module with `stablehlo::mlir::export(ctx, &module)` after explicitly adding
+`stablehlo` 0.4 with `mlir-interop`. Tensor has no StableHLO or linalg dependency.
+Export rejects unknown,
 mistyped, or misplaced attributes. This is textual export, not an inverse
 importer or a native MLIR binding.
 

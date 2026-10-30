@@ -13,7 +13,7 @@ use pliron::{
     r#type::TypeHandle,
 };
 use pliron_linalg::attributes::{ElementwiseKind, IteratorType, WinogradFmr};
-use pliron_linalg::{ops::*, stablehlo::types::TensorType};
+use pliron_linalg::{ops::*, pliron_mlir_builtin::types::TensorType};
 use pliron_mlir_interop::MlirPrinter;
 
 fn emit(ctx: &Context, op: &impl Op) {

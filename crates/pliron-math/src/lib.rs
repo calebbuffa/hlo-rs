@@ -16,3 +16,6 @@ pub use error::{Diagnostic, RecoveryCategory};
 #[cfg(feature = "mlir-interop")]
 pub mod mlir;
 pub mod ops;
+
+/// Shared MLIR builtin types and attributes.
+pub use pliron_arith::pliron_mlir_builtin;

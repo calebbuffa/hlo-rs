@@ -25,7 +25,7 @@ iterator-type and integer-array attributes.
   offsets, output sizes and padding.
 
 Operations use destination-passing style on ranked tensors from the
-[`stablehlo`](https://crates.io/crates/stablehlo) crate: each result has the
+[`pliron-mlir-builtin`](https://crates.io/crates/pliron-mlir-builtin) crate: each result has the
 type of its `outs` operand. Upstream also accepts memrefs; this crate models
 tensors only. Region bodies are built from
 [`pliron-arith`](https://crates.io/crates/pliron-arith) operations.
@@ -55,7 +55,7 @@ use pliron_iree_linalg_ext::{
         common_traits::Verify, context::Context, op::Op,
     },
     pliron_arith::{attributes::CmpFPredicate, ops::CmpFOp},
-    stablehlo::types::TensorType,
+    pliron_mlir_builtin::types::TensorType,
 };
 
 let ctx = &mut Context::new();
@@ -88,7 +88,7 @@ names. These are export paths, not an IREE assembly parser.
 
 `attributes::SplitReductionMappingAttr` represents
 `#iree_linalg_ext.split_reduction_mapping<N>` and checks mapping-list invariants.
-Configuration dictionaries can contain `stablehlo::attributes::OpaqueAttr` for
+Configuration dictionaries can contain `pliron_mlir_builtin::attributes::OpaqueAttr` for
 foreign IREE attributes, such as GPU lowering configurations; their syntax is
 validated by the shared MLIR exporter.
 

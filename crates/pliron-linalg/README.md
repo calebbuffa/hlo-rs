@@ -27,8 +27,8 @@ covering the upstream operation catalog for frontend emission.
   `cast` attributes where upstream defines them.
 
 Operations use destination-passing style on ranked tensors from the
-[`stablehlo`](https://crates.io/crates/stablehlo) crate: each result has the
-type of its `outs` operand. Indexing maps reuse the `stablehlo` affine-map
+[`pliron-mlir-builtin`](https://crates.io/crates/pliron-mlir-builtin) crate: each result has the
+type of its `outs` operand. Indexing maps reuse the `pliron-mlir-builtin` affine-map
 attribute. Operations whose computation is implied by their name store no body
 region.
 
@@ -56,7 +56,7 @@ use pliron_linalg::{
         basic_block::BasicBlock, builtin::types::FP32Type,
         common_traits::Verify, context::Context, op::Op,
     },
-    stablehlo::types::TensorType,
+    pliron_mlir_builtin::types::TensorType,
 };
 
 let ctx = &mut Context::new();
@@ -90,14 +90,14 @@ pliron-linalg = { version = "0.1", features = ["mlir-interop"] }
 
 Export rejects attributes whose types or owning operation do not match,
 including attributes consumed by custom assembly instead of printed in a
-dictionary. See the repository's Micra-to-IREE compatibility guide for the
-revision-pinned native parser/verifier, compilation, and numerical gate. This
-crate does not implement memref forms or local bufferization/tiling passes.
+dictionary. This crate does not implement memref forms or local
+bufferization/tiling passes.
 
 Compose operations inside a `stablehlo::ops::ModuleOp` and export with
 `stablehlo::mlir::export(ctx, &module)`. The upstream parser reconstructs implicit
 named-operation bodies; the local pliron representation stores no such body.
-This crate does not import linalg assembly.
+This crate does not import linalg assembly. Add `stablehlo` 0.4 explicitly if
+using its module/function containers; linalg has no StableHLO dependency.
 
 ## API contract
 

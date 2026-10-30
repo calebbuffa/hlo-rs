@@ -19,19 +19,71 @@ mod scatter;
 mod sort;
 mod winograd;
 
-pliron::dict_key!(#[doc = "Storage key for attention indexing maps."] ATTENTION_MAPS, "iree_attention_indexing_maps");
-pliron::dict_key!(#[doc = "Storage key for attention decomposition hints."] ATTENTION_CONFIG, "iree_attention_decomposition_config");
-pliron::dict_key!(#[doc = "Storage key for online-attention indexing maps."] ONLINE_ATTENTION_MAPS, "iree_online_attention_indexing_maps");
-pliron::dict_key!(#[doc = "Storage key for online-attention decomposition hints."] ONLINE_ATTENTION_CONFIG, "iree_online_attention_decomposition_config");
-pliron::dict_key!(#[doc = "Storage key for the Winograd input output-tile size."] WINOGRAD_INPUT_TILE, "iree_winograd_input_transform_output_tile_size");
-pliron::dict_key!(#[doc = "Storage key for the Winograd input kernel size."] WINOGRAD_INPUT_KERNEL, "iree_winograd_input_transform_kernel_size");
-pliron::dict_key!(#[doc = "Storage key for the Winograd input image dimensions."] WINOGRAD_INPUT_DIMS, "iree_winograd_input_transform_image_dimensions");
-pliron::dict_key!(#[doc = "Storage key for the Winograd filter output-tile size."] WINOGRAD_FILTER_TILE, "iree_winograd_filter_transform_output_tile_size");
-pliron::dict_key!(#[doc = "Storage key for the Winograd filter kernel size."] WINOGRAD_FILTER_KERNEL, "iree_winograd_filter_transform_kernel_size");
-pliron::dict_key!(#[doc = "Storage key for the Winograd filter kernel dimensions."] WINOGRAD_FILTER_DIMS, "iree_winograd_filter_transform_kernel_dimensions");
-pliron::dict_key!(#[doc = "Storage key for the Winograd output output-tile size."] WINOGRAD_OUTPUT_TILE, "iree_winograd_output_transform_output_tile_size");
-pliron::dict_key!(#[doc = "Storage key for the Winograd output kernel size."] WINOGRAD_OUTPUT_KERNEL, "iree_winograd_output_transform_kernel_size");
-pliron::dict_key!(#[doc = "Storage key for the Winograd output image dimensions."] WINOGRAD_OUTPUT_DIMS, "iree_winograd_output_transform_image_dimensions");
+pliron::dict_key!(
+    #[doc = "Storage key for attention indexing maps."]
+    ATTENTION_MAPS,
+    "iree_attention_indexing_maps"
+);
+pliron::dict_key!(
+    #[doc = "Storage key for attention decomposition hints."]
+    ATTENTION_CONFIG,
+    "iree_attention_decomposition_config"
+);
+pliron::dict_key!(
+    #[doc = "Storage key for online-attention indexing maps."]
+    ONLINE_ATTENTION_MAPS,
+    "iree_online_attention_indexing_maps"
+);
+pliron::dict_key!(
+    #[doc = "Storage key for online-attention decomposition hints."]
+    ONLINE_ATTENTION_CONFIG,
+    "iree_online_attention_decomposition_config"
+);
+pliron::dict_key!(
+    #[doc = "Storage key for the Winograd input output-tile size."]
+    WINOGRAD_INPUT_TILE,
+    "iree_winograd_input_transform_output_tile_size"
+);
+pliron::dict_key!(
+    #[doc = "Storage key for the Winograd input kernel size."]
+    WINOGRAD_INPUT_KERNEL,
+    "iree_winograd_input_transform_kernel_size"
+);
+pliron::dict_key!(
+    #[doc = "Storage key for the Winograd input image dimensions."]
+    WINOGRAD_INPUT_DIMS,
+    "iree_winograd_input_transform_image_dimensions"
+);
+pliron::dict_key!(
+    #[doc = "Storage key for the Winograd filter output-tile size."]
+    WINOGRAD_FILTER_TILE,
+    "iree_winograd_filter_transform_output_tile_size"
+);
+pliron::dict_key!(
+    #[doc = "Storage key for the Winograd filter kernel size."]
+    WINOGRAD_FILTER_KERNEL,
+    "iree_winograd_filter_transform_kernel_size"
+);
+pliron::dict_key!(
+    #[doc = "Storage key for the Winograd filter kernel dimensions."]
+    WINOGRAD_FILTER_DIMS,
+    "iree_winograd_filter_transform_kernel_dimensions"
+);
+pliron::dict_key!(
+    #[doc = "Storage key for the Winograd output output-tile size."]
+    WINOGRAD_OUTPUT_TILE,
+    "iree_winograd_output_transform_output_tile_size"
+);
+pliron::dict_key!(
+    #[doc = "Storage key for the Winograd output kernel size."]
+    WINOGRAD_OUTPUT_KERNEL,
+    "iree_winograd_output_transform_kernel_size"
+);
+pliron::dict_key!(
+    #[doc = "Storage key for the Winograd output image dimensions."]
+    WINOGRAD_OUTPUT_DIMS,
+    "iree_winograd_output_transform_image_dimensions"
+);
 
 pub use attention::{AttentionOp, CustomOp, ExpReductionOp, OnlineAttentionOp};
 pub use fft::FftOp;

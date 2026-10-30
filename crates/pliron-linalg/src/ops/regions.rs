@@ -18,7 +18,7 @@ use pliron::{
     value::Value,
 };
 use pliron_arith::shaped;
-use stablehlo::attributes::{AffineMap, IndexAttr};
+use pliron_mlir_builtin::attributes::{AffineMap, IndexAttr};
 
 /// Body of a structured operation: receives the entry block and its arguments
 /// and returns the values to yield.

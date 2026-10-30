@@ -123,13 +123,13 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "clienthlo"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libm",
  "num-complex",
  "pliron",
  "serde_json",
- "stablehlo 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "stablehlo",
  "thiserror",
 ]
 
@@ -331,8 +331,8 @@ name = "pliron-arith"
 version = "0.1.0"
 dependencies = [
  "pliron",
+ "pliron-mlir-builtin",
  "pliron-mlir-interop",
- "stablehlo 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "thiserror",
 ]
 
@@ -358,9 +358,10 @@ dependencies = [
  "pliron",
  "pliron-arith",
  "pliron-linalg",
+ "pliron-mlir-builtin",
  "pliron-mlir-interop",
  "pliron-tensor",
- "stablehlo 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "stablehlo",
  "thiserror",
 ]
 
@@ -371,8 +372,8 @@ dependencies = [
  "pliron",
  "pliron-arith",
  "pliron-math",
+ "pliron-mlir-builtin",
  "pliron-mlir-interop",
- "stablehlo 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "thiserror",
 ]
 
@@ -399,6 +400,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pliron-mlir-builtin"
+version = "0.1.0"
+dependencies = [
+ "pliron",
+ "pliron-mlir-interop",
+ "thiserror",
+]
+
+[[package]]
 name = "pliron-mlir-interop"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -415,9 +425,8 @@ version = "0.1.0"
 dependencies = [
  "pliron",
  "pliron-arith",
- "pliron-linalg",
+ "pliron-mlir-builtin",
  "pliron-mlir-interop",
- "stablehlo 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "thiserror",
 ]
 
@@ -579,24 +588,13 @@ dependencies = [
 
 [[package]]
 name = "stablehlo"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "pliron",
+ "pliron-mlir-builtin",
  "pliron-mlir-interop",
  "rustc_apfloat",
  "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "stablehlo"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22bd4950d02c1fc4c35825f6ffa155e3f1d19223311f2fd606784d2cc057d9e1"
-dependencies = [
- "pliron",
- "pliron-mlir-interop",
- "rustc_apfloat",
  "thiserror",
 ]
 

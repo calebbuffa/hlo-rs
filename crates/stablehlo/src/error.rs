@@ -386,12 +386,6 @@ impl From<crate::attributes::EnumParseError> for pliron::result::Error {
     }
 }
 
-impl From<crate::integer::IntegerParseError> for pliron::result::Error {
-    fn from(error: crate::integer::IntegerParseError) -> Self {
-        pliron::arg_error_noloc!(error)
-    }
-}
-
 impl From<Diagnostic> for pliron::result::Error {
     fn from(diagnostic: Diagnostic) -> Self {
         match diagnostic.recovery_category() {

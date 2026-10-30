@@ -5,7 +5,7 @@ use pliron::{
     value::Value,
 };
 use pliron_arith::shaped;
-use pliron_linalg::attributes::I64ArrayAttr;
+use pliron_mlir_builtin::attributes::I64ArrayAttr;
 
 operation!(
     ReshapeOp,

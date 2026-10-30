@@ -14,8 +14,8 @@ use pliron::{
 use pliron_arith::{attributes::CmpFPredicate, ops::CmpFOp, shaped};
 use pliron_iree_linalg_ext::ops::*;
 use pliron_linalg::attributes::{IteratorType, projection_map};
+use pliron_mlir_builtin::types::TensorType;
 use pliron_mlir_interop::MlirPrinter;
-use stablehlo::types::TensorType;
 
 fn tensor(ctx: &Context, dims: &[i64]) -> TypeHandle {
     TensorType::from_element(ctx, FP32Type::get(ctx).into(), dims.to_vec())

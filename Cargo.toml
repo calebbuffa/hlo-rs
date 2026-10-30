@@ -8,6 +8,7 @@ members = [
     "crates/pliron-iree-linalg-ext",
     "crates/pliron-linalg",
     "crates/pliron-math",
+    "crates/pliron-mlir-builtin",
     "crates/pliron-tensor",
 ]
 

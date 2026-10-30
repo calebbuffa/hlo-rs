@@ -10,7 +10,7 @@ use pliron::{
     r#type::{TypeHandle, Typed},
     value::Value,
 };
-use pliron_linalg::attributes::I64ArrayAttr;
+use pliron_mlir_builtin::attributes::I64ArrayAttr;
 
 /// Mixed offsets, sizes, and strides, one entry per source/destination axis.
 #[derive(Clone)]

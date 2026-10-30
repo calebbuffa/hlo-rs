@@ -17,7 +17,7 @@ The crate covers every `math` operation as of the LLVM revision IREE pins
 - integer: `absi`, `ctlz`, `cttz`, `ctpop`, `ipowi`
 
 Operands may be scalars, ranked or unranked tensors, or vectors, using the
-types shared with `pliron-arith` and `stablehlo`. Floating-point operations
+types supplied by `pliron-mlir-builtin` and shared with `pliron-arith`. Floating-point operations
 that support fast-math flags carry `#arith.fastmath`, defaulting to `none`.
 Classification and integer operations do not accept those flags.
 
@@ -67,7 +67,8 @@ pliron-math = { version = "0.1", features = ["mlir-interop"] }
 Compose these operations with `pliron-arith` inside linalg regions or function
 bodies. Export a complete `stablehlo::ops::ModuleOp` using
 `stablehlo::mlir::export(ctx, &module)`, then parse and compile it with IREE.
-The StableHLO types are re-exported as `pliron_math::pliron_arith::stablehlo`.
+Shared types are re-exported through `pliron_math::pliron_mlir_builtin`.
+StableHLO 0.4 is an optional application-level composition choice, not a dependency.
 
 ## API contract
 

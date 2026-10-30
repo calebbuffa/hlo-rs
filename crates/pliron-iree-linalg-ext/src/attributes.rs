@@ -1,7 +1,7 @@
 //! Attributes owned by `iree_linalg_ext`.
 //!
 //! Operation attributes reuse [`pliron_linalg::attributes`] (indexing maps,
-//! iterator types, and integer arrays) and [`stablehlo::attributes`]
+//! iterator types, and integer arrays) and [`pliron_mlir_builtin::attributes`]
 //! (scalars and affine maps).
 
 use crate::Diagnostic;

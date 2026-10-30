@@ -4,7 +4,7 @@ mod enums;
 
 pub use enums::{ElementwiseArity, ElementwiseKind, IteratorType, TypeFn, WinogradFmr};
 use pliron::derive::pliron_attr;
-use stablehlo::attributes::{AffineExpr, AffineMap};
+use pliron_mlir_builtin::attributes::{AffineExpr, AffineMap};
 
 /// Iterator types of a structured operation, one per loop dimension.
 #[pliron_attr(
@@ -47,27 +47,8 @@ impl IndexingMapsAttr {
     }
 }
 
-/// Ordered list of 64-bit integers: strides, dilations, permutations,
-/// dimension lists, and tile sizes.
-///
-/// Dynamic entries of `linalg.pack` static tile sizes are [`i64::MIN`], as in MLIR.
-#[pliron_attr(
-    name = "linalg.i64_array",
-    format = "`[` vec($values, CharSpace(`,`)) `]`",
-    verifier = "succ"
-)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct I64ArrayAttr {
-    /// Values in order.
-    pub values: Vec<i64>,
-}
-
-impl I64ArrayAttr {
-    /// Creates the attribute.
-    pub fn new(values: Vec<i64>) -> Self {
-        Self { values }
-    }
-}
+/// Shared integer-array storage used by multiple dialects.
+pub use pliron_mlir_builtin::attributes::I64ArrayAttr;
 
 /// Operand conversion of a named or contraction operation.
 #[pliron_attr(name = "linalg.type_fn", format = "$value", verifier = "succ")]

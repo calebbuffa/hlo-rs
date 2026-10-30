@@ -33,11 +33,11 @@ use pliron_linalg::{
     attributes::{I64ArrayAttr, IndexingMapsAttr, IteratorTypesAttr},
     mlir::affine_maps_text,
 };
+use pliron_mlir_builtin::attributes::IndexAttr;
 use pliron_mlir_interop::{
     ToMlirAttr, ToMlirOp,
     printers::{mlir_dense_array, print_attr},
 };
-use stablehlo::attributes::IndexAttr;
 use std::fmt;
 
 mod custom;

@@ -2,14 +2,6 @@ use super::*;
 use pliron::{builtin::attributes::StringAttr, derive::pliron_attr};
 use std::collections::HashSet;
 
-/// Native operation storage for dialect-qualified discardable attributes.
-///
-/// Store a [`NamedAttributesAttr`] under this identifier when attaching source
-/// metadata that cannot be represented by pliron's identifier-keyed dictionary.
-/// This is the native container key, not an attribute name emitted in MLIR.
-pub const DISCARDABLE_ATTRIBUTES: pliron::identifier::Identifier =
-    pliron::identifier::Identifier::new(crate::attributes::keys::DISCARDABLE_ATTRIBUTES);
-
 /// String-keyed source attributes, whose names need not be pliron identifiers.
 ///
 /// MLIR dictionary names and dialect-qualified discardable operation attributes

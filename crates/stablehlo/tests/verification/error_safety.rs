@@ -205,7 +205,10 @@ fn affine_division_by_zero_returns_a_typed_error() {
     let error = expression
         .evaluate_at(&[9], &[])
         .expect_err("zero divisor must be rejected");
-    assert!(matches!(diagnostic(&error), Diagnostic::DivisionByZero));
+    assert!(matches!(
+        pliron_mlir_builtin::Diagnostic::from_error(&error),
+        Some(pliron_mlir_builtin::Diagnostic::DivisionByZero)
+    ));
 }
 
 #[test]

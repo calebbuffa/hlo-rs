@@ -181,10 +181,10 @@ pub(super) fn print(
         }
         if let Some(mut text) = text {
             // Declarative assembly knows the attribute types and elides them.
-            if let Some(value) = attr.downcast_ref::<stablehlo::attributes::IndexAttr>() {
+            if let Some(value) = attr.downcast_ref::<pliron_mlir_builtin::attributes::IndexAttr>() {
                 text = value.value.to_string();
             } else if let Some(value) =
-                attr.downcast_ref::<pliron_linalg::attributes::I64ArrayAttr>()
+                attr.downcast_ref::<pliron_mlir_builtin::attributes::I64ArrayAttr>()
             {
                 text = format!(
                     "[{}]",

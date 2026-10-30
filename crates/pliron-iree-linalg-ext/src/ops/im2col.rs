@@ -14,7 +14,7 @@ use pliron::{
     value::Value,
 };
 use pliron_arith::shaped;
-use pliron_linalg::attributes::I64ArrayAttr;
+use pliron_mlir_builtin::attributes::I64ArrayAttr;
 
 /// Static marker for a dynamic entry in a mixed static/dynamic index list.
 pub const DYNAMIC_INDEX: i64 = i64::MIN;

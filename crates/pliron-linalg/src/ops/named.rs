@@ -21,7 +21,7 @@ use pliron::{
     r#type::Typed,
     value::Value,
 };
-use stablehlo::attributes::{AffineBinaryOp, AffineExpr, AffineMap};
+use pliron_mlir_builtin::attributes::{AffineBinaryOp, AffineExpr, AffineMap};
 
 const P: IteratorType = IteratorType::Parallel;
 const R: IteratorType = IteratorType::Reduction;

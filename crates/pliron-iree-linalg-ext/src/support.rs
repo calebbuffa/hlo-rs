@@ -16,7 +16,7 @@ use pliron::{
 };
 use pliron_arith::shaped;
 use pliron_linalg::ops::BodyBuilder;
-use stablehlo::{
+use pliron_mlir_builtin::{
     attributes::{AffineExpr, AffineMap},
     types::TensorType,
 };

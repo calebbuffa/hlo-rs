@@ -106,7 +106,7 @@ pub fn property(
         }
         "arith_constant_value" => (
             "value",
-            Some(stablehlo::mlir::assembly::print_attribute(ctx, attr)?),
+            Some(pliron_mlir_builtin::mlir::print_attribute(ctx, attr)?),
         ),
         _ => return Ok(None),
     }))

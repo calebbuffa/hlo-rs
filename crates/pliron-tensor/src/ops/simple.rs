@@ -10,8 +10,8 @@ use pliron::{
     value::Value,
 };
 use pliron_arith::shaped;
-use pliron_linalg::attributes::I64ArrayAttr;
-use stablehlo::attributes::IndexAttr;
+use pliron_mlir_builtin::attributes::I64ArrayAttr;
+use pliron_mlir_builtin::attributes::IndexAttr;
 
 macro_rules! conversion {
     ($ty:ident, $name:literal, $bitcast:literal) => {
@@ -472,10 +472,10 @@ fn gather_scatter(
     let base = base_ty.deref(ctx);
     let slice = slice_ty.deref(ctx);
     let base = base
-        .downcast_ref::<stablehlo::types::TensorType>()
+        .downcast_ref::<pliron_mlir_builtin::types::TensorType>()
         .ok_or_else(|| fail(ctx, op, "expected tensor"))?;
     let slice = slice
-        .downcast_ref::<stablehlo::types::TensorType>()
+        .downcast_ref::<pliron_mlir_builtin::types::TensorType>()
         .ok_or_else(|| fail(ctx, op, "expected tensor"))?;
     ensure(
         ctx,

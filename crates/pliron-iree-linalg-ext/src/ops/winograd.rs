@@ -11,8 +11,8 @@ use pliron::{
     r#type::{TypeHandle, Typed},
     value::Value,
 };
-use pliron_linalg::attributes::I64ArrayAttr;
-use stablehlo::attributes::IndexAttr;
+use pliron_mlir_builtin::attributes::I64ArrayAttr;
+use pliron_mlir_builtin::attributes::IndexAttr;
 
 /// Tile parameters shared by the three transforms.
 struct Params {

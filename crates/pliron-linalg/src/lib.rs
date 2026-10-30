@@ -12,8 +12,8 @@ pub use pliron::result::{Error, Result};
 pub use pliron_arith;
 /// The `math` dialect used in structured-op bodies.
 pub use pliron_math;
-/// The StableHLO crate that supplies tensor types and affine maps.
-pub use stablehlo;
+/// Shared MLIR builtin tensor types and affine maps.
+pub use pliron_mlir_builtin;
 pub mod attributes;
 mod error;
 /// Structured diagnostics and recovery categories for failed dialect operations.

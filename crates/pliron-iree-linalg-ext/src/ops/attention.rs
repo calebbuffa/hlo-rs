@@ -16,7 +16,7 @@ use pliron::{
 };
 use pliron_arith::shaped;
 use pliron_linalg::attributes::{I64ArrayAttr, IndexingMapsAttr, IteratorType, IteratorTypesAttr};
-use stablehlo::{attributes::AffineMap, types::TensorType};
+use pliron_mlir_builtin::{attributes::AffineMap, types::TensorType};
 
 /// Verifies attention operands, indexing maps, and the score region.
 ///

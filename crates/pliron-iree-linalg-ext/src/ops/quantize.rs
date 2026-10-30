@@ -14,7 +14,7 @@ use pliron::{
 };
 use pliron_arith::{ops::ConstantOp, shaped};
 use pliron_linalg::attributes::IndexingMapsAttr;
-use stablehlo::attributes::{AffineMap, DenseElementsAttr, IndexAttr, ScalarBitsAttr};
+use pliron_mlir_builtin::attributes::{AffineMap, DenseElementsAttr, IndexAttr, ScalarBitsAttr};
 
 /// Inclusive `[min, max]` range of quantized values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

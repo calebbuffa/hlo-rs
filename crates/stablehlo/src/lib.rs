@@ -15,6 +15,7 @@ pub use pliron::result::{Error, Result};
 
 /// StableHLO attributes, including operation metadata and sparse encodings.
 pub mod attributes;
+mod builtin_extensions;
 mod error;
 /// Structured errors and recovery guidance emitted by this crate.
 pub use error::{Diagnostic, RecoveryCategory};

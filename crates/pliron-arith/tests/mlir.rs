@@ -16,7 +16,7 @@ use pliron::{
 use pliron_arith::{
     attributes::{FastMathFlags, RoundingMode},
     ops::{AddFOp, AddIOp, DivSIOp, ExtUIOp},
-    stablehlo::types::TensorType,
+    pliron_mlir_builtin::types::TensorType,
 };
 use pliron_mlir_interop::MlirPrinter;
 
@@ -70,7 +70,7 @@ fn shared_attributes_print() {
 fn complete_operation_catalog() {
     use pliron::builtin::types::{BF16Type, FP16Type};
     use pliron_arith::{attributes::*, ops::*, shaped};
-    use stablehlo::attributes::IndexAttr;
+    use pliron_mlir_builtin::attributes::IndexAttr;
     let ctx = &mut Context::new();
     for (dims, vector) in [
         (None, None),
@@ -83,7 +83,7 @@ fn complete_operation_catalog() {
             None => ty,
             Some(dims) => match vector {
                 None => TensorType::from_element(ctx, ty, dims.clone()),
-                Some(scalable) => stablehlo::types::VectorType::get(
+                Some(scalable) => pliron_mlir_builtin::types::VectorType::get(
                     ctx,
                     ty,
                     dims.clone(),

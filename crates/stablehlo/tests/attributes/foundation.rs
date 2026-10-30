@@ -413,8 +413,8 @@ fn affine_product_divisor_signed_rounding_and_argument_rules() {
         .validate(1, 0)
         .expect_err("non-affine product must fail");
     assert!(matches!(
-        error.err.downcast_ref::<stablehlo::Diagnostic>(),
-        Some(stablehlo::Diagnostic::NonAffineProduct)
+        error.err.downcast_ref::<pliron_mlir_builtin::Diagnostic>(),
+        Some(pliron_mlir_builtin::Diagnostic::NonAffineProduct)
     ));
     assert!(
         AffineExpr::binary(FloorDiv, AffineExpr::constant(3), dim.clone())
@@ -433,8 +433,8 @@ fn affine_product_divisor_signed_rounding_and_argument_rules() {
         .evaluate_at(&[1], &[])
         .expect_err("division by zero must fail");
     assert!(matches!(
-        error.err.downcast_ref::<stablehlo::Diagnostic>(),
-        Some(stablehlo::Diagnostic::DivisionByZero)
+        error.err.downcast_ref::<pliron_mlir_builtin::Diagnostic>(),
+        Some(pliron_mlir_builtin::Diagnostic::DivisionByZero)
     ));
     let map = AffineMap {
         dimensions: 1,

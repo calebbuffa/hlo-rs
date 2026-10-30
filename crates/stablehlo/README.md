@@ -12,6 +12,19 @@ shape/type rules, `verification` for complete-IR checks, and `integer` and
 module provides interoperability. `pliron`, `Error`, and `Result` are re-exported
 so callers use the same framework types as the dialect.
 
+MLIR builtin types, attributes, and integer payloads are implemented in
+`pliron-mlir-builtin` and re-exported at the existing `stablehlo::types`,
+`stablehlo::attributes`, and `stablehlo::integer` paths. These are re-exports
+of the same Rust types, not duplicate representations. Internal registration
+identifiers and pliron text remain unchanged. StableHLO-specific quantization,
+tokens, futures, bounds, and sparse-encoding checks remain here.
+
+Errors originating in those shared representations carry
+`pliron_mlir_builtin::Diagnostic`; dialect-owned errors continue to carry
+`stablehlo::Diagnostic`. Inspect the owning diagnostic's `from_error` helper.
+The `mlir-interop` feature enables the shared textual printers transitively;
+default builds still require no native MLIR/IREE installation.
+
 Use typed operation accessors instead of internal dictionary storage names.
 Parser state, verifier implementation modules, enum-spelling machinery, and
 constructor adapters are private. Enum parsing errors are exposed as
@@ -134,7 +147,7 @@ Enable the optional feature to export authored pliron IR as StableHLO MLIR:
 
 ```toml
 [dependencies]
-stablehlo = { version = "0.3", features = ["mlir-interop"] }
+stablehlo = { version = "0.4", features = ["mlir-interop"] }
 ```
 
 ```rust

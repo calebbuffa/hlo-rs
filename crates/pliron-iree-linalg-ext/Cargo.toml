@@ -16,20 +16,23 @@ categories = ["compilers", "data-structures"]
 pliron = { version = "0.20", default-features = false }
 pliron-arith = { version = "0.1.0", path = "../pliron-arith" }
 pliron-linalg = { version = "0.1.0", path = "../pliron-linalg" }
-stablehlo = { version = "0.3.0" }
+pliron-mlir-builtin = { version = "0.1.0", path = "../pliron-mlir-builtin" }
 thiserror = "2"
 pliron-mlir-interop = { version = "0.1.0", optional = true }
 
 [dev-dependencies]
+stablehlo = { version = "0.4.0", path = "../stablehlo" }
 pliron-tensor = { version = "0.1.0", path = "../pliron-tensor" }
 
 [features]
 default = []
 mlir-interop = [
+    "pliron-mlir-builtin/mlir-interop",
     "dep:pliron-mlir-interop",
     "pliron-arith/mlir-interop",
     "pliron-linalg/mlir-interop",
     "pliron-tensor/mlir-interop",
+    "stablehlo/mlir-interop",
 ]
 
 [package.metadata.docs.rs]

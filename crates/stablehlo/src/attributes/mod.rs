@@ -12,16 +12,16 @@
 
 use crate::Diagnostic;
 use pliron::{
-    attribute::{AttrObj, AttributeDict},
+    attribute::AttrObj,
     builtin::{
-        attributes::{DictAttr, IntegerAttr, TypeAttr as PlironTypeAttr, VecAttr},
+        attributes::{IntegerAttr, VecAttr},
         types::{IntegerType, Signedness},
     },
     common_traits::Verify,
     context::Context,
     location::Location,
     result::Result,
-    r#type::{TypeHandle, Typed},
+    r#type::TypeHandle,
     utils::apint::{APInt, bw},
     verify_err,
 };
@@ -53,80 +53,20 @@ pub(crate) fn read_integer_list(attr: &VecAttr) -> Option<Vec<u64>> {
 
 pub(crate) mod keys;
 
-mod affine;
-mod builtin;
+mod dialect_support;
 mod enums;
 pub use enums::EnumParseError;
-mod named;
 mod stablehlo;
-pub use affine::*;
-pub use builtin::*;
-pub use named::*;
+pub use dialect_support::*;
+/// Shared builtin attributes, preserving their Rust identity.
+pub use pliron_mlir_builtin::attributes::*;
 pub use stablehlo::*;
 mod mesh;
 
-/// Verifies an attribute and recursively checks supported attribute containers.
+/// Native operation storage for dialect-qualified discardable attributes.
 ///
-/// Traverses arrays, dictionaries, and named-attribute containers, including
-/// nested type attributes. This checks standalone representations, not an
-/// enclosing operation's contextual constraints such as dimension ranks or
-/// precision-list length.
-///
-/// # Errors
-///
-/// Returns the first invalid name, nested type, or attribute diagnostic through
-/// the shared error envelope. The input is not modified.
-pub fn verify_attribute(ctx: &Context, attribute: &AttrObj) -> Result<()> {
-    let mut pending = vec![attribute];
-    while let Some(attribute) = pending.pop() {
-        if let Some(array) = attribute.downcast_ref::<VecAttr>() {
-            pending.extend(array.0.iter());
-        } else if let Some(dictionary) = attribute.downcast_ref::<DictAttr>() {
-            for (name, value) in &dictionary.0.0 {
-                if name.to_string().is_empty() {
-                    return verify_err!(
-                        Location::Unknown,
-                        crate::Diagnostic::InvalidAttribute {
-                            attribute: "attribute dictionary",
-                            reason: "empty attribute name"
-                        }
-                    );
-                }
-                pending.push(value);
-            }
-        } else if let Some(dictionary) = attribute.downcast_ref::<NamedAttributesAttr>() {
-            dictionary.validate_names()?;
-            pending.extend(dictionary.values.0.iter());
-        } else if let Some(ty) = attribute.downcast_ref::<PlironTypeAttr>() {
-            ty.get_type(ctx).deref(ctx).verify(ctx)?;
-        } else {
-            attribute.verify(ctx)?;
-        }
-    }
-    Ok(())
-}
-
-/// Verifies every entry in a heterogeneous, identifier-keyed attribute dictionary.
-///
-/// Recursively applies [`verify_attribute`] and checks that entry names are
-/// nonempty. The dictionary is borrowed without modification; validity does
-/// not establish an enclosing operation's attribute constraints.
-///
-/// # Errors
-///
-/// Returns the first invalid entry name or nested attribute diagnostic.
-pub fn verify_attributes(ctx: &Context, attributes: &AttributeDict) -> Result<()> {
-    for (name, value) in &attributes.0 {
-        if name.to_string().is_empty() {
-            return verify_err!(
-                Location::Unknown,
-                crate::Diagnostic::InvalidAttribute {
-                    attribute: "attribute dictionary",
-                    reason: "empty attribute name"
-                }
-            );
-        }
-        verify_attribute(ctx, value)?;
-    }
-    Ok(())
-}
+/// Store a [`NamedAttributesAttr`] under this identifier when attaching source
+/// metadata that cannot be represented by pliron's identifier-keyed dictionary.
+/// This is the native container key, not an attribute name emitted in MLIR.
+pub const DISCARDABLE_ATTRIBUTES: pliron::identifier::Identifier =
+    pliron::identifier::Identifier::new(crate::attributes::keys::DISCARDABLE_ATTRIBUTES);

@@ -13,7 +13,7 @@ pub use pliron_arith;
 /// The `linalg` dialect that supplies indexing-map and iterator attributes.
 pub use pliron_linalg;
 /// The StableHLO crate that supplies tensor types and affine maps.
-pub use stablehlo;
+pub use pliron_mlir_builtin;
 pub mod attributes;
 mod error;
 /// Structured diagnostics and recovery categories for failed dialect operations.

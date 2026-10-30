@@ -1,6 +1,6 @@
 [package]
 name = "clienthlo"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.95"
 license.workspace = true
@@ -14,7 +14,7 @@ categories = ["compilers", "data-structures"]
 
 [dependencies]
 pliron = { version = "0.20", default-features = false }
-stablehlo = { version = "0.3.0" }
+stablehlo = { version = "0.4.0", path = "../stablehlo" }
 thiserror = "2"
 
 [features]

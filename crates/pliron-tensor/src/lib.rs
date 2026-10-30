@@ -11,7 +11,7 @@ pub use pliron::result::{Error, Result};
 /// Arithmetic operations for tensor region bodies.
 pub use pliron_arith;
 /// Shared tensor types, including ranked and unranked tensors.
-pub use stablehlo;
+pub use pliron_mlir_builtin;
 
 mod error;
 /// Structured diagnostics and recovery categories.

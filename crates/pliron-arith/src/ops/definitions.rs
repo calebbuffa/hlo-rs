@@ -18,7 +18,7 @@ use pliron::{
     r#type::{TypeHandle, Typed},
     value::Value,
 };
-use stablehlo::{
+use pliron_mlir_builtin::{
     attributes::{DenseElementsAttr, IndexAttr, ScalarBitsAttr},
     integer::IntegerValue,
     types::ElementType,

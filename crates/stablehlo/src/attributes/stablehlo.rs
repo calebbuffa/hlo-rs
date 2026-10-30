@@ -528,22 +528,6 @@ impl Verify for ReplicaGroupMeshAxesAttr {
 }
 
 #[pliron_attr(
-    name = "stablehlo.index_tensor",
-    format = "`<` `[` vec($values, CharSpace(`,`)) `]` `>`"
-)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// Flattened signed index values; consumers impose coordinate or device constraints.
-pub struct IndexTensorAttr {
-    /// Flattened index values, including backend-defined tiling sentinels.
-    pub values: Vec<i64>,
-}
-impl Verify for IndexTensorAttr {
-    fn verify(&self, _ctx: &Context) -> Result<()> {
-        Ok(())
-    }
-}
-
-#[pliron_attr(
     name = "stablehlo.layout",
     format = "`<` `[` vec($minor_to_major, CharSpace(`,`)) `]` `>`"
 )]

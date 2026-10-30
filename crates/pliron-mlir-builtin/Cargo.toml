@@ -1,0 +1,28 @@
+[package]
+name = "pliron-mlir-builtin"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "Apache-2.0 AND Apache-2.0 WITH LLVM-exception"
+description = "MLIR builtin types and attributes for pliron, with optional textual MLIR interop"
+repository = "https://github.com/calebbuffa/pliron-dialects"
+documentation = "https://docs.rs/pliron-mlir-builtin"
+readme = "README.md"
+include = ["src/**", "tests/**", "README.md", "LICENSE*", "NOTICE"]
+keywords = ["mlir", "builtin", "compiler", "pliron", "ir"]
+categories = ["compilers", "data-structures"]
+
+[dependencies]
+pliron = { version = "0.20", default-features = false }
+thiserror = "2"
+pliron-mlir-interop = { version = "0.1.0", optional = true }
+
+[features]
+default = []
+mlir-interop = ["dep:pliron-mlir-interop"]
+
+[package.metadata.docs.rs]
+features = ["mlir-interop"]
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -16,7 +16,7 @@ use pliron::{
 use pliron_linalg::{
     attributes::TypeFn,
     ops::{BroadcastOp, Conv2DNhwcHwcfOp, MatmulOp, PackOp, TileSize},
-    stablehlo::types::TensorType,
+    pliron_mlir_builtin::types::TensorType,
 };
 use pliron_mlir_interop::MlirPrinter;
 

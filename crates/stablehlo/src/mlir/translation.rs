@@ -25,7 +25,7 @@ macro_rules! types {
         #[type_interface_impl]
         impl ToMlirType for $ty {
             fn to_mlir(&self, ctx: &Context, _state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
-                write!(f, "{}", printer::mlir_type(ctx, self.get_self_handle(ctx))?)?;
+                write!(f, "{}", printer::dialect_type_text(ctx, self.get_self_handle(ctx))?)?;
                 Ok(())
             }
         }
@@ -33,19 +33,8 @@ macro_rules! types {
 }
 
 types!(
-    IndexType,
-    FloatType,
-    ComplexType,
-    TensorType,
-    UnrankedTensorType,
     TokenType,
-    TupleType,
-    FunctionType,
-    VectorType,
-    BufferType,
-    UnrankedBufferType,
     FutureType,
-    NoneType,
     StringType,
     WitnessType,
     QuantizedElementType,
@@ -60,7 +49,7 @@ macro_rules! attributes {
         #[attr_interface_impl]
         impl ToMlirAttr for $ty {
             fn to_mlir(&self, ctx: &Context, _state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
-                write!(f, "{}", printer::mlir_attribute(ctx, self)?)?;
+                write!(f, "{}", printer::dialect_attribute_text(ctx, self)?)?;
                 Ok(())
             }
         }
@@ -68,22 +57,7 @@ macro_rules! attributes {
 }
 
 attributes!(
-    ScalarBitsAttr,
-    IndexAttr,
-    DenseArrayAttr,
-    DenseElementsAttr,
-    SparseElementsAttr,
-    BytesAttr,
-    TypedStringAttr,
-    SymbolRefAttr,
-    OpaqueAttr,
     EnumAttr,
-    StridedLayoutAttr,
-    crate::attributes::TypeAttr,
-    ComplexAttr,
-    NamedAttributesAttr,
-    AffineMap,
-    IntegerSet,
     DotDimensionNumbersAttr,
     GatherDimensionNumbersAttr,
     ScatterDimensionNumbersAttr,
@@ -106,7 +80,6 @@ attributes!(
     MeshAttr,
     MeshReferenceAttr,
     ReplicaGroupMeshAxesAttr,
-    IndexTensorAttr,
     LayoutAttr,
     ArrayOfLayoutAttr,
     TilingAttr,

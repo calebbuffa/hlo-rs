@@ -17,7 +17,7 @@ use pliron_math::{
     ops::{AbsFOp, FmaOp},
     pliron_arith::{
         attributes::FastMathFlags,
-        stablehlo::{self, types::TensorType},
+        pliron_mlir_builtin::{self, types::TensorType},
     },
 };
 use pliron_mlir_interop::MlirPrinter;
@@ -80,14 +80,14 @@ fn complete_operation_catalog() {
                     TensorType::from_element(ctx, integer, dims.clone()),
                 ),
                 Some(scalable) => (
-                    stablehlo::types::VectorType::get(
+                    pliron_mlir_builtin::types::VectorType::get(
                         ctx,
                         float,
                         dims.clone(),
                         vec![scalable; dims.len()],
                     )
                     .into(),
-                    stablehlo::types::VectorType::get(
+                    pliron_mlir_builtin::types::VectorType::get(
                         ctx,
                         integer,
                         dims.clone(),
