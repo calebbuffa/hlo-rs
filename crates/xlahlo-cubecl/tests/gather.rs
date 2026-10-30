@@ -9,7 +9,7 @@ use pliron::{
 use xlahlo::{
     attributes::{Axes, GatherDimensionNumbers, Index, IndexFlags},
     ops::{ComputationOp, ReturnOp, control::ParameterOp, movement::GatherOp},
-    shape::Shape,
+    shape,
     types::ElementType,
 };
 use xlahlo_cubecl::{BufferRole, ModuleCompiler};
@@ -26,9 +26,9 @@ fn gather_module(
     slice_sizes: Vec<i64>,
 ) -> Ptr<Operation> {
     xlahlo::register(ctx);
-    let operand_type = Shape::array(ctx, element_type, operand_shape).unwrap();
-    let indices_type = Shape::array(ctx, index_type, indices_shape).unwrap();
-    let output_type = Shape::array(ctx, element_type, output_shape).unwrap();
+    let operand_type = shape::array(ctx, element_type, operand_shape).unwrap();
+    let indices_type = shape::array(ctx, index_type, indices_shape).unwrap();
+    let output_type = shape::array(ctx, element_type, output_shape).unwrap();
     let signature =
         FunctionType::get(ctx, vec![operand_type, indices_type], vec![output_type]).into();
     let module = ModuleOp::new(ctx, Identifier::new("gather"));

@@ -4,19 +4,23 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 license.workspace = true
-description = "CubeCL IR lowering for optimized xlahlo programs"
-keywords = ["xla", "hlo", "cubecl", "compiler"]
+description = "CubeCL IR lowering for xlahlo programs"
+keywords = ["xla", "hlo", "cubecl", "compiler", "gpu"]
 categories = ["compilers"]
-repository = "https://github.com/calebbuffa/hlo-rs"
+repository = "https://github.com/calebbuffa/pliron-dialects"
 documentation = "https://docs.rs/xlahlo-cubecl"
 readme = "README.md"
-include = ["src/**", "README.md"]
+include = ["src/**", "README.md", "LICENSE"]
 
 [dependencies]
-pliron = { version = "0.19", default-features = false }
+pliron = { version = "0.20", default-features = false }
 thiserror = "2"
-xlahlo = { version = "0.1.0", path = "../xlahlo" }
+xlahlo = { version = "0.1.0" }
 cubecl-ir = { version = "=0.11.0", default-features = false }
-cubecl-core = { version = "=0.11.0", default-features = false, features = ["std"] }
-cubecl-runtime = { version = "=0.11.0", default-features = false, features = ["std"] }
+cubecl-core = { version = "=0.11.0", default-features = false, features = [
+    "std",
+] }
+cubecl-runtime = { version = "=0.11.0", default-features = false, features = [
+    "std",
+] }
 rustc_apfloat = "0.2"

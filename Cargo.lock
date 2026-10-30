@@ -129,7 +129,7 @@ dependencies = [
  "num-complex",
  "pliron",
  "serde_json",
- "stablehlo",
+ "stablehlo 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "thiserror",
 ]
 
@@ -327,6 +327,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pliron-arith"
+version = "0.1.0"
+dependencies = [
+ "pliron",
+ "pliron-mlir-interop",
+ "stablehlo 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "thiserror",
+]
+
+[[package]]
 name = "pliron-derive"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -342,6 +352,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "pliron-iree-linalg-ext"
+version = "0.1.0"
+dependencies = [
+ "pliron",
+ "pliron-arith",
+ "pliron-linalg",
+ "pliron-mlir-interop",
+ "pliron-tensor",
+ "stablehlo 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "thiserror",
+]
+
+[[package]]
+name = "pliron-linalg"
+version = "0.1.0"
+dependencies = [
+ "pliron",
+ "pliron-arith",
+ "pliron-math",
+ "pliron-mlir-interop",
+ "stablehlo 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "thiserror",
+]
+
+[[package]]
 name = "pliron-llvm"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -354,6 +389,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pliron-math"
+version = "0.1.0"
+dependencies = [
+ "pliron",
+ "pliron-arith",
+ "pliron-mlir-interop",
+ "thiserror",
+]
+
+[[package]]
 name = "pliron-mlir-interop"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -361,6 +406,18 @@ checksum = "08d58884474a71b0e9216d69be5c99dd1b945541f38a3acd76046d7c192a991a"
 dependencies = [
  "pliron",
  "pliron-llvm",
+ "thiserror",
+]
+
+[[package]]
+name = "pliron-tensor"
+version = "0.1.0"
+dependencies = [
+ "pliron",
+ "pliron-arith",
+ "pliron-linalg",
+ "pliron-mlir-interop",
+ "stablehlo 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "thiserror",
 ]
 
@@ -528,6 +585,18 @@ dependencies = [
  "pliron-mlir-interop",
  "rustc_apfloat",
  "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "stablehlo"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22bd4950d02c1fc4c35825f6ffa155e3f1d19223311f2fd606784d2cc057d9e1"
+dependencies = [
+ "pliron",
+ "pliron-mlir-interop",
+ "rustc_apfloat",
  "thiserror",
 ]
 

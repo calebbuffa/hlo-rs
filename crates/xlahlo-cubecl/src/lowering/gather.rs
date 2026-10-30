@@ -1,7 +1,24 @@
 use super::*;
 
+fn complex_component(element: ElementType) -> Option<ElementType> {
+    match element {
+        ElementType::C64 => Some(ElementType::F32),
+        ElementType::C128 => Some(ElementType::F64),
+        _ => None,
+    }
+}
+
+/// Physical `[real, imaginary]` offsets of logical complex element `logical`.
+fn component_indices(scope: &Scope, logical: Value) -> (Value, Value) {
+    let two = scope.const_usize(2);
+    let real = scope.register_with_result(&IMulOp::new(scope.ctx_mut(), logical, two));
+    let one = scope.const_usize(1);
+    let imag = scope.register_with_result(&IAddOp::new(scope.ctx_mut(), real, one));
+    (real, imag)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct GatherSpec {
+pub(super) struct GatherSpec {
     offset_dims: Vec<usize>,
     collapsed_slice_dims: Vec<usize>,
     start_index_map: Vec<usize>,
@@ -22,16 +39,19 @@ fn gather_axes(values: &[i64], attribute: &str) -> Result<Vec<usize>, PlanError>
         .collect()
 }
 
-fn gather_spec(
+pub(super) fn gather_spec(
     context: &Context,
     operation: Ptr<Operation>,
     operand: &BufferDescriptor,
     indices: &BufferDescriptor,
     result: &BufferDescriptor,
 ) -> Result<GatherSpec, PlanError> {
-    if !matches!(indices.element_type, ElementType::S32 | ElementType::U32) {
+    if !matches!(
+        indices.element_type,
+        ElementType::S32 | ElementType::U32 | ElementType::S64 | ElementType::U64
+    ) {
         return Err(PlanError::UnsupportedFeature(
-            "Gather currently requires S32 or U32 indices".into(),
+            "Gather currently requires S32, U32, S64, or U64 indices".into(),
         ));
     }
     let gather = Operation::get_op::<GatherOp>(operation, context)
@@ -85,6 +105,15 @@ fn gather_spec(
         ));
     }
     let result_elements = result.num_elements()?;
+    if result_elements > 0
+        && (result_elements > u32::MAX as usize
+            || operand.num_elements()? > u32::MAX as usize
+            || indices.num_elements()? > u32::MAX as usize)
+    {
+        return Err(PlanError::UnsupportedFeature(
+            "Gather requires wide kernel addressing".into(),
+        ));
+    }
     for (&extent, &slice_size) in operand.shape.iter().zip(&slice_sizes) {
         let extent = usize::try_from(extent).map_err(|_| PlanError::InvalidShape)?;
         if slice_size > extent {
@@ -163,6 +192,28 @@ pub(super) fn lower_gather_view_operation(
         result_descriptor,
     )?;
     let elements = result_descriptor.num_elements()?;
+    if complex_component(result_descriptor.element_type).is_some() {
+        if operand.descriptor.element_type != result_descriptor.element_type {
+            return Err(PlanError::LoweringFailure(
+                "complex Gather operand and result primitives differ".into(),
+            ));
+        }
+        // Raw components live at 2*i and 2*i+1 of each backing buffer.
+        let storage = plan.buffer_descriptor(operand.buffer)?;
+        if elements > 0
+            && [storage.num_elements()?, elements]
+                .into_iter()
+                .any(|count| {
+                    count
+                        .checked_mul(2)
+                        .is_none_or(|count| count > u32::MAX as usize)
+                })
+        {
+            return Err(PlanError::UnsupportedFeature(
+                "Gather requires wide kernel addressing for complex component storage".into(),
+            ));
+        }
+    }
     let kernel = DirectGatherKernel {
         operand: operand.descriptor.clone(),
         indices: indices.descriptor.clone(),
@@ -240,12 +291,26 @@ impl DirectGatherKernel {
         )
         .kernel_name(self.name());
         let mut builder = KernelBuilder::new(settings);
-        let operand_buffer =
-            builder.buffer(self.operand.cubecl_element_type()?.to_type(builder.ctx()));
+        let complex = complex_component(self.result.element_type).is_some();
+        // Complex buffers bind their F32/F64 components; others keep the
+        // existing primitive admission.
+        let storage = |descriptor: &BufferDescriptor| {
+            if complex {
+                descriptor.kernel_storage_element_type()
+            } else {
+                descriptor.cubecl_element_type()
+            }
+        };
+        let operand_buffer = builder.buffer(storage(&self.operand)?.to_type(builder.ctx()));
         let indices_buffer =
             builder.buffer(self.indices.cubecl_element_type()?.to_type(builder.ctx()));
-        let output_buffer =
-            builder.buffer(self.result.cubecl_element_type()?.to_type(builder.ctx()));
+        let output_buffer = builder.buffer(storage(&self.result)?.to_type(builder.ctx()));
+        if elements == 0 {
+            builder.register(&cubecl_ir::dialect::branch::ReturnOp::new(
+                builder.ctx_mut(),
+            ));
+            return Ok(builder.build());
+        }
         let index_type = ElemType::Index.to_type(builder.ctx());
         let position = builder.register_with_result(&ReadBuiltinOp::new(
             builder.ctx_mut(),
@@ -260,12 +325,100 @@ impl DirectGatherKernel {
         let body = builder.child(OpInserter::new_at_block_end(
             guard.then_block(builder.ctx()),
         ));
-        let output_coordinates = gather_output_coordinates(&body, position, &self.result.shape)?;
-        let output_batch_dims: Vec<_> = (0..self.result.shape.len())
-            .filter(|axis| !self.spec.offset_dims.contains(axis))
+        if complex {
+            let source = self.spec.source_position(
+                &body,
+                position,
+                indices_buffer,
+                &self.views,
+                &self.result,
+            )?;
+            let (source_real, source_imag) = component_indices(&body, source);
+            let (target_real, target_imag) = component_indices(&body, position);
+            for (source, target) in [(source_real, target_real), (source_imag, target_imag)] {
+                let input = body.register_with_result(&IndexOp::new(
+                    body.ctx_mut(),
+                    operand_buffer,
+                    source,
+                    None,
+                ));
+                let value = body.register_with_result(&LoadOp::new(body.ctx_mut(), input));
+                let output = body.register_with_result(&IndexOp::new(
+                    body.ctx_mut(),
+                    output_buffer,
+                    target,
+                    None,
+                ));
+                emit_store(&body, output, value)?;
+            }
+        } else {
+            let value = self.spec.emit(
+                &body,
+                position,
+                operand_buffer,
+                indices_buffer,
+                &self.views,
+                &self.result,
+            )?;
+            let output_pointer = body.register_with_result(&IndexOp::new(
+                body.ctx_mut(),
+                output_buffer,
+                position,
+                None,
+            ));
+            emit_store(&body, output_pointer, value)?;
+        }
+        body.register(&YieldOp::new(body.ctx_mut()));
+        let otherwise = builder.child(OpInserter::new_at_block_end(
+            guard.else_block(builder.ctx()),
+        ));
+        otherwise.register(&YieldOp::new(otherwise.ctx_mut()));
+        builder.register(&cubecl_ir::dialect::branch::ReturnOp::new(
+            builder.ctx_mut(),
+        ));
+        Ok(builder.build())
+    }
+}
+
+impl GatherSpec {
+    pub(super) fn emit(
+        &self,
+        body: &Scope,
+        position: Value,
+        operand_buffer: Value,
+        indices_buffer: Value,
+        views: &[crate::OperandView],
+        result: &BufferDescriptor,
+    ) -> Result<Value, PlanError> {
+        let operand_offset = self.source_position(body, position, indices_buffer, views, result)?;
+        let input_pointer = body.register_with_result(&IndexOp::new(
+            body.ctx_mut(),
+            operand_buffer,
+            operand_offset,
+            None,
+        ));
+        Ok(body.register_with_result(&LoadOp::new(body.ctx_mut(), input_pointer)))
+    }
+
+    /// Logical operand element read by output `position`, after native start
+    /// clamping and the operand view's transforms. Packed storage callers map
+    /// this element index to their own physical addressing.
+    pub(super) fn source_position(
+        &self,
+        body: &Scope,
+        position: Value,
+        indices_buffer: Value,
+        views: &[crate::OperandView],
+        result: &BufferDescriptor,
+    ) -> Result<Value, PlanError> {
+        let operand = &views[0].descriptor;
+        let indices = &views[1].descriptor;
+        let output_coordinates = gather_output_coordinates(body, position, &result.shape)?;
+        let output_batch_dims: Vec<_> = (0..result.shape.len())
+            .filter(|axis| !self.offset_dims.contains(axis))
             .collect();
-        let index_batch_dims: Vec<_> = (0..self.indices.shape.len())
-            .filter(|axis| Some(*axis) != self.spec.index_vector_dim)
+        let index_batch_dims: Vec<_> = (0..indices.shape.len())
+            .filter(|axis| Some(*axis) != self.index_vector_dim)
             .collect();
         if output_batch_dims.len() != index_batch_dims.len() {
             return Err(PlanError::LoweringFailure(
@@ -277,12 +430,11 @@ impl DirectGatherKernel {
             .copied()
             .zip(output_batch_dims.iter().copied())
             .collect();
-        let mut operand_coordinates = vec![body.const_usize(0); self.operand.shape.len()];
+        let mut operand_coordinates = vec![body.const_usize(0); operand.shape.len()];
         for (&operand_axis, &indices_axis) in self
-            .spec
             .operand_batching_dims
             .iter()
-            .zip(&self.spec.start_indices_batching_dims)
+            .zip(&self.start_indices_batching_dims)
         {
             let output_axis = *index_axis_to_output_axis
                 .get(&indices_axis)
@@ -293,9 +445,9 @@ impl DirectGatherKernel {
                 })?;
             operand_coordinates[operand_axis] = output_coordinates[output_axis];
         }
-        let indices_strides = dense_strides(&self.indices.shape)?;
-        let vector_stride = self.spec.index_vector_dim.map(|axis| indices_strides[axis]);
-        for (component, &operand_axis) in self.spec.start_index_map.iter().enumerate() {
+        let indices_strides = dense_strides(&indices.shape)?;
+        let vector_stride = self.index_vector_dim.map(|axis| indices_strides[axis]);
+        for (component, &operand_axis) in self.start_index_map.iter().enumerate() {
             let mut indices_offset = body.const_usize(0);
             for (&indices_axis, &output_axis) in index_batch_dims.iter().zip(&output_batch_dims) {
                 let coordinate = output_coordinates[output_axis];
@@ -313,7 +465,7 @@ impl DirectGatherKernel {
                 indices_offset =
                     body.register_with_result(&IAddOp::new(body.ctx_mut(), indices_offset, term));
             }
-            let indices_offset = views::source_position(&body, indices_offset, &self.views[1])?;
+            let indices_offset = views::source_position(body, indices_offset, &views[1])?;
             let pointer = body.register_with_result(&IndexOp::new(
                 body.ctx_mut(),
                 indices_buffer,
@@ -321,25 +473,24 @@ impl DirectGatherKernel {
                 None,
             ));
             let index = body.register_with_result(&LoadOp::new(body.ctx_mut(), pointer));
-            let max_start = usize::try_from(self.operand.shape[operand_axis])
+            let max_start = usize::try_from(operand.shape[operand_axis])
                 .map_err(|_| PlanError::InvalidShape)?
-                - self.spec.slice_sizes[operand_axis];
+                - self.slice_sizes[operand_axis];
             operand_coordinates[operand_axis] =
-                clamp_gather_index(&body, index, self.indices.element_type, max_start)?;
+                clamp_gather_index(body, index, indices.element_type, max_start)?;
         }
-        let window_operand_dims: Vec<_> = (0..self.operand.shape.len())
+        let window_operand_dims: Vec<_> = (0..operand.shape.len())
             .filter(|axis| {
-                !self.spec.collapsed_slice_dims.contains(axis)
-                    && !self.spec.operand_batching_dims.contains(axis)
+                !self.collapsed_slice_dims.contains(axis)
+                    && !self.operand_batching_dims.contains(axis)
             })
             .collect();
-        if window_operand_dims.len() != self.spec.offset_dims.len() {
+        if window_operand_dims.len() != self.offset_dims.len() {
             return Err(PlanError::LoweringFailure(
                 "Gather window and output offset ranks differ".into(),
             ));
         }
-        for (&operand_axis, &output_axis) in window_operand_dims.iter().zip(&self.spec.offset_dims)
-        {
+        for (&operand_axis, &output_axis) in window_operand_dims.iter().zip(&self.offset_dims) {
             let window_coordinate = output_coordinates[output_axis];
             operand_coordinates[operand_axis] = body.register_with_result(&IAddOp::new(
                 body.ctx_mut(),
@@ -347,7 +498,7 @@ impl DirectGatherKernel {
                 window_coordinate,
             ));
         }
-        let operand_strides = dense_strides(&self.operand.shape)?;
+        let operand_strides = dense_strides(&operand.shape)?;
         let mut operand_offset = body.const_usize(0);
         for (axis, &stride) in operand_strides.iter().enumerate() {
             let stride = body.const_usize(stride);
@@ -359,26 +510,7 @@ impl DirectGatherKernel {
             operand_offset =
                 body.register_with_result(&IAddOp::new(body.ctx_mut(), operand_offset, term));
         }
-        let operand_offset = views::source_position(&body, operand_offset, &self.views[0])?;
-        let input_pointer = body.register_with_result(&IndexOp::new(
-            body.ctx_mut(),
-            operand_buffer,
-            operand_offset,
-            None,
-        ));
-        let value = body.register_with_result(&LoadOp::new(body.ctx_mut(), input_pointer));
-        let output_pointer =
-            body.register_with_result(&IndexOp::new(body.ctx_mut(), output_buffer, position, None));
-        body.register(&StoreOp::new(body.ctx_mut(), output_pointer, value));
-        body.register(&YieldOp::new(body.ctx_mut()));
-        let otherwise = builder.child(OpInserter::new_at_block_end(
-            guard.else_block(builder.ctx()),
-        ));
-        otherwise.register(&YieldOp::new(otherwise.ctx_mut()));
-        builder.register(&cubecl_ir::dialect::branch::ReturnOp::new(
-            builder.ctx_mut(),
-        ));
-        Ok(builder.build())
+        views::source_position(body, operand_offset, &views[0])
     }
 }
 
@@ -416,7 +548,7 @@ fn gather_output_coordinates(
         .collect()
 }
 
-fn integer_constant(scope: &Scope, element_type: ElementType, bits: u32) -> Value {
+fn integer_constant(scope: &Scope, element_type: ElementType, bits: u64) -> Value {
     let signedness = if element_type.is_signed() {
         Signedness::Signed
     } else {
@@ -424,7 +556,7 @@ fn integer_constant(scope: &Scope, element_type: ElementType, bits: u32) -> Valu
     };
     let attr = IntegerAttr::new(
         IntegerType::get(scope.ctx(), element_type.bit_width(), signedness),
-        APInt::from_u64(u64::from(bits), bw(element_type.bit_width() as usize)),
+        APInt::from_u64(bits, bw(element_type.bit_width() as usize)),
     );
     scope.register_with_result(&CubeConstantOp::new(scope.ctx_mut(), Box::new(attr)))
 }
@@ -436,17 +568,19 @@ fn clamp_gather_index(
     max_start: usize,
 ) -> Result<Value, PlanError> {
     let max_value = match element_type {
-        ElementType::S32 => max_start.min(i32::MAX as usize) as u32,
-        ElementType::U32 => max_start.min(u32::MAX as usize) as u32,
+        ElementType::S32 => max_start.min(i32::MAX as usize) as u64,
+        ElementType::U32 => max_start.min(u32::MAX as usize) as u64,
+        ElementType::S64 => u64::try_from(max_start).map_err(|_| PlanError::SizeOverflow)?,
+        ElementType::U64 => u64::try_from(max_start).map_err(|_| PlanError::SizeOverflow)?,
         _ => {
             return Err(PlanError::UnsupportedFeature(
-                "Gather currently requires S32 or U32 indices".into(),
+                "Gather currently requires S32, U32, S64, or U64 indices".into(),
             ));
         }
     };
     let zero = integer_constant(scope, element_type, 0);
     let upper = integer_constant(scope, element_type, max_value);
-    let clamped = if element_type == ElementType::S32 {
+    let clamped = if matches!(element_type, ElementType::S32 | ElementType::S64) {
         let negative = scope.register_with_result(&SLessThanOp::new(scope.ctx_mut(), value, zero));
         let nonnegative =
             scope.register_with_result(&CubeSelectOp::new(scope.ctx_mut(), negative, zero, value));

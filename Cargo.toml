@@ -4,7 +4,11 @@ members = [
     "crates/clienthlo",
     "crates/stablehlo",
     "crates/xlahlo",
-    # "crates/xlahlo-codec",
+    "crates/pliron-arith",
+    "crates/pliron-iree-linalg-ext",
+    "crates/pliron-linalg",
+    "crates/pliron-math",
+    "crates/pliron-tensor",
 ]
 
 [workspace.package]

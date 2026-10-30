@@ -105,28 +105,62 @@ pub(super) struct ElementwiseConversion {
     zero_index: Value,
     values: HashMap<Value, Value>,
     positive_zero_values: HashSet<Value>,
+    scalar_operations: HashMap<Ptr<Operation>, scalar::ScalarOperation>,
+    custom_bodies: HashMap<Ptr<Operation>, Arc<dyn crate::ScalarLoweringBody>>,
+    copies: HashSet<Ptr<Operation>>,
 }
 
 impl ElementwiseConversion {
     pub(super) fn new(
+        context: &Context,
+        root: Ptr<Operation>,
         buffers: HashMap<usize, Value>,
         outputs: HashMap<usize, Value>,
         position: Value,
         zero_index: Value,
-    ) -> Self {
-        Self {
+        operation_strategies: &OperationStrategyRegistry,
+    ) -> Result<Self, PlanError> {
+        let mut pending = vec![root];
+        let mut scalar_operations = HashMap::new();
+        let mut custom_bodies = HashMap::new();
+        let mut copies = HashSet::new();
+        while let Some(operation) = pending.pop() {
+            if let Some(body) = operation_strategies.scalar_body(context, operation)? {
+                custom_bodies.insert(operation, body);
+            } else if super::copy_shape(context, operation)?.is_some() {
+                copies.insert(operation);
+            }
+            if let Some(specification) = scalar::ScalarOperation::read(context, operation)? {
+                scalar_operations.insert(operation, specification);
+            }
+            for region in operation.deref(context).regions() {
+                for block in region.deref(context).iter(context) {
+                    pending.extend(block.deref(context).iter(context));
+                }
+            }
+        }
+        Ok(Self {
             buffers,
             outputs,
             position,
             zero_index,
             values: HashMap::new(),
             positive_zero_values: HashSet::new(),
-        }
+            scalar_operations,
+            custom_bodies,
+            copies,
+        })
     }
 }
 
 impl DialectConversion for ElementwiseConversion {
     fn can_convert_op(&self, context: &Context, operation: Ptr<Operation>) -> bool {
+        if self.scalar_operations.contains_key(&operation)
+            || self.custom_bodies.contains_key(&operation)
+            || self.copies.contains(&operation)
+        {
+            return true;
+        }
         if Operation::get_op::<ParameterOp>(operation, context).is_some()
             || Operation::get_op::<ConstantOp>(operation, context).is_some()
             || Operation::get_op::<BroadcastOp>(operation, context).is_some()
@@ -149,9 +183,7 @@ impl DialectConversion for ElementwiseConversion {
     }
 
     fn can_convert_type(&self, context: &Context, ty: TypeHandle) -> bool {
-        Shape::is_array(context, ty)
-            && Shape::element_type(context, ty).is_ok_and(|element| element != ElementType::U1)
-            && super::super::descriptor(context, ty).is_ok()
+        shape::is_array(context, ty) && super::super::descriptor(context, ty).is_ok()
     }
 
     fn convert_type(
@@ -172,6 +204,25 @@ impl DialectConversion for ElementwiseConversion {
         operation: Ptr<Operation>,
         _operands_info: &OperandsInfo,
     ) -> pliron::result::Result<()> {
+        if self.copies.contains(&operation) || self.custom_bodies.contains_key(&operation) {
+            let operands = operation
+                .deref(context)
+                .operands()
+                .map(|value| self.values.get(&value).copied().unwrap_or(value))
+                .collect::<Vec<_>>();
+            let source_result = operation.deref(context).get_result(0);
+            let lowered = if let Some(body) = self.custom_bodies.get(&operation) {
+                let mut inserter = OpInserter::new_before_operation(operation);
+                let scope = Scope::from_context_and_inserter(context, &mut inserter);
+                body.emit(&scope, &operands)
+                    .map_err(|error| pliron::arg_error_noloc!("{error}"))?
+            } else {
+                operands[0]
+            };
+            self.values.insert(source_result, lowered);
+            rewriter.replace_operation_with_values(context, operation, vec![lowered]);
+            return Ok(());
+        }
         if let Some(parameter) = Operation::get_op::<ParameterOp>(operation, context) {
             let source_value = operation.deref(context).get_result(0);
             let index = parameter
@@ -182,7 +233,7 @@ impl DialectConversion for ElementwiseConversion {
                 .buffers
                 .get(&index)
                 .ok_or_else(|| pliron::arg_error_noloc!("parameter index is out of range"))?;
-            let position = if Shape::rank(context, source_value.get_type(context))
+            let position = if shape::rank(context, source_value.get_type(context))
                 .is_ok_and(|rank| rank == 0)
             {
                 self.zero_index
@@ -211,7 +262,7 @@ impl DialectConversion for ElementwiseConversion {
                     .map_err(|error| pliron::arg_error_noloc!("{}", error))?;
                 let result_descriptor = super::super::descriptor(context, result_type)
                     .map_err(|error| pliron::arg_error_noloc!("{}", error))?;
-                if Shape::rank(context, result_type)
+                if shape::rank(context, result_type)
                     .map_err(|error| pliron::arg_error_noloc!("{}", error))?
                     != 0
                     || literal_descriptor != result_descriptor
@@ -228,7 +279,7 @@ impl DialectConversion for ElementwiseConversion {
                         "kernel scalar constant must contain one element"
                     ));
                 };
-                let element_type = Shape::element_type(context, result_type)
+                let element_type = shape::element_type(context, result_type)
                     .map_err(|error| pliron::arg_error_noloc!("{}", error))?;
                 (element_type, *bits)
             };
@@ -319,9 +370,12 @@ impl DialectConversion for ElementwiseConversion {
                 let pointer_operation = pointer.get_operation();
                 let pointer_value = pointer_operation.deref(context).get_result(0);
                 rewriter.insert_operation(context, pointer_operation);
-                let store = StoreOp::new(context, pointer_value, value).get_operation();
-                rewriter.insert_operation(context, store);
-                last_store = Some(store);
+                let stores = make_store_operations(context, pointer_value, value)
+                    .map_err(|error| pliron::arg_error_noloc!("{error}"))?;
+                for store in stores {
+                    rewriter.insert_operation(context, store);
+                    last_store = Some(store);
+                }
             }
             let store = last_store
                 .ok_or_else(|| pliron::arg_error_noloc!("kernel return has no computed outputs"))?;
@@ -329,6 +383,24 @@ impl DialectConversion for ElementwiseConversion {
             rewriter.set_insertion_point(OpInsertionPoint::AfterOperation(store));
             let yield_operation = YieldOp::new(context).get_operation();
             rewriter.insert_operation(context, yield_operation);
+            return Ok(());
+        }
+        if let Some(specification) = self.scalar_operations.get(&operation) {
+            let operands = operation
+                .deref(context)
+                .operands()
+                .map(|value| self.values.get(&value).copied().unwrap_or(value))
+                .collect::<Vec<_>>();
+            let source_result = operation.deref(context).get_result(0);
+            let mut inserter = OpInserter::new_before_operation(operation);
+            let lowered = {
+                let scope = Scope::from_context_and_inserter(context, &mut inserter);
+                specification
+                    .emit(&scope, self.position, &operands)
+                    .map_err(|error| pliron::arg_error_noloc!("{}", error))?
+            };
+            self.values.insert(source_result, lowered);
+            rewriter.replace_operation_with_values(context, operation, vec![lowered]);
             return Ok(());
         }
         let operation_ref = Operation::get_op_dyn(operation, context);
@@ -344,7 +416,7 @@ impl DialectConversion for ElementwiseConversion {
         let rhs_is_positive_zero = self.positive_zero_values.contains(rhs_source);
         let lhs = self.values.get(lhs_source).copied().unwrap_or(*lhs_source);
         let rhs = self.values.get(rhs_source).copied().unwrap_or(*rhs_source);
-        let element_type = Shape::element_type(
+        let element_type = shape::element_type(
             context,
             operation.deref(context).get_result(0).get_type(context),
         )

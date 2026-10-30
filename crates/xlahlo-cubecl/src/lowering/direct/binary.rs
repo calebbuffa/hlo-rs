@@ -30,6 +30,7 @@ pub(in crate::lowering) fn lower_binary_view_operation(
             "binary operation requires two operands".into(),
         ));
     };
+    super::check_binary_primitive(opcode, descriptor.element_type)?;
     let elements = descriptor.num_elements()?;
     plan.add_kernel(
         format!("xlahlo-op-{operation_index}"),
@@ -69,7 +70,7 @@ impl KernelMetadata for DirectBinaryKernel {
     }
 
     fn id(&self) -> KernelId {
-        KernelId::new::<Self>().info((
+        let key = (
             CODEGEN_VERSION,
             self.opcode.to_string(),
             self.descriptor.clone(),
@@ -77,7 +78,15 @@ impl KernelMetadata for DirectBinaryKernel {
                 .iter()
                 .map(|operand| operand.transforms.clone())
                 .collect::<Vec<_>>(),
-        ))
+        );
+        if matches!(
+            self.descriptor.element_type,
+            ElementType::F8E4M3FN | ElementType::F8E5M2
+        ) {
+            KernelId::new::<Self>().info((key, "exact-fp8-rounding-v1"))
+        } else {
+            KernelId::new::<Self>().info(key)
+        }
     }
 
     fn address_type(&self) -> ElemType {
@@ -139,7 +148,7 @@ impl DirectBinaryKernel {
         };
         let output_pointer =
             body.register_with_result(&IndexOp::new(body.ctx_mut(), output_buffer, position, None));
-        body.register(&StoreOp::new(body.ctx_mut(), output_pointer, result));
+        emit_store(&body, output_pointer, result)?;
         body.register(&YieldOp::new(body.ctx_mut()));
         let otherwise = builder.child(OpInserter::new_at_block_end(
             guard.else_block(builder.ctx()),

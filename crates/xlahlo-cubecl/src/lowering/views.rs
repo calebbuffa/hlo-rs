@@ -120,6 +120,7 @@ pub(crate) fn source_position(
     mut position: Value,
     view: &OperandView,
 ) -> Result<Value, PlanError> {
+    let empty = view.descriptor.num_elements()? == 0;
     let mut shape = view
         .transforms
         .first()
@@ -134,7 +135,7 @@ pub(crate) fn source_position(
         }
         let source =
             BufferDescriptor::dense_row_major(view.descriptor.element_type, shape.to_vec());
-        if source.num_elements()? > u32::MAX as usize {
+        if !empty && source.num_elements()? > u32::MAX as usize {
             return Err(PlanError::UnsupportedFeature(
                 "indexed operand requires 64-bit kernel addressing".into(),
             ));
@@ -145,6 +146,9 @@ pub(crate) fn source_position(
         return Err(PlanError::LoweringFailure(
             "operand view logical shape mismatch".into(),
         ));
+    }
+    if empty {
+        return Ok(scope.const_usize(0));
     }
     for transform in view.transforms.iter().rev() {
         if matches!(transform.kind, IndexTransformKind::Reshape) {
@@ -168,6 +172,37 @@ pub(crate) fn source_position(
                 scope.register_with_result(&URemOp::new(scope.ctx_mut(), linear, extent))
             };
             coordinates.push(coordinate);
+        }
+        if let IndexTransformKind::Strided { offset, strides } = &transform.kind {
+            position = scope.const_usize(*offset);
+            for ((coordinate, stride), _) in coordinates
+                .iter()
+                .zip(strides)
+                .zip(&transform.result_shape)
+                .filter(|((_, stride), extent)| **stride > 0 && **extent > 1)
+            {
+                let scale = scope
+                    .const_usize(usize::try_from(*stride).map_err(|_| PlanError::SizeOverflow)?);
+                let term =
+                    scope.register_with_result(&IMulOp::new(scope.ctx_mut(), *coordinate, scale));
+                position =
+                    scope.register_with_result(&IAddOp::new(scope.ctx_mut(), position, term));
+            }
+            for ((coordinate, stride), _) in coordinates
+                .iter()
+                .zip(strides)
+                .zip(&transform.result_shape)
+                .filter(|((_, stride), extent)| **stride < 0 && **extent > 1)
+            {
+                let scale = scope.const_usize(
+                    usize::try_from(stride.unsigned_abs()).map_err(|_| PlanError::SizeOverflow)?,
+                );
+                let term =
+                    scope.register_with_result(&IMulOp::new(scope.ctx_mut(), *coordinate, scale));
+                position =
+                    scope.register_with_result(&ISubOp::new(scope.ctx_mut(), position, term));
+            }
+            continue;
         }
         let mut source_coordinates = match &transform.kind {
             IndexTransformKind::Transpose(permutation) => {

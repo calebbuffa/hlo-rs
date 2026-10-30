@@ -1,0 +1,18 @@
+pliron-iree-linalg-ext
+
+Original Rust implementation: Apache License 2.0 (LICENSE).
+
+Operation definitions, semantics, and documentation are adapted from IREE's
+LinalgExt dialect at revision 29114a017c104882cab055a49758e8f7055ea0d5.
+Copyright The IREE Authors.
+Upstream license: Apache License 2.0 (LICENSE-IREE).
+https://github.com/iree-org/iree/tree/29114a017c104882cab055a49758e8f7055ea0d5/compiler/src/iree/compiler/Dialect/LinalgExt
+
+MLIR operation/type conventions also follow the LLVM Project at revision
+f1ee8b38f40fd1f0e9596197b8e690eb9b57ec0c.
+Copyright The LLVM Project Contributors.
+Upstream license: Apache License 2.0 with LLVM Exceptions (LICENSE-LLVM).
+
+Modifications: tensor-only native pliron operations, Rust region builders and
+diagnostics, verification helpers, mixed-index storage, and generic/custom
+MLIR textual export. These crates do not bundle the IREE compiler or runtime.

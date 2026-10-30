@@ -4,3 +4,11 @@
 [submodule "extern/xla"]
 	path = extern/xla
 	url = https://github.com/openxla/xla.git
+[submodule "extern/llvm-project"]
+	path = extern/llvm-project
+	url = https://github.com/llvm/llvm-project.git
+	shallow = true
+[submodule "extern/iree"]
+	path = extern/iree
+	url = https://github.com/iree-org/iree.git
+	shallow = true

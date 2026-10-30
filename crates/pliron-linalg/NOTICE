@@ -1,0 +1,16 @@
+pliron-linalg
+
+Original Rust implementation: Apache License 2.0 (LICENSE).
+
+Operation definitions, semantics, documentation, and named-operation metadata
+are adapted from the LLVM Project's MLIR Linalg dialect, including
+LinalgNamedStructuredOps.yaml, at revision
+f1ee8b38f40fd1f0e9596197b8e690eb9b57ec0c.
+Copyright The LLVM Project Contributors.
+Upstream license: Apache License 2.0 with LLVM Exceptions (LICENSE-LLVM).
+https://github.com/llvm/llvm-project/tree/f1ee8b38f40fd1f0e9596197b8e690eb9b57ec0c/mlir/include/mlir/Dialect/Linalg
+
+Modifications: tensor-only native pliron operations, Rust region builders and
+diagnostics, verification helpers, generated named-operation specifications,
+and generic/custom MLIR textual export. Named operations reconstruct their
+implicit scalar regions in the upstream MLIR parser.

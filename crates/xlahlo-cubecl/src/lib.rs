@@ -1,23 +1,40 @@
-//! CubeCL lowering hooks over the shared pliron dialect IR.
-//! Lower supported xlahlo modules into explicit CubeCL execution plans.
+//! Compile supported native XLA HLO modules into owned CubeCL execution plans.
 //!
 //! See the crate README for supported operations, execution-plan ownership,
 //! and current lowering limitations.
 #![doc = include_str!("../README.md")]
+#![warn(missing_docs)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
+mod compile_profile;
 mod float_cast;
+mod fusion_policy;
 mod lowering;
 mod module_compiler;
 mod plan;
 mod view;
-pub use module_compiler::{ModuleCompileError, ModuleCompiler, ModuleCompilerBuilder};
-pub use module_compiler::{OperationLoweringRequest, OperationLoweringStrategy};
+pub use float_cast::cast_float as emit_scalar_float_cast;
+pub use fusion_policy::{FusionBudget, FusionEstimate, TargetFusionPolicy};
+pub use lowering::checked_offsets::add_checked_offset_validation;
+pub use lowering::emit_store as emit_scalar_store;
+pub use lowering::reduction_fusion::normalize_narrow_float_casts;
+pub use lowering::scalar_body::OwnedScalarBody;
+pub use module_compiler::{
+    ModuleCompileError, ModuleCompiler, ModuleCompilerBuilder, UnsupportedKind,
+};
+pub use module_compiler::{
+    OperationLoweringRequest, OperationLoweringStrategy, OrderedReductionGeometry,
+    OrderedReductionLoweringBody, ScalarLoweringBody,
+};
 pub use plan::{
-    BufferAccess, BufferDescriptor, BufferId, BufferLayout, BufferLifetime, BufferRole,
-    CubeclTargetPass, ExecutionPlan, ExecutionPlanBuilder, KernelBinding, KernelDefinitionError,
-    KernelStep, LaunchGeometry, PlanError, PlannedBuffer, PlannedKernel, PlannedOutput, SkipReason,
-    StaticValue,
+    BufferAccess, BufferDescriptor, BufferId, BufferInitializer, BufferLayout, BufferLifetime,
+    BufferRole, CHECKED_STATUS_COUNTER_OVERFLOW, CHECKED_STATUS_DESCENDING,
+    CHECKED_STATUS_OUT_OF_BOUNDS, CHECKED_STATUS_PENDING, CHECKED_STATUS_SUCCESS,
+    CHECKED_STATUS_VERSION, CHECKED_STATUS_WORDS, CheckedCompletion, CubeclTargetPass, DeviceCount,
+    ExecutionPlan, ExecutionPlanBuilder, InitializerRequirements, KernelArgumentLayout,
+    KernelBinding, KernelDefinitionError, KernelStep, LaunchGeometry, MemoryRequirements,
+    OutputContract, PlanError, PlannedBuffer, PlannedKernel, PlannedOutput, PrivateStorageGroup,
+    SkipReason, StaticOutputView, StaticValue, StorageUpdate, TensorArgument,
 };
 use pliron::{
     context::{Context, Ptr},
@@ -35,10 +52,14 @@ struct Override<T: ?Sized, E> {
     lower: Box<Lowering<T, E>>,
 }
 
+/// Failure to register a named lowering strategy or access its registry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RegistrationError {
+    /// The supplied name is empty or contains only whitespace.
     EmptyName,
+    /// A strategy with this exact name is already registered.
     DuplicateName(String),
+    /// A panic while holding a strategy registry lock poisoned that registry.
     PoisonedRegistry,
 }
 
@@ -54,18 +75,30 @@ impl std::fmt::Display for RegistrationError {
 
 impl std::error::Error for RegistrationError {}
 
+/// Failure to select or execute a custom lowering override.
+///
+/// Lowering failures retain the backend error as their standard error source.
 #[derive(Debug)]
 pub enum KernelOverrideError<E> {
+    /// A matcher failed; this is not treated as a non-match.
     Matcher {
+        /// Registered name of the failing matcher.
         name: String,
+        /// Diagnostic supplied by the matcher.
         message: String,
     },
+    /// Multiple matching overrides share the highest priority.
     Ambiguous {
+        /// Source operation identifier.
         operation: String,
+        /// Names of equally ranked matching overrides.
         candidates: Vec<String>,
     },
+    /// The selected override failed while constructing its plan.
     Lowering {
+        /// Registered name of the selected override.
         name: String,
+        /// Original backend failure.
         source: E,
     },
 }
@@ -91,7 +124,14 @@ impl<E: std::fmt::Display> std::fmt::Display for KernelOverrideError<E> {
     }
 }
 
-impl<E: std::error::Error + 'static> std::error::Error for KernelOverrideError<E> {}
+impl<E: std::error::Error + 'static> std::error::Error for KernelOverrideError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Lowering { source, .. } => Some(source),
+            Self::Matcher { .. } | Self::Ambiguous { .. } => None,
+        }
+    }
+}
 
 /// Priority-ordered custom-kernel registry.
 ///
@@ -108,14 +148,20 @@ pub struct SelectedOverride<'a, T: ?Sized, E> {
 }
 
 impl<'a, T: ?Sized, E> SelectedOverride<'a, T, E> {
+    /// Registered name of the uniquely selected override.
     pub fn name(&self) -> &str {
         &self.entry.name
     }
 
+    /// Selection priority; higher values take precedence.
     pub fn priority(&self) -> i32 {
         self.entry.priority
     }
 
+    /// Run the selected lowerer and return its name on success.
+    ///
+    /// A failure retains its source but does not roll back mutations to `target`.
+    /// The operation must still belong to `context` and remain valid.
     pub fn lower(
         &self,
         context: &Context,
@@ -140,10 +186,15 @@ impl<T: ?Sized, E> Default for KernelOverrideRegistry<T, E> {
 }
 
 impl<T: ?Sized, E> KernelOverrideRegistry<T, E> {
+    /// Create an empty registry with no implicit fallback.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Register a uniquely named matcher and lowerer.
+    ///
+    /// Higher priorities win. Empty names and duplicate exact names are rejected.
+    /// Callbacks must not retain borrowed source IR beyond its context lifetime.
     pub fn register<M, L>(
         &mut self,
         name: impl Into<String>,
@@ -204,10 +255,12 @@ impl<T: ?Sized, E> KernelOverrideRegistry<T, E> {
         }))
     }
 
+    /// Number of registered overrides.
     pub fn len(&self) -> usize {
         self.overrides.len()
     }
 
+    /// Whether no overrides are registered.
     pub fn is_empty(&self) -> bool {
         self.overrides.is_empty()
     }

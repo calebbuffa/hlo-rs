@@ -204,7 +204,7 @@ impl ExtremaKernel {
         )?;
         let output_pointer =
             body.register_with_result(&IndexOp::new(body.ctx_mut(), output_buffer, position, None));
-        body.register(&StoreOp::new(body.ctx_mut(), output_pointer, result));
+        emit_store(&body, output_pointer, result)?;
         body.register(&YieldOp::new(body.ctx_mut()));
         let otherwise = builder.child(OpInserter::new_at_block_end(
             guard.else_block(builder.ctx()),
@@ -217,7 +217,7 @@ impl ExtremaKernel {
     }
 }
 
-fn emit_extrema(
+pub(in crate::lowering) fn emit_extrema(
     scope: &Scope,
     kind: ExtremaKind,
     values: &[Value],
